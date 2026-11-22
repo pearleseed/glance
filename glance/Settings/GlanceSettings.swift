@@ -133,6 +133,9 @@ final class GlanceSettings {
         static let hasCompletedOnboarding = "GlanceSettings.hasCompletedOnboarding"
         static let onboardingResumeStep = "GlanceSettings.onboardingResumeStep"
         static let hasAcknowledgedSecurityNotice = "GlanceSettings.hasAcknowledgedSecurityNotice"
+        static let isAppLockEnabled = "GlanceSettings.isAppLockEnabled"
+        static let lockedApps = "GlanceSettings.lockedApps"
+        static let defaultAppRelockPolicy = "GlanceSettings.defaultAppRelockPolicy"
     }
 
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -358,6 +361,26 @@ final class GlanceSettings {
     var hasAcknowledgedSecurityNotice: Bool {
         didSet { defaults.set(hasAcknowledgedSecurityNotice, forKey: Key.hasAcknowledgedSecurityNotice) }
     }
+    /// Opt-in App Lock master switch; defaults to `false`.
+    var isAppLockEnabled: Bool {
+        didSet { defaults.set(isAppLockEnabled, forKey: Key.isAppLockEnabled) }
+    }
+    /// Applications guarded by App Lock, persisted as JSON.
+    var lockedApps: [LockedApp] {
+        didSet {
+            if let data = try? JSONEncoder().encode(lockedApps) {
+                defaults.set(data, forKey: Key.lockedApps)
+            }
+        }
+    }
+    /// Default relock behavior for locked apps without a per-app override.
+    var defaultAppRelockPolicy: RelockPolicy {
+        didSet {
+            if let data = try? JSONEncoder().encode(defaultAppRelockPolicy) {
+                defaults.set(data, forKey: Key.defaultAppRelockPolicy)
+            }
+        }
+    }
 
     private init() {
         // Enabled by default — onboarding already enrolled a face and set a
@@ -444,6 +467,23 @@ final class GlanceSettings {
         onboardingResumeStep = defaults.string(forKey: Key.onboardingResumeStep)
             .flatMap(OnboardingStep.init(rawValue:))
         hasAcknowledgedSecurityNotice = defaults.object(forKey: Key.hasAcknowledgedSecurityNotice) as? Bool ?? false
+        isAppLockEnabled = defaults.object(forKey: Key.isAppLockEnabled) as? Bool ?? false
+        if let lockedAppsData = defaults.data(forKey: Key.lockedApps),
+           let decodedApps = try? JSONDecoder().decode([LockedApp].self, from: lockedAppsData) {
+            var seenLowerIDs = Set<String>()
+            lockedApps = decodedApps.filter { entry in
+                guard LockedApp.canLock(bundleIdentifier: entry.bundleIdentifier) else { return false }
+                return seenLowerIDs.insert(entry.bundleIdentifier.lowercased()).inserted
+            }
+        } else {
+            lockedApps = []
+        }
+        if let policyData = defaults.data(forKey: Key.defaultAppRelockPolicy),
+           let decodedPolicy = try? JSONDecoder().decode(RelockPolicy.self, from: policyData) {
+            defaultAppRelockPolicy = decodedPolicy
+        } else {
+            defaultAppRelockPolicy = .everyTime
+        }
 
         // Push into the nonisolated mirror immediately, or FaceRecognitionPipeline
         // would keep its own default until the toggle is first switched.
