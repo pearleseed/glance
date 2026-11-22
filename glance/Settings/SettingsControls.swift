@@ -1216,6 +1216,7 @@ final class WindowConfiguringView: NSView {
         // (window created after an `.accessory` stretch, no click in the
         // activation chain) — otherwise the window opens in the inactive
         // look until the user Cmd-Tabs.
+        window.alphaValue = 1
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }

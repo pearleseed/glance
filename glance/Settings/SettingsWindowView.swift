@@ -47,6 +47,12 @@ struct SettingsWindowView: View {
             settingsContent
         } else {
             Color.clear
+                .background(
+                    SuppressedWindowHider {
+                        !GlanceSettings.shared.hasCompletedOnboarding
+                            || !environment.allowsSettingsWindowPresentation
+                    }
+                )
                 .onAppear { dismissWindow(id: "settings") }
         }
     }
@@ -330,6 +336,67 @@ private final class SwipeHostingView: NSView {
     deinit {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
+        }
+    }
+}
+
+/// Keeps an unrequested SwiftUI `Window` scene invisible, ordered out, and
+/// non-restorable before `dismissWindow(id: "settings")` closes it (for
+/// example on macOS 14 launch where `.defaultLaunchBehavior(.suppressed)` is
+/// unavailable, or if SwiftUI presents the scene on a later runloop turn).
+private struct SuppressedWindowHider: NSViewRepresentable {
+    let shouldSuppress: @MainActor @Sendable () -> Bool
+
+    func makeNSView(context: Context) -> SuppressedWindowHiderView {
+        SuppressedWindowHiderView(shouldSuppress: shouldSuppress)
+    }
+
+    func updateNSView(_ nsView: SuppressedWindowHiderView, context: Context) {
+        nsView.shouldSuppress = shouldSuppress
+        nsView.hideHostingWindow()
+    }
+}
+
+private final class SuppressedWindowHiderView: NSView {
+    var shouldSuppress: @MainActor @Sendable () -> Bool
+
+    init(shouldSuppress: @escaping @MainActor @Sendable () -> Bool) {
+        self.shouldSuppress = shouldSuppress
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        hide(newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        hideHostingWindow()
+    }
+
+    func hideHostingWindow() {
+        hide(window)
+    }
+
+    private func hide(_ targetWindow: NSWindow?) {
+        guard let targetWindow, shouldSuppress() else { return }
+        targetWindow.alphaValue = 0
+        targetWindow.isRestorable = false
+        targetWindow.orderOut(nil)
+        let shouldSuppress = self.shouldSuppress
+        DispatchQueue.main.async { [weak targetWindow] in
+            MainActor.assumeIsolated {
+                guard let targetWindow, shouldSuppress() else { return }
+                targetWindow.orderOut(nil)
+                if !NSApp.windows.contains(where: { $0 !== targetWindow && $0.canBecomeMain && $0.isVisible }) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
         }
     }
 }
