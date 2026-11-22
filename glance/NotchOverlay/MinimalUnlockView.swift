@@ -29,7 +29,7 @@ struct MinimalUnlockView: View {
                 .foregroundStyle(GlanceTheme.textPrimary)
                 // The explicit `.animation` below is required: the phase change that flips
                 // `isUnlocked` isn't itself wrapped in an animation transaction.
-                .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
+                .magicReplaceTransition()
                 .animation(
                     .smooth(duration: NotchGeometry.minimalLockAnimationDuration),
                     value: isUnlocked
@@ -48,5 +48,16 @@ struct MinimalUnlockView: View {
                 .padding(.trailing, 4)
         }
         .padding(.horizontal, edgeInset)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func magicReplaceTransition() -> some View {
+        if #available(macOS 15, *) {
+            contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
+        } else {
+            contentTransition(.symbolEffect(.replace))
+        }
     }
 }

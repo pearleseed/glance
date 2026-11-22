@@ -42,7 +42,8 @@ struct SettingsWindowView: View {
     /// while onboarding is incomplete. A real user should never hit this
     /// branch, only a blank frame before `dismissWindow` closes it.
     var body: some View {
-        if GlanceSettings.shared.hasCompletedOnboarding {
+        if GlanceSettings.shared.hasCompletedOnboarding,
+           environment.allowsSettingsWindowPresentation {
             settingsContent
         } else {
             Color.clear
@@ -128,7 +129,7 @@ struct SettingsWindowView: View {
 
             if let headerTrailingAction {
                 Button(action: headerTrailingAction.perform) {
-                    Image(systemName: "arrow.trianglehead.clockwise.rotate.90")
+                    Image(systemName: refreshSymbolName)
                         .font(.system(size: 13))
                         .foregroundStyle(SettingsMetrics.textPrimary)
                         .frame(width: SettingsMetrics.headerButtonHeight, height: SettingsMetrics.headerButtonHeight)
@@ -147,6 +148,14 @@ struct SettingsWindowView: View {
         }
         .padding(.horizontal, SettingsMetrics.contentHorizontalPadding)
         .frame(height: SettingsMetrics.headerHeight)
+    }
+
+    private var refreshSymbolName: String {
+        if #available(macOS 15, *) {
+            "arrow.trianglehead.clockwise.rotate.90"
+        } else {
+            "arrow.clockwise"
+        }
     }
 
     @ViewBuilder

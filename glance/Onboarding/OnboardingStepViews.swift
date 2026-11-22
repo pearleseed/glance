@@ -357,13 +357,31 @@ private struct EnrollmentCloseButton: View {
 }
 
 private struct EnrollmentTooFarChevron: View {
+    @State private var isBouncing = false
+
     var body: some View {
-        Image(systemName: "chevron.up.2")
-            .font(.system(size: OnboardingMetrics.enrollTooFarChevronSize, weight: .semibold))
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
-            .symbolEffect(.bounce.up.byLayer, options: .repeating)
-            .accessibilityHidden(true)
+        Group {
+            if #available(macOS 15, *) {
+                Image(systemName: "chevron.up.2")
+                    .font(.system(size: OnboardingMetrics.enrollTooFarChevronSize, weight: .semibold))
+                    .symbolEffect(.bounce.up.byLayer, options: .repeating)
+            } else {
+                VStack(spacing: -OnboardingMetrics.enrollTooFarChevronSize * 0.42) {
+                    Image(systemName: "chevron.up")
+                    Image(systemName: "chevron.up")
+                }
+                .font(.system(size: OnboardingMetrics.enrollTooFarChevronSize * 0.72, weight: .semibold))
+                .offset(y: isBouncing ? -5 : 2)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                        isBouncing = true
+                    }
+                }
+            }
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
+        .accessibilityHidden(true)
     }
 }
 

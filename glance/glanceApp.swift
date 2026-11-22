@@ -8,18 +8,44 @@
 import SwiftUI
 
 @main
-struct glanceApp: App {
+enum GlanceEntryPoint {
+    static func main() {
+        if #available(macOS 15, *) {
+            GlanceApp15.main()
+        } else {
+            GlanceApp14.main()
+        }
+    }
+}
+
+@available(macOS 15, *)
+private struct GlanceApp15: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// Only reliable way to reopen a `Window` scene once its `NSWindow` has fully closed.
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        settingsWindow
-            .commands { settingsCommand }
+        GlanceAppScene.settingsWindow(appDelegate: appDelegate, openWindow: openWindow)
+            .defaultLaunchBehavior(.suppressed)
+            .restorationBehavior(.disabled)
+            .commands { GlanceAppScene.settingsCommand(appDelegate: appDelegate) }
     }
+}
 
-    private var settingsCommand: some Commands {
+private struct GlanceApp14: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Scene {
+        GlanceAppScene.settingsWindow(appDelegate: appDelegate, openWindow: openWindow)
+            .commands { GlanceAppScene.settingsCommand(appDelegate: appDelegate) }
+    }
+}
+
+@MainActor
+private enum GlanceAppScene {
+    static func settingsCommand(appDelegate: AppDelegate) -> some Commands {
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") {
                 appDelegate.openSettingsWindow()
@@ -30,16 +56,14 @@ struct glanceApp: App {
 
     /// Suppressed so Settings doesn't appear on launch/restore. `openWindow` is captured here, not in `onAppear`, since the
     /// window may never have appeared before the menu bar needs to open it.
-    private var settingsWindow: some Scene {
-        let open = openWindow
-        let delegate = appDelegate
+    static func settingsWindow(appDelegate: AppDelegate, openWindow: OpenWindowAction) -> some Scene {
         DispatchQueue.main.async {
-            delegate.bindOpenWindowAction { open(id: "settings") }
+            appDelegate.bindOpenWindowAction { openWindow(id: "settings") }
         }
         return Window("Glance Settings", id: "settings") {
             SettingsWindowView(environment: appDelegate.environment)
                 .onAppear {
-                    delegate.bindOpenWindowAction { open(id: "settings") }
+                    appDelegate.bindOpenWindowAction { openWindow(id: "settings") }
                 }
         }
         // Deliberately no `.windowResizability(.contentSize)`: it kept re-deriving the window size from the titlebar band,
@@ -50,8 +74,6 @@ struct glanceApp: App {
         .defaultSize(SettingsMetrics.windowSize)
         .windowStyle(.hiddenTitleBar)
         .defaultPosition(.center)
-        .defaultLaunchBehavior(.suppressed)
-        .restorationBehavior(.disabled)
     }
 }
 
@@ -104,6 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // it starts on a fresh install, and starting unconditionally here used to pop it mid-onboarding.
         if GlanceSettings.shared.hasCompletedOnboarding {
             if GlanceSettings.shared.hasAcknowledgedSecurityNotice {
+                if #unavailable(macOS 15) {
+                    if !environment.allowsSettingsWindowPresentation {
+                        for window in NSApp.windows where window.canBecomeMain {
+                            window.close()
+                        }
+                    }
+                }
                 startUpdaterIfNeeded()
                 Task { await environment.pocController.unlockSessionAtLaunch() }
             } else {
@@ -281,6 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        environment.allowsSettingsWindowPresentation = true
         NSApp.setActivationPolicy(.regular)
         if let openSettingsWindowAction {
             openSettingsWindowAction()

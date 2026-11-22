@@ -24,6 +24,15 @@ final class AppEnvironment {
 
     /// Revealed by tapping the app icon 5 times on the About page. Plain in-memory `var` so it resets on every relaunch.
     var isDebugSectionRevealed = false
+    /// On macOS 14 (where `.defaultLaunchBehavior(.suppressed)` is unavailable),
+    /// SwiftUI opens the initial `Window` scene at launch unless gated here.
+    var allowsSettingsWindowPresentation: Bool = {
+        if #available(macOS 15, *) {
+            return true
+        } else {
+            return false
+        }
+    }()
     private(set) var isSudoServerListening = false
     private(set) var sudoServerError: String?
 

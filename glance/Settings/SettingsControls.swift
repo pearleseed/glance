@@ -1190,6 +1190,9 @@ final class WindowConfiguringView: NSView {
 
         window.isMovableByWindowBackground = true
         window.hasShadow = true
+        if #unavailable(macOS 15) {
+            window.isRestorable = false
+        }
 
         // Deliberately NOT `isOpaque = false` / `backgroundColor = .clear` —
         // that pairing stops AppKit from masking to the window's own native
