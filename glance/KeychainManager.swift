@@ -117,6 +117,8 @@ enum KeychainManager {
     /// avoids the delete/add gap that can race with a second submit and produce
     /// `errSecDuplicateItem`. Existing access-control attributes are preserved;
     /// this method's access-control/accessible argument applies when adding a new item.
+    /// Falls back to the legacy keychain on `errSecMissingEntitlement` only for ungated
+    /// items (`accessControl == nil`) so unsigned local builds surface `-34018` cleanly.
     nonisolated static func save(
         account: String,
         data: Data,
@@ -131,11 +133,11 @@ enum KeychainManager {
                 accessible: accessible,
                 dataProtection: true
             )
-        } catch KeychainError.osStatus(errSecMissingEntitlement) {
+        } catch KeychainError.osStatus(errSecMissingEntitlement) where accessControl == nil {
             try saveSingle(
                 account: account,
                 data: data,
-                accessControl: accessControl,
+                accessControl: nil,
                 accessible: accessible,
                 dataProtection: false
             )
