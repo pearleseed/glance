@@ -19,6 +19,9 @@ final class LivenessAnalyzer {
     /// Face Lab can switch individual cues off to isolate one; the unlock
     /// path leaves this at "all enabled."
     var enabledCuesProvider: () -> Set<LivenessCue> = { Set(LivenessCue.allCases) }
+    /// When `true` (used by Face Lab diagnostics), Heavy mode keeps evaluating
+    /// confirm cues and geometry even after confirmation is already latched.
+    var keepsComputingConfirmCuesAfterConfirmation = false
 
     private var frames: [LivenessFrame] = []
     private var evaluator = LivenessEvaluator()
@@ -53,7 +56,7 @@ final class LivenessAnalyzer {
     @discardableResult
     func observeUnmatched(_ frame: LivenessFrame) -> LivenessSnapshot {
         syncEvaluatorConfig()
-        let readings = LivenessCues.readings(window: [frame], geometry: .empty)
+        let readings = LivenessCues.denyReadings(window: [frame])
         let snapshot = evaluator.observeDenyOnly(readings)
         lastSnapshot = snapshot
         return snapshot
@@ -69,10 +72,20 @@ final class LivenessAnalyzer {
 
         syncEvaluatorConfig()
 
-        let geometry = GeometryLiveness.evaluate(frames)
+        let alreadyConfirmedInHeavy = lastSnapshot.mode == .heavy && lastSnapshot.decision.isConfirmed
+        let needsConfirmCues = evaluator.mode == .heavy && (keepsComputingConfirmCuesAfterConfirmation || !alreadyConfirmedInHeavy)
+
+        let geometry: GeometryLivenessResult
+        let readings: [LivenessCue: CueReading]
+        if needsConfirmCues {
+            geometry = GeometryLiveness.evaluate(frames)
+            readings = LivenessCues.readings(window: frames, geometry: geometry)
+        } else {
+            geometry = .empty
+            readings = LivenessCues.denyReadings(window: frames)
+        }
         lastGeometry = geometry
 
-        let readings = LivenessCues.readings(window: frames, geometry: geometry)
         let snapshot = evaluator.observe(readings)
         lastSnapshot = snapshot
         return snapshot

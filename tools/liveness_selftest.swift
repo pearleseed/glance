@@ -385,6 +385,7 @@ struct LivenessSelfTest {
         runDecisionModelTests()
         runAbstentionTests()
         runRollAndIdentitySwapTests()
+        runLatencyOptimizationInteractionTests()
         print("\nAll liveness self-tests passed.")
     }
 
@@ -757,5 +758,110 @@ struct LivenessSelfTest {
         }
 
         print("PASS: 2D roll invariance, pose-depth amplitude guard, and identity-swap/unmatched liveness tests passed.")
+    }
+
+    @MainActor
+    private static func runLatencyOptimizationInteractionTests() {
+        // 1. Light mode skips confirm geometry computation (lastGeometry stays empty)
+        let lightAnalyzer = LivenessAnalyzer()
+        lightAnalyzer.modeProvider = { .light }
+        let liveFrames = generateLiveSequence(frameCount: 6, noiseStd: 0.5, seed: 7)
+        for frame in liveFrames {
+            _ = lightAnalyzer.observe(frame)
+            precondition(
+                lightAnalyzer.lastGeometry == .empty
+                    && lightAnalyzer.lastGeometry.validLandmarkCount == 0
+                    && lightAnalyzer.lastGeometry.pairsAnalyzed == 0
+                    && lightAnalyzer.lastGeometry.diagnosticRatios.isEmpty,
+                "FAIL: Light mode should skip confirm geometry work"
+            )
+        }
+
+        // 2. Heavy mode skips confirm geometry after confirming AND still denies on late sustained spoof cues (late spoof veto)
+        let heavyVetoAnalyzer = LivenessAnalyzer()
+        heavyVetoAnalyzer.modeProvider = { .heavy }
+        let ears: [CGFloat] = [0.34, 0.34, 0.33, 0.10, 0.09, 0.33, 0.34, 0.34]
+        let t0 = Date()
+        var confirmed = false
+        for (idx, ear) in ears.enumerated() {
+            let f = LivenessFrame(
+                timestamp: t0.addingTimeInterval(Double(idx) * 0.06), landmarks: [], interocularDistance: 100, yaw: 0,
+                leftEyeAspectRatio: ear, rightEyeAspectRatio: ear, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+            )
+            if heavyVetoAnalyzer.observe(f).decision.isConfirmed { confirmed = true }
+        }
+        precondition(confirmed, "FAIL: Heavy mode should confirm on blink")
+
+        // Post-confirmation frame in Heavy mode skips confirm geometry while staying confirmed
+        let postConfirmFrame = LivenessFrame(
+            timestamp: t0.addingTimeInterval(1.0), landmarks: liveFrames[0].landmarks, interocularDistance: 140, yaw: 0,
+            leftEyeAspectRatio: 0.34, rightEyeAspectRatio: 0.34, noseOffsetRatio: 0,
+            hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+        )
+        let postConfirmSnap = heavyVetoAnalyzer.observe(postConfirmFrame)
+        precondition(postConfirmSnap.decision.isConfirmed, "FAIL: Heavy mode should remain confirmed on clean post-confirm frame")
+        precondition(
+            heavyVetoAnalyzer.lastGeometry == .empty
+                && heavyVetoAnalyzer.lastGeometry.validLandmarkCount == 0
+                && heavyVetoAnalyzer.lastGeometry.pairsAnalyzed == 0,
+            "FAIL: Heavy mode should skip confirm geometry after confirming"
+        )
+
+        // Late sustained spoof cues after confirmation must still veto and deny
+        var vetoedDecision = postConfirmSnap.decision
+        for i in 0..<LivenessTuning.default.deviceFrames {
+            let spoofFrame = LivenessFrame(
+                timestamp: t0.addingTimeInterval(1.1 + Double(i) * 0.05), landmarks: [], interocularDistance: 140, yaw: 0,
+                leftEyeAspectRatio: 0.34, rightEyeAspectRatio: 0.34, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: 0.4, glare: nil
+            )
+            vetoedDecision = heavyVetoAnalyzer.observe(spoofFrame).decision
+        }
+        guard case .denied(.deviceDetected) = vetoedDecision else {
+            fatalError("FAIL: Heavy mode must deny on late sustained spoof cues even after confirming, got \(vetoedDecision)")
+        }
+
+        // 3. resetConfirmations() drops confirmed state so a subsequent still frame remains .pending and re-enables confirm cues
+        let heavyResetAnalyzer = LivenessAnalyzer()
+        heavyResetAnalyzer.modeProvider = { .heavy }
+        var resetConfirmed = false
+        for (idx, ear) in ears.enumerated() {
+            let f = LivenessFrame(
+                timestamp: t0.addingTimeInterval(Double(idx) * 0.06), landmarks: [], interocularDistance: 100, yaw: 0,
+                leftEyeAspectRatio: ear, rightEyeAspectRatio: ear, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+            )
+            if heavyResetAnalyzer.observe(f).decision.isConfirmed { resetConfirmed = true }
+        }
+        precondition(resetConfirmed, "FAIL: Heavy mode should confirm on blink before reset")
+
+        heavyResetAnalyzer.keepsComputingConfirmCuesAfterConfirmation = true
+        _ = heavyResetAnalyzer.observe(postConfirmFrame)
+        precondition(
+            heavyResetAnalyzer.lastGeometry != .empty && heavyResetAnalyzer.lastGeometry.validLandmarkCount > 0,
+            "FAIL: keepsComputingConfirmCuesAfterConfirmation should keep geometry computation active in Heavy mode"
+        )
+        heavyResetAnalyzer.keepsComputingConfirmCuesAfterConfirmation = false
+
+        heavyResetAnalyzer.resetConfirmations()
+        precondition(!heavyResetAnalyzer.lastSnapshot.decision.isConfirmed, "FAIL: Heavy mode stayed confirmed after resetConfirmations")
+        precondition(heavyResetAnalyzer.lastGeometry == .empty, "FAIL: resetConfirmations should clear lastGeometry")
+
+        let newFaceFrame = LivenessFrame(
+            timestamp: t0.addingTimeInterval(2.0), landmarks: liveFrames[0].landmarks, interocularDistance: 140, yaw: 0,
+            leftEyeAspectRatio: 0.34, rightEyeAspectRatio: 0.34, noseOffsetRatio: 0,
+            hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+        )
+        let afterReset = heavyResetAnalyzer.observe(newFaceFrame)
+        precondition(afterReset.decision == .pending, "FAIL: new face inherited Heavy confirmation after reset, got \(afterReset.decision)")
+        precondition(
+            heavyResetAnalyzer.lastGeometry != .empty
+                && heavyResetAnalyzer.lastGeometry.validLandmarkCount > 0
+                && heavyResetAnalyzer.lastGeometry.diagnosticRatios["interocular"] == 140,
+            "FAIL: Heavy mode must re-enable confirm geometry computation after resetConfirmations"
+        )
+
+        print("PASS: PR #61 liveness fast-path interacts safely with Phase 1 resetConfirmations.")
     }
 }

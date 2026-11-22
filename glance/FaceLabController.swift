@@ -87,6 +87,7 @@ final class FaceLabController {
 
     init() {
         observeFrames()
+        livenessAnalyzer.keepsComputingConfirmCuesAfterConfirmation = true
         livenessAnalyzer.modeProvider = { [weak self] in self?.livenessMode ?? .heavy }
         livenessAnalyzer.tuningProvider = { [weak self] in self?.livenessTuning ?? .default }
         livenessAnalyzer.enabledCuesProvider = { [weak self] in
