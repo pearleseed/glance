@@ -157,7 +157,8 @@ nonisolated private final class SocketRuntime: @unchecked Sendable {
 nonisolated final class SudoAuthInFlightRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var isStopped = false
-    private var isHandlingAuth = false
+    private var nextRequestID: UInt64 = 0
+    private var activeRequestID: UInt64?
     private var activeTask: Task<Void, Never>?
 
     func stop() {
@@ -198,13 +199,18 @@ nonisolated final class SudoAuthInFlightRunner: @unchecked Sendable {
         }
 
         lock.lock()
-        let canClaim = !isStopped && !isHandlingAuth
-        if canClaim {
-            isHandlingAuth = true
+        let claimedRequestID: UInt64?
+        if !isStopped && activeRequestID == nil {
+            nextRequestID &+= 1
+            if nextRequestID == 0 { nextRequestID = 1 }
+            claimedRequestID = nextRequestID
+            activeRequestID = claimedRequestID
+        } else {
+            claimedRequestID = nil
         }
         lock.unlock()
 
-        guard canClaim else {
+        guard let requestID = claimedRequestID else {
             Self.writeAll(fd: fd, text: SudoAuthProtocol.formatResponse(accepted: false, nonce: nonce))
             return
         }
@@ -212,17 +218,15 @@ nonisolated final class SudoAuthInFlightRunner: @unchecked Sendable {
         let ownedFD = fd
         fd = -1 // Ownership transfers exclusively to responder.
 
-        let responder = ClientAuthResponder(fd: ownedFD, nonce: nonce) {
-            self.clearActiveAuthState()
-        }
+        let responder = ClientAuthResponder(fd: ownedFD, nonce: nonce)
 
         // Strongly capture `self` and `responder` for the bounded task lifetime so stopping/deallocating
         // the outer SocketSession while `authenticator()` is suspended still delivers `FAIL <nonce>\n`
-        // and closes `ownedFD` immediately.
+        // and closes `ownedFD` immediately, while holding the single-flight slot until unwind completes.
         let task = Task.detached(priority: .userInitiated) {
             defer {
                 responder.completeOnce(accepted: false)
-                self.clearActiveAuthState()
+                self.clearActiveAuthState(for: requestID)
             }
 
             let accepted = await withTaskGroup(of: Bool.self) { group in
@@ -242,19 +246,26 @@ nonisolated final class SudoAuthInFlightRunner: @unchecked Sendable {
         }
 
         lock.lock()
-        if isStopped {
-            lock.unlock()
-            task.cancel()
+        if activeRequestID == requestID {
+            if isStopped {
+                lock.unlock()
+                task.cancel()
+            } else {
+                activeTask = task
+                lock.unlock()
+            }
         } else {
-            activeTask = task
+            // Task already finished and released `requestID` before `lock` was reacquired.
             lock.unlock()
         }
     }
 
-    private func clearActiveAuthState() {
+    private func clearActiveAuthState(for requestID: UInt64) {
         lock.lock()
-        isHandlingAuth = false
-        activeTask = nil
+        if activeRequestID == requestID {
+            activeRequestID = nil
+            activeTask = nil
+        }
         lock.unlock()
     }
 
@@ -308,12 +319,10 @@ nonisolated private final class ClientAuthResponder: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32
     private let nonce: String
-    private let onComplete: @Sendable () -> Void
 
-    init(fd: Int32, nonce: String, onComplete: @escaping @Sendable () -> Void) {
+    init(fd: Int32, nonce: String) {
         self.fd = fd
         self.nonce = nonce
-        self.onComplete = onComplete
     }
 
     func completeOnce(accepted: Bool) {
@@ -323,7 +332,6 @@ nonisolated private final class ClientAuthResponder: @unchecked Sendable {
         lock.unlock()
 
         guard currentFD >= 0 else { return }
-        onComplete()
         SudoAuthInFlightRunner.writeAll(
             fd: currentFD,
             text: SudoAuthProtocol.formatResponse(accepted: accepted, nonce: nonce)

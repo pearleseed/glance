@@ -22,6 +22,8 @@ struct SudoProtocolSelfTest {
         testProtocolValidation()
         await testServerSocketPermissionsPeerCheckAndCleanup()
         await testStopDuringInFlightAuthSendsFailAndClosesFD()
+        await testUnwindingSingleFlightAndRequestIDNonClobbering()
+        await testFastSequentialCompletionsReleaseSlotAndStopCleanly()
         print("PASS: SudoAuthProtocol strict 256-bit nonce validation passed.")
     }
 
@@ -247,6 +249,156 @@ struct SudoProtocolSelfTest {
         }
         return (String(decoding: collected, as: UTF8.self), sawEOF)
     }
+
+    private nonisolated static func makeSocketPairWithNonce(_ nonce: String) -> (clientFD: Int32, serverFD: Int32) {
+        var fds: [Int32] = [-1, -1]
+        precondition(Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0, "FAIL: socketpair failed")
+        let clientFD = fds[0]
+        let serverFD = fds[1]
+
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        _ = Darwin.setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        let request = Array("AUTH \(nonce)\n".utf8)
+        let sent = request.withUnsafeBytes { buf in
+            Darwin.send(clientFD, buf.baseAddress, buf.count, 0)
+        }
+        precondition(sent == request.count, "FAIL: failed to write AUTH request on socketpair")
+        return (clientFD, serverFD)
+    }
+
+    @MainActor
+    private static func testUnwindingSingleFlightAndRequestIDNonClobbering() async {
+        let runner = SudoAuthInFlightRunner()
+        defer { runner.stop() }
+
+        let auth1Entered = AsyncFlag()
+        let allowAuth1Unwind = AsyncFlag()
+        let auth1Exited = AsyncFlag()
+
+        let nonce1 = String(repeating: "1111aaaa", count: 8)
+        let pair1 = makeSocketPairWithNonce(nonce1)
+        defer { _ = Darwin.close(pair1.clientFD) }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            runner.handleAuthenticatedClientFD(
+                pair1.serverFD,
+                authTimeout: .milliseconds(50)
+            ) {
+                auth1Entered.set()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                while !allowAuth1Unwind.get() {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                auth1Exited.set()
+                return false
+            }
+        }
+
+        let entered = await auth1Entered.waitUntilSet(timeout: .seconds(2))
+        precondition(entered, "FAIL: auth1 never entered")
+
+        // Timeout fires at ~50ms and sends FAIL + EOF immediately while auth1 is still blocked unwinding.
+        let (resp1, eof1) = await Task.detached { readAllUntilEOF(fd: pair1.clientFD) }.value
+        precondition(resp1 == "FAIL \(nonce1)\n", "FAIL: expected timeout FAIL for client 1, got \(String(reflecting: resp1))")
+        precondition(eof1, "FAIL: expected EOF for client 1 after timeout")
+
+        // Client 2 arrives while auth1 is still unwinding; single-flight slot MUST still be locked.
+        let auth2Entered = AsyncFlag()
+        let nonce2 = String(repeating: "2222bbbb", count: 8)
+        let pair2 = makeSocketPairWithNonce(nonce2)
+        defer { _ = Darwin.close(pair2.clientFD) }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            runner.handleAuthenticatedClientFD(
+                pair2.serverFD,
+                authTimeout: .seconds(2)
+            ) {
+                auth2Entered.set()
+                return true
+            }
+        }
+
+        let (resp2, eof2) = await Task.detached { readAllUntilEOF(fd: pair2.clientFD) }.value
+        precondition(resp2 == "FAIL \(nonce2)\n", "FAIL: expected busy FAIL for client 2 while auth1 unwinds, got \(String(reflecting: resp2))")
+        precondition(eof2, "FAIL: expected EOF for client 2")
+        precondition(!auth2Entered.get(), "FAIL: auth2 ran concurrently while auth1 was still unwinding")
+
+        // Release auth1 unwind and verify Client 3 succeeds once auth1's defer releases activeRequestID.
+        allowAuth1Unwind.set()
+        let exited = await auth1Exited.waitUntilSet(timeout: .seconds(2))
+        precondition(exited, "FAIL: auth1 failed to unwind")
+
+        var client3Accepted = false
+        for _ in 0..<20 {
+            let nonce3 = String(repeating: "3333cccc", count: 8)
+            let pair3 = makeSocketPairWithNonce(nonce3)
+            DispatchQueue.global(qos: .userInitiated).async {
+                runner.handleAuthenticatedClientFD(
+                    pair3.serverFD,
+                    authTimeout: .seconds(2)
+                ) {
+                    true
+                }
+            }
+            let (resp3, eof3) = await Task.detached { readAllUntilEOF(fd: pair3.clientFD) }.value
+            _ = Darwin.close(pair3.clientFD)
+            precondition(eof3, "FAIL: expected EOF for client 3")
+            if resp3 == "OK \(nonce3)\n" {
+                client3Accepted = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        precondition(client3Accepted, "FAIL: client 3 was never accepted after auth1 unwound")
+    }
+
+    @MainActor
+    private static func testFastSequentialCompletionsReleaseSlotAndStopCleanly() async {
+        let runner = SudoAuthInFlightRunner()
+
+        for iteration in 0..<20 {
+            let suffix = String(format: "%08x", iteration)
+            let nonce = String(repeating: "abcdef01", count: 7) + suffix
+            let pair = makeSocketPairWithNonce(nonce)
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                runner.handleAuthenticatedClientFD(
+                    pair.serverFD,
+                    authTimeout: .seconds(2)
+                ) {
+                    true
+                }
+            }
+
+            let (resp, eof) = await Task.detached { readAllUntilEOF(fd: pair.clientFD) }.value
+            _ = Darwin.close(pair.clientFD)
+            precondition(resp == "OK \(nonce)\n", "FAIL: fast sequential iteration \(iteration) expected OK, got \(String(reflecting: resp))")
+            precondition(eof, "FAIL: fast sequential iteration \(iteration) expected EOF")
+
+            // Give Task.detached defer a beat to clear activeRequestID before the next sequential request.
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        runner.stop()
+
+        let stoppedNonce = String(repeating: "9999eeee", count: 8)
+        let stoppedPair = makeSocketPairWithNonce(stoppedNonce)
+        DispatchQueue.global(qos: .userInitiated).async {
+            runner.handleAuthenticatedClientFD(
+                stoppedPair.serverFD,
+                authTimeout: .seconds(2)
+            ) {
+                true
+            }
+        }
+        let (stoppedResp, stoppedEOF) = await Task.detached { readAllUntilEOF(fd: stoppedPair.clientFD) }.value
+        _ = Darwin.close(stoppedPair.clientFD)
+        precondition(stoppedResp == "FAIL \(stoppedNonce)\n", "FAIL: stopped runner must fail new requests, got \(String(reflecting: stoppedResp))")
+        precondition(stoppedEOF, "FAIL: expected EOF after stopped FAIL")
+    }
 }
 
 nonisolated private final class AsyncFlag: @unchecked Sendable {
@@ -257,6 +409,10 @@ nonisolated private final class AsyncFlag: @unchecked Sendable {
         lock.withLock {
             isSet = true
         }
+    }
+
+    func get() -> Bool {
+        lock.withLock { isSet }
     }
 
     func waitUntilSet(timeout: Duration) async -> Bool {
