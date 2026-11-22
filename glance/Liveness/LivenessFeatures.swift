@@ -19,7 +19,13 @@ nonisolated enum LivenessFeatureExtractor {
     ) -> LivenessFrame {
         let face = result.face
         let deviceOverlap = DeviceBezelDetector.detect(in: frame, faceBoundingBox: face.boundingBox).faceOverlapFraction
-        let glare = faceCrop.flatMap { GlareCueExtractor.extract(faceCrop: $0) }
+        let glare: GlareSample? = faceCrop.flatMap { crop in
+            let faceRegion = face.landmarks?.faceContour.flatMap { contour in
+                let points = LandmarkGeometry.imagePoints(of: contour, imageSize: face.imageSize)
+                return GlareFaceRegion.polygon(contour: points, faceBounds: face.boundingBox, imageSize: face.imageSize)
+            }
+            return GlareCueExtractor.extract(faceCrop: crop, faceRegion: faceRegion)
+        }
 
         guard let landmarks = face.landmarks else {
             return LivenessFrame(

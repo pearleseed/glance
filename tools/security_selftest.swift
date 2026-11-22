@@ -167,6 +167,56 @@ struct SecuritySelfTest {
         let defaultRanges = KeystrokeInjector.splitUTF16BatchRanges(bUTF16)
         precondition(defaultRanges == [0..<19, 19..<22], "FAIL: default maxBatchLength split surrogate pair: \(defaultRanges)")
 
+        // Combining diacritic (NFD Vietnamese 'e' + circumflex + acute) straddling boundary 20 must stay together.
+        let nfd = String(repeating: "a", count: 19) + "e\u{0302}\u{0301}" + "z"
+        let nfdUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(nfd.utf8))!
+        let nfdRanges = KeystrokeInjector.splitUTF16BatchRanges(nfdUTF16, maxBatchLength: 20)
+        precondition(nfdRanges == [0..<19, 19..<23], "FAIL: combining diacritics split across batches: \(nfdRanges)")
+
+        // Emoji ZWJ family cluster ("👨‍👩‍👧") straddling boundary 20 must stay together (on ZWJ and mid-emoji).
+        let zwjOnJoiner = String(repeating: "a", count: 17) + "👨‍👩‍👧" + "z"
+        let zwjJoinerUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(zwjOnJoiner.utf8))!
+        let zwjJoinerRanges = KeystrokeInjector.splitUTF16BatchRanges(zwjJoinerUTF16, maxBatchLength: 20)
+        precondition(zwjJoinerRanges == [0..<17, 17..<26], "FAIL: ZWJ family split at joiner boundary: \(zwjJoinerRanges)")
+
+        let zwjMidCluster = String(repeating: "a", count: 15) + "👨‍👩‍👧" + "z"
+        let zwjMidUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(zwjMidCluster.utf8))!
+        let zwjMidRanges = KeystrokeInjector.splitUTF16BatchRanges(zwjMidUTF16, maxBatchLength: 20)
+        precondition(zwjMidRanges == [0..<15, 15..<24], "FAIL: ZWJ family split mid-cluster: \(zwjMidRanges)")
+
+        // Variation selector + ZWJ ("🏳️‍🌈") and skin-tone modifier + ZWJ ("👩🏽‍🔬") straddling boundary 20.
+        let flag = String(repeating: "a", count: 17) + "🏳️‍🌈" + "z"
+        let flagUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(flag.utf8))!
+        let flagRanges = KeystrokeInjector.splitUTF16BatchRanges(flagUTF16, maxBatchLength: 20)
+        precondition(flagRanges == [0..<17, 17..<24], "FAIL: variation-selector ZWJ emoji split: \(flagRanges)")
+
+        let scientist = String(repeating: "a", count: 17) + "👩🏽‍🔬" + "z"
+        let scientistUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(scientist.utf8))!
+        let scientistRanges = KeystrokeInjector.splitUTF16BatchRanges(scientistUTF16, maxBatchLength: 20)
+        precondition(scientistRanges == [0..<17, 17..<25], "FAIL: skin-tone ZWJ emoji split: \(scientistRanges)")
+
+        // Regional-indicator flag pair ("🇺🇸") straddling boundary 20 must stay together.
+        let riFlag = String(repeating: "a", count: 18) + "🇺🇸" + "z"
+        let riFlagUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(riFlag.utf8))!
+        let riFlagRanges = KeystrokeInjector.splitUTF16BatchRanges(riFlagUTF16, maxBatchLength: 20)
+        precondition(riFlagRanges == [0..<18, 18..<23], "FAIL: regional-indicator flag split: \(riFlagRanges)")
+
+        // Oversized single grapheme cluster (> maxBatchLength) must make forward progress without splitting surrogates.
+        let hugeCombining = "e" + String(repeating: "\u{0301}", count: 25) + "z"
+        let hugeCombiningUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(hugeCombining.utf8))!
+        let hugeCombiningRanges = KeystrokeInjector.splitUTF16BatchRanges(hugeCombiningUTF16, maxBatchLength: 20)
+        precondition(hugeCombiningRanges == [0..<20, 20..<27], "FAIL: oversized combining cluster unexpected split: \(hugeCombiningRanges)")
+
+        let hugeZWJCluster = String(repeating: "👨\u{200D}", count: 9) + "👨"
+        let hugeZWJUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(hugeZWJCluster.utf8))!
+        let hugeZWJRanges = KeystrokeInjector.splitUTF16BatchRanges(hugeZWJUTF16, maxBatchLength: 19)
+        precondition(hugeZWJRanges == [0..<18, 18..<29], "FAIL: oversized ZWJ cluster split surrogate pair or failed forward progress: \(hugeZWJRanges)")
+        for range in hugeZWJRanges {
+            precondition(!range.isEmpty && range.count <= 19, "FAIL: invalid oversized batch range: \(range)")
+            precondition(!(0xD800...0xDBFF).contains(hugeZWJUTF16[range.upperBound - 1]), "FAIL: batch ended on high surrogate")
+            precondition(!(0xDC00...0xDFFF).contains(hugeZWJUTF16[range.lowerBound]), "FAIL: batch started on low surrogate")
+        }
+
         precondition(KeystrokeInjector.decodeUTF8ToUTF16(Data()) == [], "FAIL: empty UTF-8 should decode to []")
         precondition(KeystrokeInjector.decodeUTF8ToUTF16(Data([0xC3, 0x28])) == nil, "FAIL: invalid UTF-8 accepted")
         precondition(KeystrokeInjector.decodeUTF8ToUTF16(Data([0xF0, 0x9F])) == nil, "FAIL: truncated UTF-8 accepted")

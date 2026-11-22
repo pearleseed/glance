@@ -95,7 +95,8 @@ enum KeystrokeInjector {
     }
 
     /// Splits UTF-16 code units into batch ranges of at most `maxBatchLength` (clamped >= 2)
-    /// without separating a high/low surrogate pair across adjacent batches.
+    /// without separating surrogate pairs or Unicode grapheme clusters across adjacent batches.
+    /// Operates directly on `[UInt16]` and `Unicode.Scalar` so password data never touches `Swift.String`.
     nonisolated static func splitUTF16BatchRanges(
         _ utf16: [UInt16],
         maxBatchLength: Int = maximumUnicodeBatchLength
@@ -104,14 +105,109 @@ enum KeystrokeInjector {
         var ranges: [Range<Int>] = []
         var start = 0
         while start < utf16.count {
-            var end = min(start + limit, utf16.count)
-            if end < utf16.count, end - 1 > start, (0xD800...0xDBFF).contains(utf16[end - 1]) {
-                end -= 1
+            let rawEnd = min(start + limit, utf16.count)
+            var end = rawEnd
+            if end < utf16.count {
+                while end > start && !isGraphemeBoundary(in: utf16, at: end) {
+                    end = scalarStart(in: utf16, at: end - 1)
+                }
+                if end <= start {
+                    // Single grapheme cluster exceeds `limit`; fall back to a surrogate-safe boundary
+                    // so the loop always advances.
+                    end = rawEnd
+                    if end - 1 > start,
+                       UTF16.isLeadSurrogate(utf16[end - 1]),
+                       UTF16.isTrailSurrogate(utf16[end]) {
+                        end -= 1
+                    }
+                }
             }
             ranges.append(start..<end)
             start = end
         }
         return ranges
+    }
+
+    private nonisolated static func scalarStart(in utf16: [UInt16], at index: Int) -> Int {
+        if index > 0,
+           UTF16.isTrailSurrogate(utf16[index]),
+           UTF16.isLeadSurrogate(utf16[index - 1]) {
+            return index - 1
+        }
+        return index
+    }
+
+    private nonisolated static func decodeScalar(in utf16: [UInt16], startingAt index: Int) -> Unicode.Scalar? {
+        let unit = utf16[index]
+        if UTF16.isLeadSurrogate(unit) {
+            guard index + 1 < utf16.count, UTF16.isTrailSurrogate(utf16[index + 1]) else {
+                return nil
+            }
+            let codePoint = 0x10000
+                + ((UInt32(unit) - 0xD800) << 10)
+                + (UInt32(utf16[index + 1]) - 0xDC00)
+            return Unicode.Scalar(codePoint)
+        }
+        if UTF16.isTrailSurrogate(unit) {
+            return nil
+        }
+        return Unicode.Scalar(unit)
+    }
+
+    private nonisolated static func isGraphemeExtendingScalar(_ scalar: Unicode.Scalar) -> Bool {
+        let v = scalar.value
+        let props = scalar.properties
+        return props.canonicalCombiningClass != .notReordered
+            || props.isGraphemeExtend
+            || props.isVariationSelector
+            || v == 0x200D
+            || (0xFE00...0xFE0F).contains(v)
+            || (0xE0100...0xE01EF).contains(v)
+            || (0x1F3FB...0x1F3FF).contains(v)
+    }
+
+    private nonisolated static func isRegionalIndicator(_ scalar: Unicode.Scalar) -> Bool {
+        (0x1F1E6...0x1F1FF).contains(scalar.value)
+    }
+
+    private nonisolated static func isGraphemeBoundary(in utf16: [UInt16], at index: Int) -> Bool {
+        if UTF16.isTrailSurrogate(utf16[index]), UTF16.isLeadSurrogate(utf16[index - 1]) {
+            return false
+        }
+        if utf16[index] == 0x000A, utf16[index - 1] == 0x000D {
+            return false
+        }
+        guard let current = decodeScalar(in: utf16, startingAt: index) else {
+            return true
+        }
+        if isGraphemeExtendingScalar(current) {
+            return false
+        }
+
+        let prevStart = scalarStart(in: utf16, at: index - 1)
+        guard let prev = decodeScalar(in: utf16, startingAt: prevStart) else {
+            return true
+        }
+        if prev.value == 0x200D {
+            return false
+        }
+        if isRegionalIndicator(current), isRegionalIndicator(prev) {
+            var riCount = 1
+            var cursor = prevStart
+            while cursor > 0 {
+                let earlierStart = scalarStart(in: utf16, at: cursor - 1)
+                guard let earlier = decodeScalar(in: utf16, startingAt: earlierStart),
+                      isRegionalIndicator(earlier) else {
+                    break
+                }
+                riCount += 1
+                cursor = earlierStart
+            }
+            if !riCount.isMultiple(of: 2) {
+                return false
+            }
+        }
+        return true
     }
 
     /// Wipes anything already typed into the focused field (e.g. a stray keypress
