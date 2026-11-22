@@ -758,6 +758,36 @@ struct AppLockSelfTest {
             let otherNotesPID = AppLockEngine.App(pid: 909, bundleID: notes.bundleID, isRegular: true)
             _ = expectChallenge(in: engine.appActivated(otherNotesPID, monotonicNow: 4002), for: otherNotesPID, "different PID must not consume reopen grant")
         }
+
+        r.test("challenge-14: re-activating or reconciling challenged app during .systemPrompt re-hides it and prevents cancel bypass") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
+            _ = engine.systemPromptRequested(challengeID: c.id)
+
+            let reactivateEffects = engine.appActivated(notes, monotonicNow: 4001)
+            expect(reactivateEffects == [.hide(notes)], "re-activating challenged app during .systemPrompt must re-hide it, got \(reactivateEffects)")
+            expect(engine.activeChallenge?.phase == .systemPrompt, "systemPrompt challenge must remain active")
+
+            let reconcileEffects = engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 4001.5)
+            expect(reconcileEffects == [.hide(notes)], "reconcile with frontmost challenged app during .systemPrompt must re-hide it, got \(reconcileEffects)")
+            expect(engine.activeChallenge?.phase == .systemPrompt, "systemPrompt challenge must remain active after reconcile")
+
+            let cancelEffects = engine.systemPromptFinished(challengeID: c.id, success: false, monotonicNow: 4002)
+            expect(cancelEffects.isEmpty, "cancelled systemPrompt must not reopen")
+            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "cancelled prompt must require fresh challenge")
+        }
+
+        r.test("challenge-15: Touch ID success still reopens and redeems after re-activating challenged app during .systemPrompt") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
+            _ = engine.systemPromptRequested(challengeID: c.id)
+            expect(engine.appActivated(notes, monotonicNow: 4001) == [.hide(notes)], "must hide on stray re-activation")
+            let okEffects = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002)
+            expect(okEffects == [.reopen(notes)], "valid Touch ID must still emit reopen")
+            expect(engine.appActivated(notes, monotonicNow: 4003).isEmpty, "reopen grant must redeem after reopen")
+        }
     }
 
     // MARK: - Group G: appHidden, appTerminated, lockAll, reconcile (67..79)
@@ -940,6 +970,35 @@ struct AppLockSelfTest {
             expect(effects.contains(.lowerCurtain(c)), "nil frontmost must lower active curtain")
             expect(effects.contains(.hide(notes)), "nil frontmost must hide challenged app")
             expect(engine.activeChallenge == nil, "activeChallenge cleared on nil frontmost")
+        }
+
+        r.test("reconcile-6: nil frontmost preserves active .systemPrompt challenge while app is still running") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000), for: notes)
+            _ = engine.systemPromptRequested(challengeID: c.id)
+
+            let recEffects = engine.reconcile(frontmost: nil, running: [notes], monotonicNow: 4001)
+            expect(recEffects.isEmpty, "nil frontmost must not emit effects or cancel .systemPrompt, got \(recEffects)")
+            expect(engine.activeChallenge == AppLockEngine.Challenge(id: c.id, app: notes, phase: .systemPrompt),
+                   "nil frontmost must preserve .systemPrompt challenge")
+
+            let okEffects = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002)
+            expect(okEffects == [.reopen(notes)], "systemPromptFinished must still reopen after nil frontmost reconcile")
+            expect(engine.appActivated(notes, monotonicNow: 4003).isEmpty, "reopen grant must still redeem")
+        }
+
+        r.test("reconcile-7: nil frontmost still clears .systemPrompt when challenged app is no longer running") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000), for: notes)
+            _ = engine.systemPromptRequested(challengeID: c.id)
+
+            let recEffects = engine.reconcile(frontmost: nil, running: [], monotonicNow: 4001)
+            expect(recEffects.isEmpty, "dead .systemPrompt app emits no curtain/hide, got \(recEffects)")
+            expect(engine.activeChallenge == nil, "dead .systemPrompt app must clear activeChallenge")
+            expect(engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002).isEmpty,
+                   "stale Touch ID completion for terminated app must be ignored")
         }
     }
 }

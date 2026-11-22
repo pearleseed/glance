@@ -241,7 +241,9 @@ nonisolated struct AppLockEngine: Sendable {
         }
 
         frontmostRegularApp = nil
-        effects.append(contentsOf: clearActiveChallenge(hidingApp: true))
+        if activeChallenge?.phase == .scanning {
+            effects.append(contentsOf: clearActiveChallenge(hidingApp: true))
+        }
         effects.append(contentsOf: pruneUnlockedSessions(excluding: nil, at: monotonicNow, onRegularSwitch: false))
         return effects
     }
@@ -351,6 +353,11 @@ nonisolated struct AppLockEngine: Sendable {
             let isSameTarget = challenge.app.pid == app.pid && challenge.app.bundleID == app.bundleID
             if isSameTarget {
                 effects.append(contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
+                if challenge.phase == .systemPrompt {
+                    // Re-hide the challenged app if the user clicks it in the Dock or Cmd+Tabs while Touch ID is open.
+                    frontmostRegularApp = nil
+                    effects.append(.hide(app))
+                }
                 return effects
             }
 
