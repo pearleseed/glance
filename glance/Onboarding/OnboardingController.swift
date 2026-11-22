@@ -55,87 +55,6 @@ enum OnboardingStep: String, CaseIterable {
     }
 }
 
-/// A single guided head pose captured during enrollment — center plus the
-/// 8 compass directions, in the exact order presented to the user.
-enum EnrollmentPose: Int, CaseIterable {
-    case center, left, topLeft, top, topRight, right, bottomRight, bottom, bottomLeft
-
-    enum YawBand { case left, none, right }
-    enum PitchBand { case up, none, down }
-
-    var yawBand: YawBand {
-        switch self {
-        case .left, .topLeft, .bottomLeft: return .left
-        case .right, .topRight, .bottomRight: return .right
-        case .center, .top, .bottom: return .none
-        }
-    }
-
-    var pitchBand: PitchBand {
-        switch self {
-        case .top, .topLeft, .topRight: return .up
-        case .bottom, .bottomLeft, .bottomRight: return .down
-        case .center, .left, .right: return .none
-        }
-    }
-
-    /// Compass angle (0 = up, clockwise) this pose's ring sector is centered
-    /// on. `nil` for center, which pulses the whole ring instead of
-    /// claiming a sector.
-    var compassAngle: Double? {
-        switch self {
-        case .center: return nil
-        case .left: return 270
-        case .topLeft: return 315
-        case .top: return 0
-        case .topRight: return 45
-        case .right: return 90
-        case .bottomRight: return 135
-        case .bottom: return 180
-        case .bottomLeft: return 225
-        }
-    }
-
-    var instruction: String {
-        switch self {
-        case .center: return "Look straight at the camera"
-        case .left: return "Turn your head slightly left"
-        case .topLeft: return "Turn your head to the top left"
-        case .top: return "Turn your head slightly up"
-        case .topRight: return "Turn your head to the top right"
-        case .right: return "Turn your head slightly right"
-        case .bottomRight: return "Turn your head to the bottom right"
-        case .bottom: return "Turn your head slightly down"
-        case .bottomLeft: return "Turn your head to the bottom left"
-        }
-    }
-
-    /// Relaxes this pose's yaw/pitch bands — same knob as `stallWidenFactor`, so >1 is easier.
-    var matchLeniency: Float {
-        switch self {
-        case .bottomLeft, .bottomRight: return 1.5
-        case .bottom: return 1.2
-        default: return 1
-        }
-    }
-
-    /// Persisted alongside each sample so a saved identity records which
-    /// pose each embedding came from.
-    var name: String {
-        switch self {
-        case .center: return "center"
-        case .left: return "left"
-        case .topLeft: return "top_left"
-        case .top: return "top"
-        case .topRight: return "top_right"
-        case .right: return "right"
-        case .bottomRight: return "bottom_right"
-        case .bottom: return "bottom"
-        case .bottomLeft: return "bottom_left"
-        }
-    }
-}
-
 enum CameraPermissionState {
     case notDetermined
     case granted
@@ -344,14 +263,18 @@ final class OnboardingController {
 
     // MARK: - Enrollment
 
+    typealias HeadTurn = EnrollmentHeadTurn
+    typealias ExcessiveTurn = EnrollmentExcessiveTurn
+
     /// 9 poses x 2 samples = 18 total, enough for a stable template without overlong holds.
     private let samplesPerPose = 2
-    /// Consecutive matching frames required before a capture fires — debounces a lucky
-    /// frame near a pose boundary.
+    /// Consecutive matching frames required before a `.center` calibration capture fires.
     private let requiredMatchStreak = 3
-    /// Wait this long after yaw/pitch matches before samples count, so the user has
-    /// settled into the turn rather than being captured mid-motion.
+    /// Wait this long after `.center` matches before samples count, so the user has settled.
     private let poseHoldDuration: Duration = .milliseconds(500)
+    /// Debounces single noisy frames during the continuous circular sweep while letting the user rotate smoothly.
+    private let circularRequiredMatchStreak = 2
+    private let circularHoldDuration: Duration = .milliseconds(80)
     /// Permissive floor for Vision's capture-quality score (no fixed universal cutoff) —
     /// better to accept a mediocre sample than stall the whole flow.
     private let qualityFloor: Float = 0.2
@@ -360,22 +283,16 @@ final class OnboardingController {
     private let initialCaptureDelay: Duration = .seconds(1.5)
     /// Seated wide-angle webcams place a natural user around ~14% of frame width — reject farther bystanders without blocking seated enrollment.
     private let enrollmentMinimumFaceWidth: Float = 0.14
-
-    // Pose-matching bands, in radians. Yaw: left turn is positive, matching the mirrored
-    // preview. Pitch's sign is the opposite of the initial guess — see `pitchMatches` below.
-    private let yawInnerThreshold: Float = 0.24
-    private let yawCenterTolerance: Float = 0.18
-    private let yawOuterCap: Float = 0.51
-    private let pitchInnerThreshold: Float = 0.17
-    private let pitchCenterTolerance: Float = 0.15
-    private let pitchOuterCap: Float = 0.37
-    /// If a pose takes longer than this, matching bands widen by `stallWidenFactor` so an
+    /// If center or circular capture stalls longer than this, matching tolerances widen so an
     /// unusual camera angle can't permanently strand the user.
     private let stallTimeout: Duration = .seconds(12)
-    private let stallWidenFactor: Float = 1.25
 
-    private(set) var currentPoseIndex = 0
-    private(set) var capturedForCurrentPose = 0
+    private var poseEvaluator = EnrollmentPoseEvaluator()
+    private(set) var isCenterCaptured = false
+    private var remainingDirectionalPoses: Set<EnrollmentPose> = Set(EnrollmentPose.directionalPoses)
+    private var capturedCounts: [EnrollmentPose: Int] = [:]
+    private var activeCandidatePose: EnrollmentPose?
+
     private(set) var faceDetected = false
     private(set) var currentYaw: Float?
     private(set) var currentPitch: Float?
@@ -386,23 +303,6 @@ final class OnboardingController {
     /// `isTooFar`, which describes face distance rather than pose.
     private(set) var excessiveTurn: ExcessiveTurn?
     private(set) var enrollmentComplete = false
-
-    enum ExcessiveTurn: Equatable {
-        case left, topLeft, up, topRight, right, bottomRight, down, bottomLeft
-
-        var instruction: String {
-            switch self {
-            case .left: return "Too far left"
-            case .topLeft: return "Too far toward the top left"
-            case .up: return "Too far up"
-            case .topRight: return "Too far toward the top right"
-            case .right: return "Too far right"
-            case .bottomRight: return "Too far toward the bottom right"
-            case .down: return "Too far down"
-            case .bottomLeft: return "Too far toward the bottom left"
-            }
-        }
-    }
 
     /// Sectors already captured — read by EnrollmentRingView to decide which
     /// ticks are lit.
@@ -440,49 +340,29 @@ final class OnboardingController {
     /// pose rather than pausing again after every later pose change.
     private var captureReadyAt: ContinuousClock.Instant = .now
     /// When the current pose first started matching continuously; `nil` while out of band.
-    /// Capture waits `poseHoldDuration` past this instant.
     private var poseHoldStartedAt: ContinuousClock.Instant?
 
+    /// Returns `.center` during initial neutral calibration and `nil` during the free circular
+    /// sweep so `EnrollmentSweepWindowController` does not play conflicting single-direction cues.
     var currentPose: EnrollmentPose? {
-        EnrollmentPose(rawValue: currentPoseIndex)
+        isCenterCaptured ? nil : .center
     }
 
-    /// Copy shown under the camera: pose guidance, a closer-up prompt, or the
-    /// completion line.
+    /// Copy shown under the camera: calibration guidance, continuous circular prompt,
+    /// distance/turn warnings, or the completion line.
     var enrollmentInstruction: String {
         if enrollmentComplete { return "Face captured" }
         if let excessiveTurn { return excessiveTurn.instruction }
         if isTooFar { return "Bring your face closer" }
-        return currentPose?.instruction ?? ""
+        if !isCenterCaptured { return EnrollmentPose.center.instruction }
+        return "Move your head slowly to complete the circle"
     }
 
-    /// Where the head is currently turned, for the ring's live indicator.
-    struct HeadTurn: Equatable {
-        /// Compass angle (0 = up, clockwise) — same frame as `EnrollmentPose.compassAngle`.
-        let angle: Double
-        /// How far the turn has gone toward the current pose's threshold, 0...1.
-        let progress: Double
-    }
-
-    /// Below this fraction of the threshold the direction is mostly sensor noise.
-    private let headTurnDeadzone: Double = 0.15
-
-    /// Live head direction, or `nil` when there's nothing to point at. Axes are normalized
-    /// against the current pose's thresholds, so `progress` hits 1 as the pose starts matching.
+    /// Live head direction relative to calibrated neutral, or `nil` before calibration / outside valid tracking.
     var headTurn: HeadTurn? {
-        guard step == .enroll, !enrollmentComplete, faceDetected, !isTooFar, excessiveTurn == nil,
-              let pose = currentPose, pose != .center,
-              let yaw = currentYaw, let pitch = currentPitch else { return nil }
-
-        // Vision inverts both axes vs. the screen: +yaw turns left, +pitch looks down.
-        let x = Double(-yaw / (yawInnerThreshold / pose.matchLeniency))
-        let y = Double(-pitch / (pitchInnerThreshold / pose.matchLeniency))
-
-        let magnitude = (x * x + y * y).squareRoot()
-        guard magnitude > headTurnDeadzone else { return nil }
-
-        let degrees = atan2(x, y) * 180 / .pi
-        return HeadTurn(angle: degrees < 0 ? degrees + 360 : degrees, progress: min(magnitude, 1))
+        guard step == .enroll, !enrollmentComplete, faceDetected, !isTooFar,
+              excessiveTurn == nil, isCenterCaptured else { return nil }
+        return poseEvaluator.headTurn()
     }
 
     private enum EnrollFrameOutcome: Sendable {
@@ -493,8 +373,7 @@ final class OnboardingController {
 
     var overallEnrollmentProgress: Double {
         let total = Double(EnrollmentPose.allCases.count * samplesPerPose)
-        let done = Double(currentPoseIndex * samplesPerPose + capturedForCurrentPose)
-        return min(done / total, 1.0)
+        return min(Double(collectedSamples.count) / total, 1.0)
     }
 
     // MARK: - Naming
@@ -626,11 +505,15 @@ final class OnboardingController {
     private func resetEnrollmentState() {
         collectedSamples = []
         nameError = nil
-        currentPoseIndex = 0
-        capturedForCurrentPose = 0
+        poseEvaluator = EnrollmentPoseEvaluator()
+        isCenterCaptured = false
+        remainingDirectionalPoses = Set(EnrollmentPose.directionalPoses)
+        capturedCounts = [:]
         capturedPoses = []
-        matchStreak = 0
-        poseHoldStartedAt = nil
+        faceDetected = false
+        currentYaw = nil
+        currentPitch = nil
+        clearMatchProgress()
         isTooFar = false
         excessiveTurn = nil
         enrollmentComplete = false
@@ -647,7 +530,7 @@ final class OnboardingController {
         showCheckmark = false
         poseStartedAt = .now
         captureReadyAt = .now + initialCaptureDelay
-        poseHoldStartedAt = nil
+        clearMatchProgress()
         excessiveTurn = nil
         sweepWindow.present(for: self)
         Task { await camera.start() }
@@ -789,7 +672,7 @@ final class OnboardingController {
 
     private func processEnrollFrame() async {
         guard step == .enroll, !enrollmentComplete, !isProcessingFrame,
-              let cameraFrame = camera.currentFrame, let pose = currentPose else { return }
+              let cameraFrame = camera.currentFrame else { return }
         isProcessingFrame = true
         defer { isProcessingFrame = false }
 
@@ -810,13 +693,15 @@ final class OnboardingController {
             }
         }.value
 
+        guard step == .enroll, !enrollmentComplete else { return }
+
         switch outcome {
         case .noFace:
             faceDetected = false
             currentYaw = nil
             currentPitch = nil
-            matchStreak = 0
-            poseHoldStartedAt = nil
+            poseEvaluator = poseEvaluator.clearedFrame()
+            clearMatchProgress()
             isTooFar = false
             excessiveTurn = nil
             return
@@ -824,8 +709,8 @@ final class OnboardingController {
             faceDetected = true
             currentYaw = nil
             currentPitch = nil
-            matchStreak = 0
-            poseHoldStartedAt = nil
+            poseEvaluator = poseEvaluator.clearedFrame()
+            clearMatchProgress()
             isTooFar = true
             excessiveTurn = nil
             return
@@ -834,8 +719,8 @@ final class OnboardingController {
                 faceDetected = true
                 currentYaw = nil
                 currentPitch = nil
-                matchStreak = 0
-                poseHoldStartedAt = nil
+                poseEvaluator = poseEvaluator.clearedFrame()
+                clearMatchProgress()
                 isTooFar = false
                 excessiveTurn = nil
                 return
@@ -844,27 +729,25 @@ final class OnboardingController {
             currentYaw = yaw
             currentPitch = pitch
             isTooFar = false
-            excessiveTurn = excessiveTurnDirection(yaw: yaw, pitch: pitch)
+            poseEvaluator = poseEvaluator.observing(rawYaw: yaw, rawPitch: pitch)
+            let phasePose: EnrollmentPose? = isCenterCaptured ? nil : .center
+            excessiveTurn = poseEvaluator.excessiveTurn(for: phasePose, remaining: remainingDirectionalPoses)
             guard excessiveTurn == nil else {
-                matchStreak = 0
-                poseHoldStartedAt = nil
+                clearMatchProgress()
                 return
             }
-            await processMatchedEnrollFrame(result, yaw: yaw, pitch: pitch, pose: pose)
+            await processMatchedEnrollFrame(result, rawYaw: yaw, rawPitch: pitch)
         }
     }
 
     private func processMatchedEnrollFrame(
         _ result: FaceRecognitionResult,
-        yaw: Float,
-        pitch: Float,
-        pose: EnrollmentPose
+        rawYaw: Float,
+        rawPitch: Float
     ) async {
-
         // Detection above still ran; only capture is held back until settled.
         guard ContinuousClock.now >= captureReadyAt else {
-            matchStreak = 0
-            poseHoldStartedAt = nil
+            clearMatchProgress()
             return
         }
 
@@ -872,96 +755,95 @@ final class OnboardingController {
         // Only a 5-point alignment is reliably canonical; a 2-point/padded-crop fallback
         // isn't accepted toward enrollment.
         let alignmentOK = result.alignmentTier == .fivePoint
-        let widened = ContinuousClock.now - poseStartedAt > stallTimeout
-        let poseOK = poseMatches(yaw: yaw, pitch: pitch, pose: pose, widened: widened)
-        guard qualityOK, alignmentOK, !isTooFar,
-              excessiveTurnDirection(yaw: yaw, pitch: pitch) == nil, poseOK else {
-            matchStreak = 0
-            poseHoldStartedAt = nil
+        guard qualityOK, alignmentOK, !isTooFar else {
+            clearMatchProgress()
             return
         }
 
-        if poseHoldStartedAt == nil {
-            poseHoldStartedAt = .now
+        let stalled = ContinuousClock.now - poseStartedAt > stallTimeout
+
+        if !isCenterCaptured {
+            guard poseEvaluator.matchesCenter(stalled: stalled) else {
+                clearMatchProgress()
+                return
+            }
+
+            let holdStartedAt = poseHoldStartedAt ?? .now
+            poseHoldStartedAt = holdStartedAt
+            guard ContinuousClock.now - holdStartedAt >= poseHoldDuration else { return }
+
+            poseEvaluator = poseEvaluator.recordingCenterSample(yaw: rawYaw, pitch: rawPitch)
+            matchStreak += 1
+            guard matchStreak >= requiredMatchStreak else { return }
+            matchStreak = 0
+
+            recordCapturedSample(result, pose: .center)
+            if capturedCounts[.center, default: 0] >= samplesPerPose {
+                poseEvaluator = poseEvaluator.finalizingCenterCalibration()
+                isCenterCaptured = true
+                centerPulseTick += 1
+                performAlignmentHaptic()
+                poseStartedAt = .now
+                clearMatchProgress()
+            }
+            return
         }
-        guard ContinuousClock.now - poseHoldStartedAt! >= poseHoldDuration else { return }
+
+        guard let matchedPose = poseEvaluator.matchingDirection(
+            remaining: remainingDirectionalPoses,
+            stalled: stalled
+        ) else {
+            clearMatchProgress()
+            return
+        }
+
+        if activeCandidatePose != matchedPose {
+            activeCandidatePose = matchedPose
+            poseHoldStartedAt = .now
+            matchStreak = 1
+            return
+        }
+
+        let holdStartedAt = poseHoldStartedAt ?? .now
+        poseHoldStartedAt = holdStartedAt
+        guard ContinuousClock.now - holdStartedAt >= circularHoldDuration else { return }
 
         matchStreak += 1
-        guard matchStreak >= requiredMatchStreak else { return }
+        guard matchStreak >= circularRequiredMatchStreak else { return }
         matchStreak = 0
 
+        recordCapturedSample(result, pose: matchedPose)
+        if capturedCounts[matchedPose, default: 0] >= samplesPerPose {
+            capturedPoses.insert(matchedPose)
+            remainingDirectionalPoses.remove(matchedPose)
+            performAlignmentHaptic()
+            poseStartedAt = .now
+            clearMatchProgress()
+            if remainingDirectionalPoses.isEmpty {
+                await finishEnrollment()
+            }
+        }
+    }
+
+    private func recordCapturedSample(_ result: FaceRecognitionResult, pose: EnrollmentPose) {
         collectedSamples.append(CollectedSample(
             embedding: result.embedding,
             pose: pose,
             quality: result.quality,
             capturedAt: Date()
         ))
-        capturedForCurrentPose += 1
-
-        if capturedForCurrentPose >= samplesPerPose {
-            if pose == .center {
-                centerPulseTick += 1
-            } else {
-                capturedPoses.insert(pose)
-            }
-            currentPoseIndex += 1
-            capturedForCurrentPose = 0
-            poseStartedAt = .now
-            poseHoldStartedAt = nil
-            if currentPoseIndex >= EnrollmentPose.allCases.count {
-                await finishEnrollment()
-            }
-        }
+        capturedCounts[pose, default: 0] += 1
     }
 
-    private func poseMatches(yaw: Float, pitch: Float, pose: EnrollmentPose, widened: Bool) -> Bool {
-        let factor = (widened ? stallWidenFactor : 1.0) * pose.matchLeniency
-        return yawMatches(yaw, band: pose.yawBand, factor: factor)
-            && pitchMatches(pitch, band: pose.pitchBand, factor: factor)
+    private func clearMatchProgress() {
+        matchStreak = 0
+        poseHoldStartedAt = nil
+        activeCandidatePose = nil
     }
 
-    private func yawMatches(_ yaw: Float, band: EnrollmentPose.YawBand, factor: Float) -> Bool {
-        switch band {
-        case .none: return abs(yaw) < yawCenterTolerance * factor
-        case .left: return yaw > yawInnerThreshold / factor && yaw < yawOuterCap
-        case .right: return yaw < -yawInnerThreshold / factor && yaw > -yawOuterCap
-        }
-    }
-
-    /// Reports the dominant axis when a user has gone beyond enrollment's safe pose
-    /// envelope. At these angles, Vision's embedding is unlikely to be a useful,
-    /// repeatable sample, so capture is explicitly rejected before the hold timer runs.
-    private func excessiveTurnDirection(yaw: Float, pitch: Float) -> ExcessiveTurn? {
-        let yawOvershoot = abs(yaw) / yawOuterCap
-        let pitchOvershoot = abs(pitch) / pitchOuterCap
-        guard max(yawOvershoot, pitchOvershoot) >= 1 else { return nil }
-
-        let yawExceeded = yawOvershoot >= 1
-        let pitchExceeded = pitchOvershoot >= 1
-        if yawExceeded, pitchExceeded {
-            // Vision uses positive yaw for a left turn and negative pitch for an upward turn.
-            switch (yaw > 0, pitch < 0) {
-            case (true, true): return .topLeft
-            case (false, true): return .topRight
-            case (false, false): return .bottomRight
-            case (true, false): return .bottomLeft
-            }
-        }
-
-        if yawOvershoot >= pitchOvershoot {
-            return yaw > 0 ? .left : .right
-        }
-        return pitch < 0 ? .up : .down
-    }
-
-    /// Confirmed empirically: Vision reports negative pitch for "looking up" and positive
-    /// for "looking down" — the opposite of the initial guess.
-    private func pitchMatches(_ pitch: Float, band: EnrollmentPose.PitchBand, factor: Float) -> Bool {
-        switch band {
-        case .none: return abs(pitch) < pitchCenterTolerance * factor
-        case .up: return pitch < -pitchInnerThreshold / factor && pitch > -pitchOuterCap
-        case .down: return pitch > pitchInnerThreshold / factor && pitch < pitchOuterCap
-        }
+    private func performAlignmentHaptic() {
+        guard GlanceSettings.shared.hapticFeedbackEnabled else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 
     /// Runs the camera-complete sequence (instructions fade, preview fades, checkmark
