@@ -14,26 +14,7 @@ import Foundation
 nonisolated enum EnrollmentPose: Int, CaseIterable, Hashable, Sendable {
     case center, left, topLeft, top, topRight, right, bottomRight, bottom, bottomLeft
 
-    nonisolated enum YawBand: Sendable { case left, none, right }
-    nonisolated enum PitchBand: Sendable { case up, none, down }
-
     static let directionalPoses: [EnrollmentPose] = allCases.filter { $0 != .center }
-
-    var yawBand: YawBand {
-        switch self {
-        case .left, .topLeft, .bottomLeft: return .left
-        case .right, .topRight, .bottomRight: return .right
-        case .center, .top, .bottom: return .none
-        }
-    }
-
-    var pitchBand: PitchBand {
-        switch self {
-        case .top, .topLeft, .topRight: return .up
-        case .bottom, .bottomLeft, .bottomRight: return .down
-        case .center, .left, .right: return .none
-        }
-    }
 
     /// Compass angle (0 = up, clockwise) this pose's ring sector is centered
     /// on. `nil` for center, which pulses the whole ring instead of
@@ -257,7 +238,7 @@ nonisolated struct EnrollmentPoseEvaluator: Equatable, Sendable {
     func excessiveTurn(for pose: EnrollmentPose?, remaining: Set<EnrollmentPose>) -> EnrollmentExcessiveTurn? {
         guard let smoothedYaw, let smoothedPitch else { return nil }
 
-        let isCenterPhase = !isCalibrated || pose == .center
+        let isCenterPhase = !isCalibrated
         if isCenterPhase {
             let yawOvershoot = abs(smoothedYaw) / Self.yawOuterCap
             let pitchExcess: Float

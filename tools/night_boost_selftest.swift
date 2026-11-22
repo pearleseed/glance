@@ -346,6 +346,8 @@ struct NightBoostSelfTest {
             illuminator.end()
             precondition(panel.hideCallCount == 1, "FAIL: end() did not hide panel after screen activation")
             precondition(abs((brightness.stored[displayID] ?? -1) - 0.20) < 1e-6, "FAIL: end() did not restore brightness after screen activation")
+        } else {
+            print("SKIP: screen presentation subtest skipped (no NSScreen available in headless environment)")
         }
     }
 

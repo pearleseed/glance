@@ -795,6 +795,9 @@ struct SettingsOptionTile<Preview: View>: View {
                 Text(title)
                     .font(SettingsMetrics.optionLabelFont)
                     .foregroundStyle(isSelected ? SettingsMetrics.textPrimary : SettingsMetrics.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .frame(width: previewWidth)
             }
             .frame(maxWidth: previewWidth == nil ? .infinity : nil)
             .contentShape(Rectangle())
@@ -940,15 +943,39 @@ struct UnlockAnimationColorPicker: View {
     }
 }
 
+@MainActor
 private struct UnlockStillThumbnail: View {
+    nonisolated private struct CacheKey: Hashable {
+        let color: UnlockAnimationColor
+        let media: ScanMedia
+    }
+
+    private static let baseImage: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "unlockstatic-small", withExtension: "png")
+            ?? Bundle.main.url(forResource: "unlockstatic", withExtension: "png") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
+    private static var cache: [CacheKey: NSImage] = [:]
+
     var color: UnlockAnimationColor = .blue
     var media: ScanMedia = .success
 
+    private static func cachedImage(for color: UnlockAnimationColor, media: ScanMedia) -> NSImage? {
+        let key = CacheKey(color: color, media: media)
+        if let cached = cache[key] {
+            return cached
+        }
+        guard let baseImage else { return nil }
+        let tinted = AnimationTint.apply(color.resolvedTintRGB(for: media), to: baseImage)
+        cache[key] = tinted
+        return tinted
+    }
+
     var body: some View {
-        if let url = Bundle.main.url(forResource: "unlockstatic-small", withExtension: "png")
-            ?? Bundle.main.url(forResource: "unlockstatic", withExtension: "png"),
-           let nsImage = NSImage(contentsOf: url) {
-            let tinted = AnimationTint.apply(color.resolvedTintRGB(for: media), to: nsImage)
+        if let tinted = Self.cachedImage(for: color, media: media) {
             Image(nsImage: tinted)
                 .resizable()
                 .aspectRatio(contentMode: .fit)

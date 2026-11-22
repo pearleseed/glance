@@ -14,6 +14,7 @@ import QuartzCore
 @MainActor
 final class IlluminationPanel: IlluminationPresenting {
     private var panel: WarmIlluminationPanel?
+    private var isSkyLightDelegated = false
 
     func show(on screen: NSScreen, coverageFraction: CGFloat, fadeInDuration: TimeInterval) {
         let fraction = min(max(coverageFraction, 0), 1)
@@ -33,8 +34,9 @@ final class IlluminationPanel: IlluminationPresenting {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
-        if LockMonitor.isScreenActuallyLocked() {
-            NotchSkyLight.shared?.delegate(panel)
+        if LockMonitor.isScreenActuallyLocked(), let skyLight = NotchSkyLight.shared {
+            skyLight.delegate(panel)
+            isSkyLightDelegated = true
         }
 
         if fadeInDuration > 0 {
@@ -56,7 +58,10 @@ final class IlluminationPanel: IlluminationPresenting {
             panel.animator().alphaValue = 0
         }
         panel.alphaValue = 0
-        NotchSkyLight.shared?.undelegate(panel)
+        if isSkyLightDelegated, let skyLight = NotchSkyLight.shared {
+            skyLight.undelegate(panel)
+            isSkyLightDelegated = false
+        }
         panel.orderOut(nil)
     }
 

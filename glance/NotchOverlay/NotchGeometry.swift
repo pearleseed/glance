@@ -171,7 +171,7 @@ nonisolated struct NotchGeometry: Sendable {
     /// Applies user width/height adjustments to the measured physical notch size,
     /// clamping to safe floors (80pt width, 1pt height) without imposing a 200pt
     /// minimum so 13-inch MacBook Air notches (< 200pt) keep their true width.
-    nonisolated static func adjustedPhysicalNotchSize(
+    static func adjustedPhysicalNotchSize(
         measuredWidth: CGFloat,
         measuredHeight: CGFloat,
         widthAdjustment: Int,

@@ -8,6 +8,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import os
 
 @MainActor
 protocol IlluminationPresenting: AnyObject {
@@ -35,7 +36,7 @@ final class SceneIlluminator {
         panel: IlluminationPresenting,
         screenProvider: @escaping @MainActor () -> NSScreen? = { NSScreen.main },
         displayIDProvider: @escaping @MainActor (NSScreen) -> CGDirectDisplayID? = { screen in
-            screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
         },
         notificationCenter: NotificationCenter = .default
     ) {
@@ -103,19 +104,28 @@ final class SceneIlluminator {
     }
 
     /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister them safely under Swift 6.
-    nonisolated private final class ObserverBox: @unchecked Sendable {
+    nonisolated private final class ObserverBox: Sendable {
+        private struct State: @unchecked Sendable {
+            var tokens: [NSObjectProtocol] = []
+        }
+
         private let center: NotificationCenter
-        private var tokens: [NSObjectProtocol] = []
+        private let state = OSAllocatedUnfairLock(initialState: State())
 
         init(center: NotificationCenter) {
             self.center = center
         }
 
         func add(_ token: NSObjectProtocol) {
-            tokens.append(token)
+            state.withLock { $0.tokens.append(token) }
         }
 
         deinit {
+            let tokens = state.withLock { state in
+                let current = state.tokens
+                state.tokens.removeAll()
+                return current
+            }
             for token in tokens {
                 center.removeObserver(token)
             }

@@ -251,8 +251,8 @@ final class GlanceSettings {
     var autoRetryOnce: Bool {
         didSet { defaults.set(autoRetryOnce, forKey: Key.autoRetryOnce) }
     }
-    /// Trackpad haptic on hovering the notch/pill and on a successful unlock —
-    /// see `NotchOverlayView`'s hover handler and `.onChange(of: controller.phase)`.
+    /// Trackpad haptic on hovering the notch/pill, on a successful unlock, and
+    /// on enrollment alignment/capture — see `NotchOverlayView` and `OnboardingController`.
     var hapticFeedbackEnabled: Bool {
         didSet { defaults.set(hapticFeedbackEnabled, forKey: Key.hapticFeedbackEnabled) }
     }

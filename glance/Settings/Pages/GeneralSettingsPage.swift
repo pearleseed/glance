@@ -178,7 +178,11 @@ struct GeneralSettingsPage: View {
                         GlanceToggle(isOn: $settings.hapticFeedbackEnabled)
                     }
                     SettingsGroupDivider()
-                    SettingsRowContent(title: "Night Boost") {
+                    SettingsRowContent(
+                        title: "Night Boost",
+                        subtitle: "Softly illuminates the top of the screen and boosts low-light frames during dark-room Face Unlock.",
+                        subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
+                    ) {
                         GlanceToggle(isOn: $settings.nightBoostEnabled)
                     }
                     SettingsGroupDivider()
@@ -192,7 +196,6 @@ struct GeneralSettingsPage: View {
                         stopCount: GlanceSettings.faceDetectionRange.count
                     )
                 }
-                SettingsCaption(text: "Night Boost softly illuminates the top of the screen and boosts low-light frames during dark-room Face Unlock.")
             }
 
             VStack(alignment: .leading, spacing: 8) {

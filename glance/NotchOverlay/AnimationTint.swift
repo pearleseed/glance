@@ -12,7 +12,7 @@ import CoreImage
 /// Which media the overlay is showing. `.idle` is a still image (the first
 /// frame of the success video) so the transition into a playing video is
 /// seamless.
-nonisolated enum ScanMedia: Equatable, Sendable {
+nonisolated enum ScanMedia: Equatable, Hashable, Sendable {
     case idle
     case success
     case failure

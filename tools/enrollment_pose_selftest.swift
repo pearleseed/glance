@@ -9,6 +9,8 @@ struct EnrollmentPoseSelfTest {
         runAllEightSectorsCWAndCCWTests()
         runEmaSmoothingAndClearedFrameTests()
         runHeadTurnAndExcessiveTurnTests()
+        runStalledWideningAndLeniencyTests()
+        runNonFiniteAndContinuousEmaTransitionTests()
         print("PASS: EnrollmentPoseEvaluator neutral pitch calibration & omni-directional circular matching passed.")
     }
 
@@ -204,5 +206,95 @@ struct EnrollmentPoseSelfTest {
 
         let tooTopRight = base.clearedFrame().observing(rawYaw: -0.55, rawPitch: -0.78)
         precondition(tooTopRight.excessiveTurn(for: nil, remaining: [.topRight]) == .topRight, "FAIL: expected .topRight excessiveTurn")
+
+        // Post-calibration excessiveTurn(for: .center, ...) must use relative bounds, not uncalibrated bounds.
+        let calibratedCenterValidUp = base.clearedFrame().observing(rawYaw: 0.0, rawPitch: -0.65)
+        precondition(
+            calibratedCenterValidUp.excessiveTurn(for: .center, remaining: [.top]) == nil,
+            "FAIL: calibrated excessiveTurn(for: .center) must evaluate relative pitch (-0.29 within 0.37 cap)"
+        )
+        let calibratedCenterTooDown = base.clearedFrame().observing(rawYaw: 0.0, rawPitch: 0.06)
+        precondition(
+            calibratedCenterTooDown.excessiveTurn(for: .center, remaining: [.bottom]) == .down,
+            "FAIL: calibrated excessiveTurn(for: .center) must catch relative +0.42 overshoot as .down"
+        )
+    }
+
+    private static func runStalledWideningAndLeniencyTests() {
+        // Uncalibrated center stall widening: yaw limit widens 0.18 -> 0.225, pitch clamp pads by +-0.08 (-0.53...0.43).
+        let uncalibratedEdge = EnrollmentPoseEvaluator().observing(rawYaw: 0.20, rawPitch: -0.50)
+        precondition(!uncalibratedEdge.matchesCenter(stalled: false), "FAIL: uncalibrated edge should fail non-stalled center match")
+        precondition(uncalibratedEdge.matchesCenter(stalled: true), "FAIL: uncalibrated edge should pass stalled center match")
+
+        let base = EnrollmentPoseEvaluator()
+            .recordingCenterSample(yaw: 0.0, pitch: -0.36)
+            .finalizingCenterCalibration()
+
+        // Calibrated center stall widening: yaw 0.20 < 0.225, relPitch 0.17 < 0.1875.
+        let calibratedEdge = base.observing(rawYaw: 0.20, rawPitch: -0.36 + 0.17)
+        precondition(!calibratedEdge.matchesCenter(stalled: false), "FAIL: calibrated edge should fail non-stalled center match")
+        precondition(calibratedEdge.matchesCenter(stalled: true), "FAIL: calibrated edge should pass stalled center match")
+
+        // Directional magnitude widening: 0.21 / 0.24 = 0.875 (< 1.0 normal, >= 0.8 stalled).
+        let partialRight = base.observing(rawYaw: -0.21, rawPitch: -0.36)
+        precondition(partialRight.matchingDirection(remaining: [.right], stalled: false) == nil, "FAIL: 0.875 magnitude should not match .right without stall")
+        precondition(partialRight.matchingDirection(remaining: [.right], stalled: true) == .right, "FAIL: 0.875 magnitude should match .right when stalled")
+
+        // Directional angular half-width widening: 118 deg (28 deg from .right: > 24 normal, <= 33.75 stalled).
+        let angleRad = 118.0 * Double.pi / 180.0
+        let x = sin(angleRad) * 1.2
+        let y = cos(angleRad) * 1.2
+        let angledRight = base.observing(rawYaw: Float(-x) * 0.24, rawPitch: -0.36 + Float(-y) * 0.17)
+        precondition(angledRight.matchingDirection(remaining: [.right], stalled: false) == nil, "FAIL: 28 deg offset should not match .right without stall")
+        precondition(angledRight.matchingDirection(remaining: [.right], stalled: true) == .right, "FAIL: 28 deg offset should match .right when stalled")
+
+        // Downward matchLeniency: .bottom (1.2 => 0.833 req) and .bottomLeft (1.5 => 0.667 req).
+        let gentleDown = base.observing(rawYaw: 0.0, rawPitch: -0.36 + 0.15)
+        precondition(gentleDown.matchingDirection(remaining: [.bottom], stalled: false) == .bottom, "FAIL: downward .bottom leniency did not match")
+        let symmetricUp = base.observing(rawYaw: 0.0, rawPitch: -0.36 - 0.15)
+        precondition(symmetricUp.matchingDirection(remaining: [.top], stalled: false) == nil, "FAIL: .top should not inherit .bottom leniency")
+
+        let gentleBottomLeft = base.observing(rawYaw: 0.12, rawPitch: -0.36 + 0.085)
+        precondition(gentleBottomLeft.matchingDirection(remaining: [.bottomLeft], stalled: false) == .bottomLeft, "FAIL: downward .bottomLeft leniency did not match")
+        let symmetricTopLeft = base.observing(rawYaw: 0.12, rawPitch: -0.36 - 0.085)
+        precondition(symmetricTopLeft.matchingDirection(remaining: [.topLeft], stalled: false) == nil, "FAIL: .topLeft should not inherit .bottomLeft leniency")
+    }
+
+    private static func runNonFiniteAndContinuousEmaTransitionTests() {
+        let base = EnrollmentPoseEvaluator()
+            .recordingCenterSample(yaw: 0.02, pitch: -0.36)
+            .recordingCenterSample(yaw: .nan, pitch: -0.36)
+            .recordingCenterSample(yaw: 0.02, pitch: -.infinity)
+            .finalizingCenterCalibration()
+        precondition(abs(base.neutralYaw - 0.02) < 0.001 && abs(base.neutralPitch - (-0.36)) < 0.001, "FAIL: non-finite center samples corrupted calibration")
+
+        let settled = base.observing(rawYaw: 0.02, rawPitch: -0.36)
+        let afterNaN = settled.observing(rawYaw: .nan, rawPitch: -0.36)
+        precondition(afterNaN.smoothedYaw == nil && afterNaN.smoothedPitch == nil && afterNaN.isCalibrated, "FAIL: NaN observation should clear smoothed frame while preserving calibration")
+        let afterInf = settled.observing(rawYaw: 0.02, rawPitch: .infinity)
+        precondition(afterInf.smoothedYaw == nil && afterInf.smoothedPitch == nil && afterInf.isCalibrated, "FAIL: infinite observation should clear smoothed frame while preserving calibration")
+
+        // Continuous multi-frame EMA sector transition across .top -> .topRight -> .right without clearedFrame().
+        var sweep = base
+        var remaining: Set<EnrollmentPose> = [.top, .topRight, .right]
+
+        let sweepSteps: [(EnrollmentPose, Float, Float, Int)] = [
+            (.top, 0.0, -0.58, 3),
+            (.topRight, -0.22, -0.52, 4),
+            (.right, -0.29, -0.36, 5),
+        ]
+        for (expected, rawYaw, rawPitch, frames) in sweepSteps {
+            var matchedPose: EnrollmentPose?
+            for _ in 0..<frames {
+                sweep = sweep.observing(rawYaw: rawYaw, rawPitch: rawPitch)
+                if let match = sweep.matchingDirection(remaining: remaining, stalled: false) {
+                    matchedPose = match
+                    remaining.remove(match)
+                    break
+                }
+            }
+            precondition(matchedPose == expected, "FAIL: continuous EMA transition expected \(expected), got \(String(describing: matchedPose))")
+        }
+        precondition(remaining.isEmpty, "FAIL: continuous EMA sweep left uncaptured sectors: \(remaining)")
     }
 }
