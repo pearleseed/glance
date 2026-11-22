@@ -20,12 +20,15 @@ protocol FaceEmbedder: Sendable {
     nonisolated var embeddingDimension: Int { get }
     /// Whether this embedder needs a canonically-aligned input (ArcFace) vs. tolerating a loose crop (Vision feature-print).
     nonisolated var requiresAlignment: Bool { get }
+    /// True only for face-discriminative models suitable for gating unlock.
+    nonisolated var isUnlockCapable: Bool { get }
     nonisolated func embedding(for face: CGImage) throws -> [Float]
 }
 
 enum FaceEmbedderError: LocalizedError {
     case noObservation
     case unsupportedElementType
+    case corruptedObservationData
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +36,8 @@ enum FaceEmbedderError: LocalizedError {
             return "Vision did not produce a feature print for this image."
         case .unsupportedElementType:
             return "Feature print used an unexpected element type."
+        case .corruptedObservationData:
+            return "Feature print observation data was truncated or malformed."
         }
     }
 }
@@ -43,6 +48,7 @@ struct VisionFeaturePrintEmbedder: FaceEmbedder {
     // Nominal hint only — `modelIdentifier` is the real discriminator `SecureFaceStore` relies on.
     nonisolated let embeddingDimension = 2048
     nonisolated let requiresAlignment = false
+    nonisolated let isUnlockCapable = false
 
     nonisolated func embedding(for face: CGImage) throws -> [Float] {
         let request = VNGenerateImageFeaturePrintRequest()
@@ -57,25 +63,44 @@ struct VisionFeaturePrintEmbedder: FaceEmbedder {
 
     /// Decodes Vision's raw bytes + element type into `[Float]` so it can persist as plain JSON and be averaged.
     nonisolated private static func floatVector(from observation: VNFeaturePrintObservation) throws -> [Float] {
-        let count = observation.elementCount
-        switch observation.elementType {
+        try floatVector(from: observation.data, elementCount: observation.elementCount, elementType: observation.elementType)
+    }
+
+    /// Bounds-checked, overflow-safe, unaligned-safe decoder for feature-print observation payloads.
+    nonisolated static func floatVector(
+        from data: Data,
+        elementCount count: Int,
+        elementType: VNElementType
+    ) throws -> [Float] {
+        guard count >= 0 else {
+            throw FaceEmbedderError.corruptedObservationData
+        }
+        switch elementType {
         case .float:
-            var result = [Float](repeating: 0, count: count)
-            observation.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                let buffer = raw.bindMemory(to: Float.self)
-                for i in 0..<count { result[i] = buffer[i] }
-            }
-            return result
+            return try decodeElements(Float.self, from: data, count: count)
         case .double:
-            var result = [Float](repeating: 0, count: count)
-            observation.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                let buffer = raw.bindMemory(to: Double.self)
-                for i in 0..<count { result[i] = Float(buffer[i]) }
-            }
-            return result
+            return try decodeElements(Double.self, from: data, count: count).map(Float.init)
         default:
             throw FaceEmbedderError.unsupportedElementType
         }
+    }
+
+    nonisolated private static func decodeElements<Element: Numeric>(
+        _ type: Element.Type,
+        from data: Data,
+        count: Int
+    ) throws -> [Element] {
+        let (byteCount, overflow) = count.multipliedReportingOverflow(by: MemoryLayout<Element>.stride)
+        guard !overflow, data.count >= byteCount else {
+            throw FaceEmbedderError.corruptedObservationData
+        }
+        guard count > 0 else { return [] }
+        var result = [Element](repeating: .zero, count: count)
+        let range = data.startIndex..<data.index(data.startIndex, offsetBy: byteCount)
+        result.withUnsafeMutableBytes { dst in
+            _ = data.copyBytes(to: dst, from: range)
+        }
+        return result
     }
 }
 

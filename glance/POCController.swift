@@ -112,7 +112,7 @@ final class POCController {
             try await Task.detached(priority: .userInitiated) {
                 var bytes = try SecureCredentialManager.readPassword()
                 defer { bytes.resetBytes(in: 0..<bytes.count) }
-                try KeystrokeInjector.typeAndReturn(bytes)
+                try KeystrokeInjector.typeAndReturn(bytes, requireLockedScreen: requireAuthoritativeLock)
             }.value
             statusMessage = "Injected stored password + Return at \(Date().formatted(date: .omitted, time: .standard))"
         } catch {

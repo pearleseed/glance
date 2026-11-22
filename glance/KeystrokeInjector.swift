@@ -12,6 +12,8 @@ import CoreGraphics
 enum KeystrokeError: LocalizedError {
     case accessibilityNotGranted
     case eventCreationFailed
+    case invalidUTF8Password
+    case screenUnlockedDuringInjection
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +21,10 @@ enum KeystrokeError: LocalizedError {
             return "Accessibility permission required. Open System Settings → Privacy & Security → Accessibility and enable glance."
         case .eventCreationFailed:
             return "Couldn't create CGEvent for keystroke."
+        case .invalidUTF8Password:
+            return "Stored password bytes were not valid UTF-8."
+        case .screenUnlockedDuringInjection:
+            return "Screen unlocked before password injection completed."
         }
     }
 }
@@ -37,29 +43,87 @@ enum KeystrokeInjector {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Types the UTF-8 bytes into whatever has keyboard focus, then presses Return. Takes `Data` rather than `String` so the
-    /// caller can hold the plaintext as a zero-able buffer; the brief internal `String` decode is scoped to this call. Blocking.
-    nonisolated static func typeAndReturn(_ passwordBytes: Data) throws {
-        guard isAccessibilityTrusted() else {
-            throw KeystrokeError.accessibilityNotGranted
-        }
-        guard let text = String(data: passwordBytes, encoding: .utf8) else {
-            throw KeystrokeError.eventCreationFailed
-        }
-        let source = CGEventSource(stateID: .hidSystemState)
-        try clearFocusedField(source: source)
-        try postUnicodeText(text, source: source)
+    /// Types the UTF-8 bytes into whatever has keyboard focus, then presses Return.
+    /// Decodes UTF-8 directly into `[UInt16]` (never `Swift.String`) and wipes it with `memset_s` on exit.
+    /// When `requireLockedScreen` is true, checks authoritative lock state before each phase and key event. Blocking.
+    nonisolated static func typeAndReturn(_ passwordBytes: Data, requireLockedScreen: Bool = true) throws {
+        guard isAccessibilityTrusted() else { throw KeystrokeError.accessibilityNotGranted }
+        guard var utf16 = decodeUTF8ToUTF16(passwordBytes) else { throw KeystrokeError.invalidUTF8Password }
+        defer { zeroizeUTF16Buffer(&utf16) }
+
+        try verifyScreenLockedIfNeeded(requireLockedScreen)
+        let source = CGEventSource(stateID: .privateState)
+        try clearFocusedField(source: source, requireLockedScreen: requireLockedScreen)
+        try verifyScreenLockedIfNeeded(requireLockedScreen)
+        try postUnicodeBuffer(utf16, source: source, requireLockedScreen: requireLockedScreen)
+        try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postReturn(source: source)
+    }
+
+    nonisolated private static func verifyScreenLockedIfNeeded(_ requireLockedScreen: Bool) throws {
+        if requireLockedScreen, !LockMonitor.isScreenActuallyLocked() {
+            throw KeystrokeError.screenUnlockedDuringInjection
+        }
+    }
+
+    /// Decodes UTF-8 directly to UTF-16 code units without allocating a `Swift.String`.
+    /// Zeroizes any partially decoded buffer before returning `nil` on malformed UTF-8.
+    nonisolated static func decodeUTF8ToUTF16(_ data: Data) -> [UInt16]? {
+        var utf16: [UInt16] = []
+        utf16.reserveCapacity(data.count)
+        var decoder = UTF8()
+        var iterator = data.makeIterator()
+        while true {
+            switch decoder.decode(&iterator) {
+            case .scalarValue(let scalar):
+                UTF16.encode(scalar) { utf16.append($0) }
+            case .emptyInput:
+                return utf16
+            case .error:
+                zeroizeUTF16Buffer(&utf16)
+                return nil
+            }
+        }
+    }
+
+    nonisolated static func zeroizeUTF16Buffer(_ buffer: inout [UInt16]) {
+        buffer.withUnsafeMutableBufferPointer { ptr in
+            guard let base = ptr.baseAddress, ptr.count > 0 else { return }
+            let byteCount = ptr.count * MemoryLayout<UInt16>.stride
+            _ = memset_s(base, byteCount, 0, byteCount)
+        }
+    }
+
+    /// Splits UTF-16 code units into batch ranges of at most `maxBatchLength` (clamped >= 2)
+    /// without separating a high/low surrogate pair across adjacent batches.
+    nonisolated static func splitUTF16BatchRanges(
+        _ utf16: [UInt16],
+        maxBatchLength: Int = maximumUnicodeBatchLength
+    ) -> [Range<Int>] {
+        let limit = max(maxBatchLength, 2)
+        var ranges: [Range<Int>] = []
+        var start = 0
+        while start < utf16.count {
+            var end = min(start + limit, utf16.count)
+            if end < utf16.count, end - 1 > start, (0xD800...0xDBFF).contains(utf16[end - 1]) {
+                end -= 1
+            }
+            ranges.append(start..<end)
+            start = end
+        }
+        return ranges
     }
 
     /// Wipes anything already typed into the focused field (e.g. a stray keypress
     /// on the lock screen) so it isn't prepended to the password: ⌘→ to the end,
     /// then ⌘⌫ to delete back to the start. Both are positional keys, so this
     /// behaves the same on every keyboard layout — unlike ⌘A, whose "A" moves.
-    private nonisolated static func clearFocusedField(source: CGEventSource?) throws {
+    private nonisolated static func clearFocusedField(source: CGEventSource?, requireLockedScreen: Bool) throws {
         let rightArrow: CGKeyCode = 0x7C
         let delete: CGKeyCode = 0x33
+        try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postKey(rightArrow, flags: .maskCommand, source: source)
+        try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postKey(delete, flags: .maskCommand, source: source)
     }
 
@@ -100,30 +164,25 @@ enum KeystrokeInjector {
     /// Batching at this conservative limit avoids the undocumented truncation seen
     /// with longer payloads, while replacing one down/up pair per character with
     /// one pair per batch.
-    nonisolated private static let maximumUnicodeBatchLength = 20
+    nonisolated static let maximumUnicodeBatchLength = 20
     nonisolated private static let unicodeEventInterval: TimeInterval = 0.004
 
-    /// Posts the password in small UTF-16 batches. Splitting occurs only between
-    /// surrogate pairs, so non-BMP password characters are never corrupted.
-    private nonisolated static func postUnicodeText(_ text: String, source: CGEventSource?) throws {
-        let utf16 = Array(text.utf16)
+    /// Posts the UTF-16 password buffer in surrogate-safe batches, verifying lock state before each batch.
+    private nonisolated static func postUnicodeBuffer(
+        _ utf16: [UInt16],
+        source: CGEventSource?,
+        requireLockedScreen: Bool
+    ) throws {
+        let ranges = splitUTF16BatchRanges(utf16)
         try utf16.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
-            var start = 0
-
-            while start < buffer.count {
-                var end = min(start + maximumUnicodeBatchLength, buffer.count)
-                // Do not split a high/low-surrogate pair across separate key events.
-                if end < buffer.count,
-                   (0xD800...0xDBFF).contains(buffer[end - 1]) {
-                    end -= 1
-                }
+            for range in ranges {
+                try verifyScreenLockedIfNeeded(requireLockedScreen)
                 try postUnicode(
-                    base.advanced(by: start),
-                    length: end - start,
+                    base.advanced(by: range.lowerBound),
+                    length: range.count,
                     source: source
                 )
-                start = end
             }
         }
     }
@@ -140,6 +199,8 @@ enum KeystrokeInjector {
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
             throw KeystrokeError.eventCreationFailed
         }
+        keyDown.flags = []
+        keyUp.flags = []
         keyDown.keyboardSetUnicodeString(stringLength: length, unicodeString: unicode)
         keyUp.keyboardSetUnicodeString(stringLength: length, unicodeString: unicode)
         keyDown.post(tap: .cghidEventTap)
@@ -155,6 +216,8 @@ enum KeystrokeInjector {
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: returnKey, keyDown: false) else {
             throw KeystrokeError.eventCreationFailed
         }
+        keyDown.flags = []
+        keyUp.flags = []
         keyDown.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.012)
         keyUp.post(tap: .cghidEventTap)

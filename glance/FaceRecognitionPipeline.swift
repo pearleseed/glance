@@ -37,18 +37,20 @@ final class FaceRecognitionPipeline {
     nonisolated let embedder: FaceEmbedder
 
     /// Set when ArcFace failed to load (see tools/convert_arcface.py) and the weaker Vision feature-print embedder is in use instead.
-    private(set) var usingFallbackEmbedder: Bool
-    private(set) var fallbackReason: String?
+    nonisolated let usingFallbackEmbedder: Bool
+    nonisolated let fallbackReason: String?
 
-    init() {
+    init(embedder: FaceEmbedder, usingFallbackEmbedder: Bool, fallbackReason: String?) {
+        self.embedder = embedder
+        self.usingFallbackEmbedder = usingFallbackEmbedder
+        self.fallbackReason = fallbackReason
+    }
+
+    convenience init() {
         do {
-            embedder = try ArcFaceEmbedder()
-            usingFallbackEmbedder = false
-            fallbackReason = nil
+            self.init(embedder: try ArcFaceEmbedder(), usingFallbackEmbedder: false, fallbackReason: nil)
         } catch {
-            embedder = VisionFeaturePrintEmbedder()
-            usingFallbackEmbedder = true
-            fallbackReason = error.localizedDescription
+            self.init(embedder: VisionFeaturePrintEmbedder(), usingFallbackEmbedder: true, fallbackReason: error.localizedDescription)
         }
     }
 
@@ -142,8 +144,11 @@ extension FaceRecognitionPipeline {
 
     /// Shared by Face Lab and FaceUnlockCoordinator so tuning stays consistent. No runner-up margin check: the same person can be enrolled multiple times under different appearances, so two of their own profiles legitimately score close together — a margin check can't tell that apart from two different people colliding.
     nonisolated func bestMatch(in scored: [ScoredIdentity], threshold: Float) -> ScoredIdentity? {
-        guard let first = scored.first, !first.identity.isStale(comparedTo: embedder) else { return nil }
-        guard first.centroidSimilarity >= threshold, first.maxSampleSimilarity >= threshold else { return nil }
-        return first
+        guard !usingFallbackEmbedder, embedder.isUnlockCapable else { return nil }
+        return scored.first { candidate in
+            !candidate.identity.isStale(comparedTo: embedder)
+                && candidate.centroidSimilarity >= threshold
+                && candidate.maxSampleSimilarity >= threshold
+        }
     }
 }
