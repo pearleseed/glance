@@ -677,6 +677,85 @@ struct LivenessSelfTest {
             if case .denied = analyzer.observeUnmatched(spoofFrame).decision { denied = true; break }
         }
         precondition(denied, "FAIL: observeUnmatched failed to trigger device bezel denial")
-        print("PASS: 2D roll invariance & identity-swap liveness reset tests passed.")
+
+        // 4. poseDepthConsistency rejects < 0.01 noseOffsetRatio amplitude even across > 12° yaw with r = 1.0
+        let yawDegrees: [Float] = [-10, -5, 0, 5, 10]
+        let makeYawSweep = { (offsetScale: CGFloat) -> [LivenessFrame] in
+            yawDegrees.enumerated().map { index, deg in
+                let yaw = deg * .pi / 180
+                return LivenessFrame(
+                    timestamp: Date(timeIntervalSince1970: Double(index) * 0.05),
+                    landmarks: [], interocularDistance: 100, yaw: yaw,
+                    leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3,
+                    noseOffsetRatio: offsetScale * CGFloat(tan(yaw)),
+                    hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+                )
+            }
+        }
+        // 0.02 * (tan(10°) - tan(-10°)) ≈ 0.00705 < 0.01, while yawRange = 20° > 12° and r = 1.0
+        let tinyReading = LivenessScoring.poseDepthConsistency(makeYawSweep(0.02))
+        precondition(
+            tinyReading == .none,
+            "FAIL: poseDepthConsistency must abstain when noseOffsetRatio amplitude < 0.01, got \(tinyReading)"
+        )
+        let realReading = LivenessScoring.poseDepthConsistency(makeYawSweep(0.2))
+        precondition(
+            realReading.confidence > 0 && realReading.level >= LivenessTuning.default.depthPoseLevel,
+            "FAIL: poseDepthConsistency control with >= 0.01 amplitude should score confidently, got \(realReading)"
+        )
+
+        // 5. A deny cue latched before resetConfirmations() remains .denied afterward
+        let denyBeforeReset = LivenessAnalyzer()
+        denyBeforeReset.modeProvider = { .light }
+        var preResetDecision = LivenessDecision.pending
+        for i in 0..<LivenessTuning.default.deviceFrames {
+            let f = LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100, yaw: 0,
+                leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: 0.95, glare: nil
+            )
+            preResetDecision = denyBeforeReset.observe(f).decision
+        }
+        precondition(
+            preResetDecision == .denied(by: .deviceDetected),
+            "FAIL: expected deviceDetected denial before resetConfirmations(), got \(preResetDecision)"
+        )
+        denyBeforeReset.resetConfirmations()
+        precondition(
+            denyBeforeReset.lastSnapshot.decision == .denied(by: .deviceDetected),
+            "FAIL: deny cue latched before resetConfirmations() must remain .denied afterward, got \(denyBeforeReset.lastSnapshot.decision)"
+        )
+        precondition(
+            denyBeforeReset.lastSnapshot.frameCount == 0,
+            "FAIL: resetConfirmations() must still reset frameCount to 0, got \(denyBeforeReset.lastSnapshot.frameCount)"
+        )
+        let afterResetClean = denyBeforeReset.observe(cleanFrame)
+        precondition(
+            afterResetClean.decision == .denied(by: .deviceDetected),
+            "FAIL: clean frames after resetConfirmations() must not clear pre-existing denial, got \(afterResetClean.decision)"
+        )
+
+        // 6. Repeated clean observeUnmatched(_:) calls (>= lightModeMinimumFrames) never advance framesObserved or auto-confirm .light mode
+        let unmatchedOnly = LivenessAnalyzer()
+        unmatchedOnly.modeProvider = { .light }
+        let unmatchedCount = max(LivenessTuning.default.lightModeMinimumFrames * 3, 6)
+        for i in 0..<unmatchedCount {
+            let f = LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100, yaw: 0,
+                leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: skinGlare
+            )
+            let snap = unmatchedOnly.observeUnmatched(f)
+            precondition(
+                snap.frameCount == 0,
+                "FAIL: observeUnmatched must not advance framesObserved, got \(snap.frameCount) on step \(i)"
+            )
+            precondition(
+                snap.decision == .pending,
+                "FAIL: clean observeUnmatched calls must never auto-confirm Light mode, got \(snap.decision)"
+            )
+        }
+
+        print("PASS: 2D roll invariance, pose-depth amplitude guard, and identity-swap/unmatched liveness tests passed.")
     }
 }

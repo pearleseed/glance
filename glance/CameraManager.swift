@@ -50,23 +50,36 @@ final class CameraManager: NSObject {
         framePublisher.owner = self
 
         let center = NotificationCenter.default
-        let onDeviceChange: @Sendable (Notification) -> Void = { [weak self] _ in
+        let queue = sessionQueue
+        let box = sessionBox
+        let reconcileIfRunning: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.isRunning else { return }
                 self.reconcileDeviceIfNeeded()
             }
         }
+        let onConnected: @Sendable (Notification) -> Void = { _ in
+            reconcileIfRunning()
+        }
+        let onDisconnected: @Sendable (Notification) -> Void = { [weak box] _ in
+            // Always flag rebind on sessionQueue even while stopped so unplug/replug
+            // between scans never keeps a stale AVCaptureDeviceInput with the same uniqueID.
+            queue.async {
+                box?.markDeviceRebindNeeded()
+            }
+            reconcileIfRunning()
+        }
         observerBox.add(center.addObserver(
             forName: AVCaptureDevice.wasConnectedNotification,
             object: nil,
             queue: nil,
-            using: onDeviceChange
+            using: onConnected
         ))
         observerBox.add(center.addObserver(
             forName: AVCaptureDevice.wasDisconnectedNotification,
             object: nil,
             queue: nil,
-            using: onDeviceChange
+            using: onDisconnected
         ))
     }
 
@@ -219,6 +232,7 @@ final class CameraManager: NSObject {
         private let queue: DispatchQueue
         private var isConfigured = false
         private var wantsRunning = false
+        private var needsDeviceRebind = false
         private var currentInput: AVCaptureDeviceInput?
 
         struct ReconcileResult: Sendable {
@@ -229,6 +243,10 @@ final class CameraManager: NSObject {
         init(framePublisher: FramePublisher, queue: DispatchQueue) {
             self.framePublisher = framePublisher
             self.queue = queue
+        }
+
+        func markDeviceRebindNeeded() {
+            needsDeviceRebind = true
         }
 
         func start(preferredID: String?) -> String? {
@@ -287,7 +305,11 @@ final class CameraManager: NSObject {
                 let cleared = clearCurrentInput()
                 return ReconcileResult(errorMessage: "No camera device found.", clearedInput: cleared)
             }
-            if device.uniqueID == currentInput?.device.uniqueID {
+            if !needsDeviceRebind,
+               let existing = currentInput,
+               existing.device === device,
+               existing.device.isConnected,
+               !existing.device.isSuspended {
                 return ReconcileResult(errorMessage: nil, clearedInput: false)
             }
 
@@ -295,16 +317,19 @@ final class CameraManager: NSObject {
             if let currentInput {
                 session.removeInput(currentInput)
             }
+            framePublisher.discardPending()
             let errorMessage: String?
             let clearedInput: Bool
             if let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
                 session.addInput(input)
                 currentInput = input
+                needsDeviceRebind = false
                 errorMessage = selectHighestResolutionFormat(for: device)
                 clearedInput = false
             } else {
                 clearedInput = (currentInput != nil)
                 currentInput = nil
+                needsDeviceRebind = false
                 errorMessage = "No camera device found."
             }
             session.commitConfiguration()
@@ -312,6 +337,8 @@ final class CameraManager: NSObject {
         }
 
         private func clearCurrentInput() -> Bool {
+            needsDeviceRebind = false
+            framePublisher.discardPending()
             guard let existing = currentInput else { return false }
             session.beginConfiguration()
             session.removeInput(existing)
