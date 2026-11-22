@@ -27,13 +27,28 @@ struct DetectedFace {
     nonisolated let landmarks: VNFaceLandmarks2D?
     /// Needed by `landmarks.pointsInImage(_:)` to convert normalized landmark points into `boundingBox`'s pixel space.
     let imageSize: CGSize
+
+    nonisolated func withQuality(_ quality: Float?) -> DetectedFace {
+        DetectedFace(
+            boundingBox: boundingBox,
+            normalizedBoundingBox: normalizedBoundingBox,
+            quality: quality,
+            yaw: yaw,
+            roll: roll,
+            pitch: pitch,
+            landmarks: landmarks,
+            imageSize: imageSize
+        )
+    }
 }
 
 /// Pure, synchronous, CPU-bound work — `nonisolated` so it can run on a
 /// background task despite the project's default main-actor isolation.
 nonisolated enum FaceDetector {
-    /// Runs face-rectangle, capture-quality, and landmarks detection on a single frame.
-    static func detectFaces(in image: CGImage) throws -> [DetectedFace] {
+    /// Runs face-rectangle, landmarks, and optionally capture-quality detection on a single frame.
+    /// Skipping quality (`includeQuality: false`) omits `VNDetectFaceCaptureQualityRequest` without
+    /// altering face boxes or landmarks, so embeddings stay bit-for-bit identical.
+    static func detectFaces(in image: CGImage, includeQuality: Bool = true) throws -> [DetectedFace] {
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
 
         let rectanglesRequest = VNDetectFaceRectanglesRequest()
@@ -43,13 +58,20 @@ nonisolated enum FaceDetector {
 
         // Chained to the rectangles results (via `inputFaceObservations`) rather than run independently, so results
         // correspond 1:1 in order — avoids the fragility of matching back via boundingBox float equality.
-        let qualityRequest = VNDetectFaceCaptureQualityRequest()
+        var requests: [VNRequest] = []
+        var qualityRequest: VNDetectFaceCaptureQualityRequest?
+        if includeQuality {
+            let request = VNDetectFaceCaptureQualityRequest()
+            request.inputFaceObservations = faceObservations
+            requests.append(request)
+            qualityRequest = request
+        }
         let landmarksRequest = VNDetectFaceLandmarksRequest()
-        qualityRequest.inputFaceObservations = faceObservations
         landmarksRequest.inputFaceObservations = faceObservations
-        try handler.perform([qualityRequest, landmarksRequest])
+        requests.append(landmarksRequest)
+        try handler.perform(requests)
 
-        let qualityResults = qualityRequest.results ?? []
+        let qualityResults = qualityRequest?.results ?? []
         let landmarkResults = landmarksRequest.results ?? []
         let imageSize = CGSize(width: image.width, height: image.height)
 

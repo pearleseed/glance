@@ -20,7 +20,7 @@ struct FaceSample: Codable, Equatable {
 
 extension FaceSample {
     /// Lives here rather than in a view so Face Lab's debug list and the settings tick strip can't drift apart.
-    enum QualityTier {
+    nonisolated enum QualityTier {
         /// No score recorded. Never counted as poor.
         case unrated
         case poor
@@ -28,11 +28,30 @@ extension FaceSample {
         case good
     }
 
-    var qualityTier: QualityTier {
+    private nonisolated static let turnedPoorRatio: Float = 0.5
+    private nonisolated static let turnedFairRatio: Float = 0.7
+
+    /// Untagged manual captures (`pose == nil`) and `"center"` guided captures represent frontal views;
+    /// angled enrollment poses naturally score lower in Vision's capture-quality model and are graded relative to frontal.
+    nonisolated var isFrontal: Bool {
+        pose == nil || pose == "center"
+    }
+
+    nonisolated func qualityTier(frontalReference: Float?) -> QualityTier {
         guard let quality else { return .unrated }
+        if !isFrontal, let frontalReference, frontalReference > 0 {
+            let ratio = quality / frontalReference
+            if ratio < Self.turnedPoorRatio { return .poor }
+            if ratio < Self.turnedFairRatio { return .fair }
+            return .good
+        }
         if quality < 0.4 { return .poor }
         if quality < 0.5 { return .fair }
         return .good
+    }
+
+    nonisolated var qualityTier: QualityTier {
+        qualityTier(frontalReference: nil)
     }
 }
 
@@ -87,6 +106,27 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
     /// True if samples came from a different embedder than the one currently active — should prompt re-enrollment.
     nonisolated func isStale(comparedTo embedder: FaceEmbedder) -> Bool {
         modelIdentifier != embedder.modelIdentifier
+    }
+
+    /// Median capture quality across this identity's rated frontal samples, used as the baseline when grading
+    /// angled enrollment poses so perspective penalties don't read as poor capture quality.
+    nonisolated var frontalQualityReference: Float? {
+        let frontalQualities = samples.filter(\.isFrontal).compactMap(\.quality).sorted()
+        guard !frontalQualities.isEmpty else { return nil }
+        let mid = frontalQualities.count / 2
+        if frontalQualities.count.isMultiple(of: 2) {
+            return (frontalQualities[mid - 1] + frontalQualities[mid]) / 2
+        }
+        return frontalQualities[mid]
+    }
+
+    nonisolated func qualityTier(of sample: FaceSample) -> FaceSample.QualityTier {
+        sample.qualityTier(frontalReference: frontalQualityReference)
+    }
+
+    nonisolated var poorQualitySampleCount: Int {
+        let reference = frontalQualityReference
+        return samples.filter { $0.qualityTier(frontalReference: reference) == .poor }.count
     }
 }
 

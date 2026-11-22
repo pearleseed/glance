@@ -16,14 +16,6 @@ enum CameraPermission {
     case denied
 }
 
-/// `source` is a `CIImage` — a lazy recipe, not rendered pixels — so holding onto it costs nothing until `renderCrop` uses it.
-nonisolated struct CameraFrame: @unchecked Sendable {
-    let id: UInt64
-    let image: CGImage
-    let source: CIImage
-    let sourceSize: CGSize
-}
-
 @Observable
 @MainActor
 final class CameraManager: NSObject {
@@ -173,41 +165,14 @@ final class CameraManager: NSObject {
 
     /// Renders a native-resolution crop of `imageRect` from `frame.source`, for spoof-cue extraction which
     /// needs pixel detail (screen texture, moiré, gloss) the downscaled working frame throws away.
-    nonisolated static func renderCrop(from frame: CameraFrame, imageRect: CGRect, maxEdge: CGFloat = 448) -> CGImage? {
-        let workingWidth = CGFloat(frame.image.width)
-        let workingHeight = CGFloat(frame.image.height)
-        guard workingWidth > 0, workingHeight > 0 else { return nil }
-        let scaleX = frame.sourceSize.width / workingWidth
-        let scaleY = frame.sourceSize.height / workingHeight
-
-        // Expand ~1.3x so device edges/bezels are captured for texture/moiré cues.
-        let expanded = imageRect.insetBy(dx: -imageRect.width * 0.15, dy: -imageRect.height * 0.15)
-
-        // Flip from `imageRect`'s top-left/y-down space to Core Image's bottom-left/y-up (reverse of FaceDetector.convertToImageSpace).
-        let nativeX = expanded.origin.x * scaleX
-        let nativeWidth = expanded.width * scaleX
-        let nativeHeight = expanded.height * scaleY
-        let nativeY = frame.sourceSize.height - (expanded.origin.y + expanded.height) * scaleY
-        var nativeRect = CGRect(x: nativeX, y: nativeY, width: nativeWidth, height: nativeHeight)
-
-        let sourceExtent = CGRect(origin: .zero, size: frame.sourceSize)
-        nativeRect = nativeRect.intersection(sourceExtent)
-        guard !nativeRect.isEmpty else { return nil }
-
-        var cropped = frame.source.cropped(to: nativeRect)
-            .transformed(by: CGAffineTransform(translationX: -nativeRect.minX, y: -nativeRect.minY))
-        let longEdge = max(nativeRect.width, nativeRect.height)
-        if longEdge > maxEdge {
-            let scale = maxEdge / longEdge
-            cropped = cropped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        }
-
-        return cropRenderContext.createCGImage(cropped, from: cropped.extent)
+    nonisolated static func renderCrop(
+        from frame: CameraFrame,
+        imageRect: CGRect,
+        paddingFraction: CGFloat = 0.15,
+        maxEdge: CGFloat = 448
+    ) -> CGImage? {
+        frame.renderCrop(imageRect: imageRect, paddingFraction: paddingFraction, maxEdge: maxEdge)
     }
-
-    /// `CIContext` is expensive to create and safe to reuse concurrently. Explicitly `nonisolated` since a `static let`
-    /// on this `@MainActor` class would otherwise be main-actor-isolated, which the `nonisolated renderCrop` can't touch.
-    private nonisolated static let cropRenderContext = CIContext()
 
     /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister them safely under Swift 6.
     nonisolated private final class ObserverBox: @unchecked Sendable {

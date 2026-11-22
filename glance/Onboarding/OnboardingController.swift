@@ -358,10 +358,8 @@ final class OnboardingController {
     /// Hold off accepting captures this long once the camera comes up, so the first
     /// samples aren't taken mid-blink. Detection still runs during this window.
     private let initialCaptureDelay: Duration = .seconds(1.5)
-    /// Enrollment wants a closer face than unlock's bystander cutoff
-    private var enrollmentMinimumFaceWidth: Float {
-        max(FaceRecognitionPipeline.minimumProminentFaceWidth, 0.2)
-    }
+    /// Seated wide-angle webcams place a natural user around ~14% of frame width — reject farther bystanders without blocking seated enrollment.
+    private let enrollmentMinimumFaceWidth: Float = 0.14
 
     // Pose-matching bands, in radians. Yaw: left turn is positive, matching the mirrored
     // preview. Pitch's sign is the opposite of the initial guess — see `pitchMatches` below.
@@ -797,17 +795,16 @@ final class OnboardingController {
 
         let pipeline = self.pipeline
         let minimumWidth = enrollmentMinimumFaceWidth
-        let image = cameraFrame.image
         let outcome = await Task.detached(priority: .userInitiated) {
             do {
-                let faces = try FaceDetector.detectFaces(in: image)
+                let faces = try FaceDetector.detectFaces(in: cameraFrame.image, includeQuality: false)
                 guard let face = FaceRecognitionPipeline.largestFace(in: faces) else {
                     return EnrollFrameOutcome.noFace
                 }
                 if Float(face.normalizedBoundingBox.width) < minimumWidth {
                     return EnrollFrameOutcome.tooFar
                 }
-                return EnrollFrameOutcome.ready(try pipeline.recognize(face, in: image))
+                return EnrollFrameOutcome.ready(try pipeline.recognize(face, in: cameraFrame, includeQuality: true))
             } catch {
                 return EnrollFrameOutcome.noFace
             }

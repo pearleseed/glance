@@ -8,11 +8,13 @@
 //    3. `VisionFeaturePrintEmbedder.floatVector` bounds, overflow, and unaligned slice safety
 //    4. `KeystrokeInjector` zero-String UTF-8->UTF-16 decoding, surrogate-safe batching, and `memset_s` zeroization
 //    5. `DeviceBezelDetector.bestCandidateOverlap` multi-candidate spoof bezel selection
+//    6. Adaptive seated face selection (`selectDominantFace` + `strictCloseRangeOnly`), pose-aware `qualityTier(of:)`, `CameraFrame.renderCrop`, and `includeQuality` equivalence
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/security_selftest \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Liveness/DeviceBezelDetector.swift \
+//        glance/CameraFrame.swift \
 //        glance/FaceDetector.swift \
 //        glance/FaceAligner.swift \
 //        glance/FaceEmbedder.swift \
@@ -30,6 +32,7 @@
 
 import Foundation
 import CoreGraphics
+import CoreImage
 import Vision
 
 private struct MockDiscriminativeEmbedder: FaceEmbedder {
@@ -51,6 +54,7 @@ struct SecuritySelfTest {
         runVisionFeaturePrintBoundsTests()
         runUTF16KeystrokeHygieneTests()
         runDeviceBezelCandidateTests()
+        runSeatedDetectionAndQualityTests()
         print("\nAll security self-tests passed.")
     }
 
@@ -180,5 +184,162 @@ struct SecuritySelfTest {
         let obs = DeviceBezelDetector.bestCandidateOverlap(candidates: [monitor, phone], faceBoundingBox: faceBox)
         precondition((obs.faceOverlapFraction ?? 0) > 0.99, "FAIL: monitor masked phone bezel")
         print("PASS: DeviceBezelDetector multi-candidate overlap")
+    }
+
+    private struct PixelFingerprintEmbedder: FaceEmbedder {
+        nonisolated let name = "Pixel Fingerprint Mock"
+        nonisolated let modelIdentifier = "arcface-w600k_mbf-v1"
+        nonisolated let embeddingDimension = 4
+        nonisolated let requiresAlignment = true
+        nonisolated let isUnlockCapable = true
+
+        nonisolated func embedding(for face: CGImage) throws -> [Float] {
+            guard let data = face.dataProvider?.data,
+                  let bytes = CFDataGetBytePtr(data) else {
+                return [0, 0, 0, 0]
+            }
+            let count = CFDataGetLength(data)
+            var buckets: [Float] = [0, 0, 0, 0]
+            for i in 0..<count {
+                buckets[i & 3] += Float(bytes[i])
+            }
+            let norm = sqrt(buckets.reduce(0) { $0 + $1 * $1 })
+            return norm > 0 ? buckets.map { $0 / norm } : buckets
+        }
+    }
+
+    private static func makeSyntheticImage(width: Int, height: Int) -> CGImage {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let idx = (y * width + x) * 4
+                pixels[idx] = UInt8((x * 255) / max(width - 1, 1))
+                pixels[idx + 1] = UInt8((y * 255) / max(height - 1, 1))
+                pixels[idx + 2] = UInt8(((x + y) * 127) / max(width + height - 2, 1))
+                pixels[idx + 3] = 255
+            }
+        }
+        let ctx = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        return ctx.makeImage()!
+    }
+
+    @MainActor
+    private static func runSeatedDetectionAndQualityTests() {
+        // 1. Seated user at 14% width on 640px frame (90px >= 64px) must be accepted,
+        // while a bystander at 45px (< 60% of 90px and < 64px) is dropped.
+        let imageSize = CGSize(width: 640, height: 360)
+        let seated = DetectedFace(
+            boundingBox: CGRect(x: 270, y: 120, width: 90, height: 90),
+            normalizedBoundingBox: CGRect(x: 270.0 / 640.0, y: 120.0 / 360.0, width: 90.0 / 640.0, height: 90.0 / 360.0),
+            quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
+        )
+        let smallBystander = DetectedFace(
+            boundingBox: CGRect(x: 40, y: 150, width: 45, height: 45),
+            normalizedBoundingBox: CGRect(x: 40.0 / 640.0, y: 150.0 / 360.0, width: 45.0 / 640.0, height: 45.0 / 360.0),
+            quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
+        )
+        let picked = FaceRecognitionPipeline.selectDominantFace(in: [smallBystander, seated])
+        precondition(picked?.boundingBox == seated.boundingBox, "FAIL: seated 14% face rejected")
+
+        // 2. Bystander >= 64px (80px) must still be rejected if < 60% of widest (200px), even with preferNear.
+        let mainUser = DetectedFace(
+            boundingBox: CGRect(x: 240, y: 80, width: 200, height: 200),
+            normalizedBoundingBox: CGRect(x: 240.0 / 640.0, y: 80.0 / 360.0, width: 200.0 / 640.0, height: 200.0 / 360.0),
+            quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
+        )
+        let midBystander = DetectedFace(
+            boundingBox: CGRect(x: 40, y: 120, width: 80, height: 80),
+            normalizedBoundingBox: CGRect(x: 40.0 / 640.0, y: 120.0 / 360.0, width: 80.0 / 640.0, height: 80.0 / 360.0),
+            quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
+        )
+        let pickedMain = FaceRecognitionPipeline.selectDominantFace(
+            in: [midBystander, mainUser],
+            preferNear: midBystander.normalizedBoundingBox
+        )
+        precondition(pickedMain?.boundingBox == mainUser.boundingBox, "FAIL: bystander below 60% relative cutoff selected")
+
+        // 3. strictCloseRangeOnly rejects < 18% (90px/640px = 0.14) while accepting >= 18% (120px/640px = 0.1875).
+        FaceRecognitionPipeline.strictCloseRangeOnly = true
+        defer { FaceRecognitionPipeline.strictCloseRangeOnly = false }
+        precondition(
+            FaceRecognitionPipeline.selectDominantFace(in: [seated]) == nil,
+            "FAIL: strictCloseRangeOnly accepted 14% face"
+        )
+        let closeUser = DetectedFace(
+            boundingBox: CGRect(x: 260, y: 100, width: 120, height: 120),
+            normalizedBoundingBox: CGRect(x: 260.0 / 640.0, y: 100.0 / 360.0, width: 120.0 / 640.0, height: 120.0 / 360.0),
+            quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
+        )
+        precondition(
+            FaceRecognitionPipeline.selectDominantFace(in: [closeUser])?.boundingBox == closeUser.boundingBox,
+            "FAIL: strictCloseRangeOnly rejected 18.75% face"
+        )
+        FaceRecognitionPipeline.strictCloseRangeOnly = false
+
+        // 4. Pose-aware quality grading: frontal median 0.50 -> turned 0.36 (72%) .good, 0.30 (60%) .fair, 0.20 (40%) .poor
+        let frontalA = FaceSample(embedding: [1, 0], pose: "center", capturedAt: Date(), quality: 0.40)
+        let frontalB = FaceSample(embedding: [1, 0], pose: nil, capturedAt: Date(), quality: 0.60)
+        let turnedGood = FaceSample(embedding: [1, 0], pose: "right", capturedAt: Date(), quality: 0.36)
+        let turnedFair = FaceSample(embedding: [1, 0], pose: "left", capturedAt: Date(), quality: 0.30)
+        let turnedPoor = FaceSample(embedding: [1, 0], pose: "bottom_left", capturedAt: Date(), quality: 0.20)
+        let unrated = FaceSample(embedding: [1, 0], pose: "top", capturedAt: Date(), quality: nil)
+        let identity = FaceIdentity(
+            id: UUID(), name: "SeatedUser",
+            samples: [frontalA, frontalB, turnedGood, turnedFair, turnedPoor, unrated],
+            modelIdentifier: "arcface-w600k_mbf-v1", embeddingDimension: 2, createdAt: Date()
+        )
+        precondition(frontalA.isFrontal && frontalB.isFrontal && !turnedGood.isFrontal, "FAIL: isFrontal classification")
+        precondition(identity.frontalQualityReference == 0.50, "FAIL: frontalQualityReference median mismatch")
+        precondition(identity.qualityTier(of: turnedGood) == .good, "FAIL: turned sample unfairly downgraded")
+        precondition(identity.qualityTier(of: turnedFair) == .fair, "FAIL: turned fair sample tier mismatch")
+        precondition(identity.qualityTier(of: turnedPoor) == .poor, "FAIL: turned poor sample tier mismatch")
+        precondition(identity.qualityTier(of: unrated) == .unrated, "FAIL: unrated sample should remain unrated")
+        precondition(identity.poorQualitySampleCount == 1, "FAIL: poorQualitySampleCount expected 1")
+
+        let noFrontalIdentity = FaceIdentity(
+            id: UUID(), name: "TurnedOnly", samples: [turnedGood],
+            modelIdentifier: "arcface-w600k_mbf-v1", embeddingDimension: 2, createdAt: Date()
+        )
+        precondition(noFrontalIdentity.frontalQualityReference == nil, "FAIL: frontalQualityReference should be nil")
+        precondition(noFrontalIdentity.qualityTier(of: turnedGood) == .poor, "FAIL: without frontal ref, 0.36 should fall back to absolute < 0.4")
+
+        // 5. CameraFrame.renderCrop, FaceDetector(includeQuality:), and includeQuality true vs false embedding equality
+        let nativeImage = makeSyntheticImage(width: 1920, height: 1080)
+        let workingImage = makeSyntheticImage(width: 640, height: 360)
+        let frame = CameraFrame(
+            id: 1,
+            image: workingImage,
+            source: CIImage(cgImage: nativeImage),
+            sourceSize: CGSize(width: 1920, height: 1080)
+        )
+        let nativeCrop = frame.renderCrop(imageRect: seated.boundingBox, paddingFraction: 0.5, maxEdge: 512)
+        precondition(nativeCrop != nil, "FAIL: CameraFrame.renderCrop returned nil")
+        if let nativeCrop {
+            precondition(max(nativeCrop.width, nativeCrop.height) <= 512, "FAIL: native crop exceeded maxEdge 512")
+            precondition(nativeCrop.width > Int(seated.boundingBox.width), "FAIL: native crop should use higher-res pixels")
+        }
+        let glareCrop = frame.renderCrop(imageRect: seated.boundingBox)
+        precondition(glareCrop != nil && max(glareCrop!.width, glareCrop!.height) <= 448, "FAIL: default glare crop contract")
+
+        let detectedNoQuality = try! FaceDetector.detectFaces(in: workingImage, includeQuality: false)
+        let detectedWithQuality = try! FaceDetector.detectFaces(in: workingImage, includeQuality: true)
+        precondition(detectedNoQuality.count == detectedWithQuality.count, "FAIL: includeQuality altered detection count")
+
+        let fpPipeline = FaceRecognitionPipeline(embedder: PixelFingerprintEmbedder(), usingFallbackEmbedder: false, fallbackReason: nil)
+        let resWithQuality = try! fpPipeline.recognize(seated, in: frame, includeQuality: true)
+        let resWithoutQuality = try! fpPipeline.recognize(seated, in: frame, includeQuality: false)
+        precondition(resWithQuality.embedding == resWithoutQuality.embedding, "FAIL: includeQuality changed embedding")
+        precondition(resWithoutQuality.quality == nil && resWithoutQuality.face.quality == nil, "FAIL: includeQuality: false emitted quality")
+        precondition(resWithQuality.face.boundingBox == seated.boundingBox, "FAIL: result.face left working-frame coordinates")
+
+        print("PASS: adaptive seated detection, pose-aware quality grading & includeQuality equivalence")
     }
 }
