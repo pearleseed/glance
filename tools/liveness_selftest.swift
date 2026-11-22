@@ -379,10 +379,12 @@ private func generateStillLiveSequence(frameCount: Int, noiseStd: CGFloat, seed:
 
 @main
 struct LivenessSelfTest {
+    @MainActor
     static func main() {
         runGeometryTests()
         runDecisionModelTests()
         runAbstentionTests()
+        runRollAndIdentitySwapTests()
         print("\nAll liveness self-tests passed.")
     }
 
@@ -619,5 +621,62 @@ struct LivenessSelfTest {
             )
         }
         print("PASS: every cue abstains when it has no data to read.")
+    }
+
+    @MainActor
+    private static func runRollAndIdentitySwapTests() {
+        // 1. 2D roll invariance for eye aspect ratio
+        let horizontalEye = [
+            CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 2), CGPoint(x: 10, y: 0), CGPoint(x: 5, y: -2)
+        ]
+        let angle = CGFloat.pi / 4
+        let rotatedEye = horizontalEye.map { p in
+            CGPoint(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
+        }
+        let ear0 = LandmarkGeometry.contourAspectRatio(points: horizontalEye)!
+        let ear45 = LandmarkGeometry.contourAspectRatio(points: rotatedEye)!
+        precondition(abs(ear0 - ear45) < 0.001, "FAIL: EAR drifted under 45° 2D roll: \(ear0) vs \(ear45)")
+
+        // 2. 2D roll invariance for eye-aligned nose offset
+        let eyeL = CGPoint(x: -50, y: 0), eyeR = CGPoint(x: 50, y: 0), nose = CGPoint(x: 0, y: -30)
+        let rot = { (p: CGPoint) in CGPoint(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle)) }
+        let off0 = LandmarkGeometry.eyeAlignedNoseOffsetRatio(eyeA: eyeL, eyeB: eyeR, noseCenter: nose)!
+        let off45 = LandmarkGeometry.eyeAlignedNoseOffsetRatio(eyeA: rot(eyeL), eyeB: rot(eyeR), noseCenter: rot(nose))!
+        precondition(abs(off0 - off45) < 0.001, "FAIL: nose offset drifted under 45° 2D roll: \(off0) vs \(off45)")
+
+        // 3. resetConfirmations clears confirmation latch but preserves deny cues
+        let analyzer = LivenessAnalyzer()
+        analyzer.modeProvider = { .light }
+        let cleanFrame = LivenessFrame(
+            timestamp: Date(), landmarks: [], interocularDistance: 100, yaw: 0,
+            leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
+            hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+        )
+        var last = analyzer.observe(cleanFrame)
+        for i in 1...10 {
+            let f = LivenessFrame(
+                timestamp: Date().addingTimeInterval(Double(i) * 0.05), landmarks: [], interocularDistance: 100, yaw: 0,
+                leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
+            )
+            last = analyzer.observe(f)
+        }
+        precondition(last.decision.isConfirmed, "FAIL: expected Light mode confirmation before reset")
+
+        analyzer.resetConfirmations()
+        precondition(!analyzer.lastSnapshot.decision.isConfirmed, "FAIL: resetConfirmations must clear confirmed state")
+
+        // Deny tell observed on unmatched face must still deny
+        let spoofFrame = LivenessFrame(
+            timestamp: Date().addingTimeInterval(1.0), landmarks: [], interocularDistance: 100, yaw: 0,
+            leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
+            hasReliableLandmarks: true, deviceOverlapFraction: 0.95, glare: nil
+        )
+        var denied = false
+        for _ in 0..<6 {
+            if case .denied = analyzer.observeUnmatched(spoofFrame).decision { denied = true; break }
+        }
+        precondition(denied, "FAIL: observeUnmatched failed to trigger device bezel denial")
+        print("PASS: 2D roll invariance & identity-swap liveness reset tests passed.")
     }
 }

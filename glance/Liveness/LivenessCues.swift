@@ -224,26 +224,55 @@ struct LivenessEvaluator {
         framesObserved = 0
     }
 
+    /// Clears all confirm-cue state and the Light-mode observation counter while
+    /// preserving deny-cue latches and frame counts across an identity change.
+    mutating func resetConfirmations() {
+        framesObserved = 0
+        for cue in LivenessCue.allCases where cue.role == .confirm {
+            states[cue] = nil
+        }
+    }
+
+    /// Evaluates deny cues on an unmatched face without advancing confirm cues or
+    /// `framesObserved`, so spoofs cannot hide behind an unrecognised face.
+    mutating func observeDenyOnly(_ readings: [LivenessCue: CueReading]) -> LivenessSnapshot {
+        for cue in LivenessCue.allCases {
+            switch cue.role {
+            case .deny:
+                accumulate(cue, reading: readings[cue] ?? .none)
+            case .confirm:
+                if var state = states[cue] {
+                    state.reading = .none
+                    states[cue] = state
+                }
+            }
+        }
+        return LivenessSnapshot(decision: currentDecision(), mode: mode, cueStates: states, frameCount: framesObserved)
+    }
+
     /// Firing is latched: a cue that has fired stays fired for the rest of the scan.
     mutating func observe(_ readings: [LivenessCue: CueReading]) -> LivenessSnapshot {
         framesObserved += 1
 
         for cue in LivenessCue.allCases {
-            var state = states[cue] ?? LivenessCueState()
-            let reading = readings[cue] ?? .none
-            state.reading = reading
-            if reading.confidence > 0, reading.level >= tuning.level(for: cue) {
-                state.framesCounted += 1
-                if state.framesCounted >= tuning.frames(for: cue) {
-                    state.hasFired = true
-                }
-            }
-            states[cue] = state
+            accumulate(cue, reading: readings[cue] ?? .none)
         }
 
         return LivenessSnapshot(
             decision: currentDecision(), mode: mode, cueStates: states, frameCount: framesObserved
         )
+    }
+
+    private mutating func accumulate(_ cue: LivenessCue, reading: CueReading) {
+        var state = states[cue] ?? LivenessCueState()
+        state.reading = reading
+        if reading.confidence > 0, reading.level >= tuning.level(for: cue) {
+            state.framesCounted += 1
+            if state.framesCounted >= tuning.frames(for: cue) {
+                state.hasFired = true
+            }
+        }
+        states[cue] = state
     }
 
     /// Deny is evaluated first and is unconditional — it overrides any confirmation already reached.

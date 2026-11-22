@@ -46,15 +46,32 @@ nonisolated enum DeviceBezelDetector {
 
         let imageSize = CGSize(width: image.width, height: image.height)
         let candidates = results.map { FaceDetector.convertToImageSpace($0.boundingBox, imageSize: imageSize) }
-        // Largest candidate is assumed to be the device itself, not a smaller qualifying detail.
-        guard let largest = candidates.max(by: { $0.width * $0.height < $1.width * $1.height }) else {
-            return .none
-        }
+        return bestCandidateOverlap(candidates: candidates, faceBoundingBox: faceBoundingBox)
+    }
 
+    /// Selects the detected rectangle with the highest overlap against `faceBoundingBox`
+    /// (breaking ties by largest rectangle area) so smaller background rects cannot hide a spoof bezel.
+    static func bestCandidateOverlap(candidates: [CGRect], faceBoundingBox: CGRect) -> DeviceBezelObservation {
+        guard !candidates.isEmpty else { return .none }
         let faceArea = faceBoundingBox.width * faceBoundingBox.height
-        guard faceArea > 0 else { return DeviceBezelObservation(rectangle: largest, faceOverlapFraction: nil) }
-        let intersection = largest.intersection(faceBoundingBox)
-        let overlap = (intersection.width * intersection.height) / faceArea
-        return DeviceBezelObservation(rectangle: largest, faceOverlapFraction: overlap)
+        guard faceArea > 0 else {
+            let largest = candidates.max { $0.width * $0.height < $1.width * $1.height }
+            return DeviceBezelObservation(rectangle: largest, faceOverlapFraction: nil)
+        }
+        var bestRect: CGRect?
+        var bestOverlap: CGFloat = -1
+        var bestArea: CGFloat = -1
+        for candidate in candidates {
+            let intersection = candidate.intersection(faceBoundingBox)
+            let overlap = intersection.isNull ? 0 : (intersection.width * intersection.height) / faceArea
+            let area = candidate.width * candidate.height
+            if overlap > bestOverlap || (overlap == bestOverlap && area > bestArea) {
+                bestOverlap = overlap
+                bestArea = area
+                bestRect = candidate
+            }
+        }
+        guard let bestRect else { return .none }
+        return DeviceBezelObservation(rectangle: bestRect, faceOverlapFraction: bestOverlap)
     }
 }

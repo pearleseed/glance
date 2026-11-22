@@ -61,20 +61,62 @@ nonisolated enum LandmarkGeometry {
         return hypot(left.x - right.x, left.y - right.y)
     }
 
-    /// Height/width of a landmark region's bounding box — a stand-in for the classic
-    /// 6-point eye-aspect-ratio (Vision's point count isn't the fixed 6 that assumes).
-    private static func boundingBoxAspectRatio(of region: VNFaceLandmarkRegion2D, imageSize: CGSize) -> CGFloat? {
-        let points = imagePoints(of: region, imageSize: imageSize)
-        guard points.count >= 3, let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
-              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max()
-        else { return nil }
-        let width = maxX - minX
-        guard width > 0 else { return nil }
-        return (maxY - minY) / width
+    /// Rotation-invariant aspect ratio of a contour: spans along the longest axis
+    /// (max pairwise distance) and its perpendicular normal, so 2D head roll does not
+    /// shrink or inflate eye aspect ratio.
+    static func contourAspectRatio(points: [CGPoint]) -> CGFloat? {
+        guard points.count >= 3 else { return nil }
+        var pA = points[0]
+        var pB = points[1]
+        var maxDistSq: CGFloat = 0
+        for i in 0..<points.count {
+            for j in (i + 1)..<points.count {
+                let dx = points[j].x - points[i].x
+                let dy = points[j].y - points[i].y
+                let distSq = dx * dx + dy * dy
+                if distSq > maxDistSq {
+                    maxDistSq = distSq
+                    pA = points[i]
+                    pB = points[j]
+                }
+            }
+        }
+        let maxDist = maxDistSq.squareRoot()
+        guard maxDist > 0 else { return nil }
+
+        let ux = (pB.x - pA.x) / maxDist
+        let uy = (pB.y - pA.y) / maxDist
+        let nx = -uy
+        let ny = ux
+
+        var minProj = CGFloat.greatestFiniteMagnitude
+        var maxProj = -CGFloat.greatestFiniteMagnitude
+        for p in points {
+            let proj = (p.x - pA.x) * nx + (p.y - pA.y) * ny
+            if proj < minProj { minProj = proj }
+            if proj > maxProj { maxProj = proj }
+        }
+        return (maxProj - minProj) / maxDist
     }
 
     static func eyeAspectRatio(of eyeRegion: VNFaceLandmarkRegion2D, imageSize: CGSize) -> CGFloat? {
-        boundingBoxAspectRatio(of: eyeRegion, imageSize: imageSize)
+        contourAspectRatio(points: imagePoints(of: eyeRegion, imageSize: imageSize))
+    }
+
+    /// Projects the nose-to-eye-midpoint vector onto the inter-eye unit axis and normalizes
+    /// by interocular distance, making the offset invariant to 2D in-plane roll.
+    static func eyeAlignedNoseOffsetRatio(eyeA: CGPoint, eyeB: CGPoint, noseCenter: CGPoint) -> CGFloat? {
+        let imageLeft = eyeA.x <= eyeB.x ? eyeA : eyeB
+        let imageRight = eyeA.x <= eyeB.x ? eyeB : eyeA
+        let dx = imageRight.x - imageLeft.x
+        let dy = imageRight.y - imageLeft.y
+        let iod = hypot(dx, dy)
+        guard iod > 0 else { return nil }
+        let ux = dx / iod
+        let uy = dy / iod
+        let midX = (imageLeft.x + imageRight.x) / 2
+        let midY = (imageLeft.y + imageRight.y) / 2
+        return ((noseCenter.x - midX) * ux + (noseCenter.y - midY) * uy) / iod
     }
 
     static func region(_ region: LandmarkRegion, of landmarks: VNFaceLandmarks2D) -> VNFaceLandmarkRegion2D? {
