@@ -124,6 +124,18 @@ verify_socket_paths(const char *dir_path, const char *sock_path, uid_t expected_
 }
 
 static bool
+is_root_owned_dir(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return false;
+    }
+    return st.st_uid == 0 &&
+           S_ISDIR(st.st_mode) &&
+           (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+static bool
 trusted_peer(int fd, uid_t expected_uid)
 {
     uid_t peer_uid = (uid_t)-1;
@@ -153,17 +165,14 @@ trusted_peer(int fd, uid_t expected_uid)
         return false;
     }
 
-    /* Ensure bundle path components are real directories and the executable is root-owned and non-writable by group/others. */
+    /* Ensure all bundle directory components and the executable itself are root-owned and non-writable by group/others. */
+    if (!is_root_owned_dir("/Applications/Glance.app") ||
+        !is_root_owned_dir("/Applications/Glance.app/Contents") ||
+        !is_root_owned_dir("/Applications/Glance.app/Contents/MacOS")) {
+        return false;
+    }
+
     struct stat st;
-    if (lstat("/Applications/Glance.app", &st) != 0 || !S_ISDIR(st.st_mode)) {
-        return false;
-    }
-    if (lstat("/Applications/Glance.app/Contents", &st) != 0 || !S_ISDIR(st.st_mode)) {
-        return false;
-    }
-    if (lstat("/Applications/Glance.app/Contents/MacOS", &st) != 0 || !S_ISDIR(st.st_mode)) {
-        return false;
-    }
     if (lstat(GLANCE_TRUSTED_EXECUTABLE, &st) != 0) {
         return false;
     }

@@ -21,6 +21,7 @@ struct SudoProtocolSelfTest {
     static func main() async {
         testProtocolValidation()
         await testServerSocketPermissionsPeerCheckAndCleanup()
+        await testStopDuringInFlightAuthSendsFailAndClosesFD()
         print("PASS: SudoAuthProtocol strict 256-bit nonce validation passed.")
     }
 
@@ -155,5 +156,115 @@ struct SudoProtocolSelfTest {
         let n = Darwin.recv(fd, &readBuf, readBuf.count, 0)
         guard n > 0 else { return "" }
         return String(decoding: readBuf[0..<n], as: UTF8.self)
+    }
+
+    @MainActor
+    private static func testStopDuringInFlightAuthSendsFailAndClosesFD() async {
+        var fds: [Int32] = [-1, -1]
+        precondition(Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0, "FAIL: socketpair failed")
+        let clientFD = fds[0]
+        let serverFD = fds[1]
+        defer {
+            _ = Darwin.close(clientFD)
+        }
+
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        _ = Darwin.setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        let nonce = String(repeating: "cafebabe", count: 8)
+        let request = Array("AUTH \(nonce)\n".utf8)
+        let sent = request.withUnsafeBytes { buf in
+            Darwin.send(clientFD, buf.baseAddress, buf.count, 0)
+        }
+        precondition(sent == request.count, "FAIL: failed to write AUTH request on socketpair")
+
+        let authEntered = AsyncFlag()
+        let authCancelled = AsyncFlag()
+
+        // Returns right after runner.stop() so caller drops its sole strong reference while auth is suspended.
+        let started = await startAndStopInFlightRunner(
+            serverFD: serverFD,
+            authEntered: authEntered,
+            authCancelled: authCancelled
+        )
+        precondition(started, "FAIL: in-flight authenticator never entered")
+
+        let (response, sawEOF) = await Task.detached {
+            readAllUntilEOF(fd: clientFD)
+        }.value
+
+        precondition(
+            response == "FAIL \(nonce)\n",
+            "FAIL: expected FAIL <nonce>\\n on stop during in-flight auth, got \(String(reflecting: response))"
+        )
+        precondition(sawEOF, "FAIL: expected EOF after FAIL response (server FD leaked open)")
+
+        let cancelled = await authCancelled.waitUntilSet(timeout: .seconds(2))
+        precondition(cancelled, "FAIL: in-flight authenticator did not observe cancellation")
+    }
+
+    private static func startAndStopInFlightRunner(
+        serverFD: Int32,
+        authEntered: AsyncFlag,
+        authCancelled: AsyncFlag
+    ) async -> Bool {
+        let runner = SudoAuthInFlightRunner()
+        DispatchQueue.global(qos: .userInitiated).async {
+            runner.handleAuthenticatedClientFD(
+                serverFD,
+                authTimeout: .seconds(28)
+            ) {
+                authEntered.set()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(15))
+                }
+                authCancelled.set()
+                return false
+            }
+        }
+
+        let entered = await authEntered.waitUntilSet(timeout: .seconds(2))
+        runner.stop()
+        return entered
+    }
+
+    private nonisolated static func readAllUntilEOF(fd: Int32) -> (String, Bool) {
+        var collected: [UInt8] = []
+        var buf = [UInt8](repeating: 0, count: 128)
+        var sawEOF = false
+        while true {
+            let n = Darwin.recv(fd, &buf, buf.count, 0)
+            if n > 0 {
+                collected.append(contentsOf: buf[0..<n])
+            } else if n == 0 {
+                sawEOF = true
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                break
+            }
+        }
+        return (String(decoding: collected, as: UTF8.self), sawEOF)
+    }
+}
+
+nonisolated private final class AsyncFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    func set() {
+        lock.withLock {
+            isSet = true
+        }
+    }
+
+    func waitUntilSet(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if lock.withLock({ isSet }) { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
     }
 }

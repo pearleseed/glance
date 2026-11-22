@@ -152,6 +152,190 @@ nonisolated private final class SocketRuntime: @unchecked Sendable {
     }
 }
 
+/// Manages single-flight client challenge handling, bounded timeouts, and guaranteed
+/// single-owner response/close cleanup even if its owning session is stopped and deallocated.
+nonisolated final class SudoAuthInFlightRunner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isStopped = false
+    private var isHandlingAuth = false
+    private var activeTask: Task<Void, Never>?
+
+    func stop() {
+        lock.lock()
+        if isStopped {
+            lock.unlock()
+            return
+        }
+        isStopped = true
+        let task = activeTask
+        activeTask = nil
+        lock.unlock()
+
+        task?.cancel()
+    }
+
+    /// Consumes `clientFD` (always writing a response if valid and closing `clientFD`).
+    func handleAuthenticatedClientFD(
+        _ clientFD: Int32,
+        authTimeout: Duration,
+        authenticator: @escaping @MainActor @Sendable () async -> Bool
+    ) {
+        var fd = clientFD
+        defer {
+            if fd >= 0 {
+                _ = Darwin.close(fd)
+            }
+        }
+
+        var ioTimeout = timeval(tv_sec: 5, tv_usec: 0)
+        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &ioTimeout, socklen_t(MemoryLayout<timeval>.size))
+        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &ioTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+        guard let line = Self.readRequestLine(fd: fd, maxBytes: SudoAuthProtocol.maxLineLength),
+              let nonce = SudoAuthProtocol.parseRequest(line)
+        else {
+            return
+        }
+
+        lock.lock()
+        let canClaim = !isStopped && !isHandlingAuth
+        if canClaim {
+            isHandlingAuth = true
+        }
+        lock.unlock()
+
+        guard canClaim else {
+            Self.writeAll(fd: fd, text: SudoAuthProtocol.formatResponse(accepted: false, nonce: nonce))
+            return
+        }
+
+        let ownedFD = fd
+        fd = -1 // Ownership transfers exclusively to responder.
+
+        let responder = ClientAuthResponder(fd: ownedFD, nonce: nonce) {
+            self.clearActiveAuthState()
+        }
+
+        // Strongly capture `self` and `responder` for the bounded task lifetime so stopping/deallocating
+        // the outer SocketSession while `authenticator()` is suspended still delivers `FAIL <nonce>\n`
+        // and closes `ownedFD` immediately.
+        let task = Task.detached(priority: .userInitiated) {
+            defer {
+                responder.completeOnce(accepted: false)
+                self.clearActiveAuthState()
+            }
+
+            let accepted = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await authenticator()
+                }
+                group.addTask {
+                    try? await Task.sleep(for: authTimeout)
+                    return false
+                }
+                let firstResult = await group.next() ?? false
+                responder.completeOnce(accepted: firstResult)
+                group.cancelAll()
+                return firstResult
+            }
+            responder.completeOnce(accepted: accepted)
+        }
+
+        lock.lock()
+        if isStopped {
+            lock.unlock()
+            task.cancel()
+        } else {
+            activeTask = task
+            lock.unlock()
+        }
+    }
+
+    private func clearActiveAuthState() {
+        lock.lock()
+        isHandlingAuth = false
+        activeTask = nil
+        lock.unlock()
+    }
+
+    private static func readRequestLine(fd: Int32, maxBytes: Int) -> String? {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(80)
+
+        var ch: UInt8 = 0
+        while bytes.count < maxBytes {
+            let n = Darwin.recv(fd, &ch, 1, 0)
+            if n < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                return nil
+            }
+            if n == 0 {
+                return nil
+            }
+            bytes.append(ch)
+            if ch == 0x0A { // '\n'
+                return String(bytes: bytes, encoding: .utf8)
+            }
+        }
+        return nil
+    }
+
+    static func writeAll(fd: Int32, text: String) {
+        let bytes = Array(text.utf8)
+        var sent = 0
+        while sent < bytes.count {
+            let n = bytes.withUnsafeBytes { rawPtr -> Int in
+                guard let base = rawPtr.baseAddress else { return -1 }
+                return Darwin.send(fd, base.advanced(by: sent), bytes.count - sent, 0)
+            }
+            if n < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                return
+            }
+            if n == 0 {
+                return
+            }
+            sent += n
+        }
+    }
+}
+
+nonisolated private final class ClientAuthResponder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32
+    private let nonce: String
+    private let onComplete: @Sendable () -> Void
+
+    init(fd: Int32, nonce: String, onComplete: @escaping @Sendable () -> Void) {
+        self.fd = fd
+        self.nonce = nonce
+        self.onComplete = onComplete
+    }
+
+    func completeOnce(accepted: Bool) {
+        lock.lock()
+        let currentFD = fd
+        fd = -1
+        lock.unlock()
+
+        guard currentFD >= 0 else { return }
+        onComplete()
+        SudoAuthInFlightRunner.writeAll(
+            fd: currentFD,
+            text: SudoAuthProtocol.formatResponse(accepted: accepted, nonce: nonce)
+        )
+        _ = Darwin.close(currentFD)
+    }
+
+    deinit {
+        completeOnce(accepted: false)
+    }
+}
+
 nonisolated private final class SocketSession: @unchecked Sendable {
     private let socketPath: String
     private let authTimeout: Duration
@@ -162,9 +346,8 @@ nonisolated private final class SocketSession: @unchecked Sendable {
 
     private let stateLock = NSLock()
     private var isStopped = false
-    private var isHandlingAuth = false
-    private var activeAuthTask: Task<Void, Never>?
     private var source: DispatchSourceRead?
+    private let inFlightRunner = SudoAuthInFlightRunner()
 
     init(
         socketURL: URL,
@@ -269,12 +452,10 @@ nonisolated private final class SocketSession: @unchecked Sendable {
         isStopped = true
         let activeSource = source
         source = nil
-        let task = activeAuthTask
-        activeAuthTask = nil
         stateLock.unlock()
 
         _ = Darwin.unlink(socketPath)
-        task?.cancel()
+        inFlightRunner.stop()
         activeSource?.cancel()
     }
 
@@ -337,139 +518,27 @@ nonisolated private final class SocketSession: @unchecked Sendable {
     }
 
     private func handleClient(_ clientFD: Int32) {
-        var fd = clientFD
-        defer {
-            if fd >= 0 {
-                _ = Darwin.close(fd)
-            }
-        }
-
-        _ = Darwin.fcntl(fd, F_SETFD, FD_CLOEXEC)
+        _ = Darwin.fcntl(clientFD, F_SETFD, FD_CLOEXEC)
         var one: Int32 = 1
-        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        _ = Darwin.setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
 
-        let flags = Darwin.fcntl(fd, F_GETFL, 0)
+        let flags = Darwin.fcntl(clientFD, F_GETFL, 0)
         if flags >= 0 && (flags & O_NONBLOCK) != 0 {
-            _ = Darwin.fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+            _ = Darwin.fcntl(clientFD, F_SETFL, flags & ~O_NONBLOCK)
         }
 
         // Security gate: only accept connections from a root-owned client (sudo PAM running as euid 0).
         var peerUID = uid_t.max
         var peerGID = gid_t.max
-        guard Darwin.getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == 0 else {
+        guard Darwin.getpeereid(clientFD, &peerUID, &peerGID) == 0, peerUID == 0 else {
+            _ = Darwin.close(clientFD)
             return
         }
 
-        var ioTimeout = timeval(tv_sec: 5, tv_usec: 0)
-        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &ioTimeout, socklen_t(MemoryLayout<timeval>.size))
-        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &ioTimeout, socklen_t(MemoryLayout<timeval>.size))
-
-        guard let line = Self.readRequestLine(fd: fd, maxBytes: SudoAuthProtocol.maxLineLength),
-              let nonce = SudoAuthProtocol.parseRequest(line)
-        else {
-            return
-        }
-
-        stateLock.lock()
-        let canClaim = !isStopped && !isHandlingAuth
-        if canClaim {
-            isHandlingAuth = true
-        }
-        stateLock.unlock()
-
-        guard canClaim else {
-            Self.writeAll(fd: fd, text: SudoAuthProtocol.formatResponse(accepted: false, nonce: nonce))
-            return
-        }
-
-        let ownedFD = fd
-        fd = -1 // Ownership transfers to the async auth task.
-
-        let authTimeout = self.authTimeout
-        let authenticator = self.authenticator
-
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
-            var accepted = false
-            defer {
-                self?.finishAuthTask(fd: ownedFD, accepted: accepted, nonce: nonce)
-            }
-
-            accepted = await withTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    await authenticator()
-                }
-                group.addTask {
-                    try? await Task.sleep(for: authTimeout)
-                    return false
-                }
-                let firstResult = await group.next() ?? false
-                group.cancelAll()
-                return firstResult
-            }
-        }
-
-        stateLock.lock()
-        if isStopped {
-            stateLock.unlock()
-            task.cancel()
-        } else {
-            activeAuthTask = task
-            stateLock.unlock()
-        }
-    }
-
-    private func finishAuthTask(fd: Int32, accepted: Bool, nonce: String) {
-        stateLock.lock()
-        isHandlingAuth = false
-        activeAuthTask = nil
-        stateLock.unlock()
-
-        Self.writeAll(fd: fd, text: SudoAuthProtocol.formatResponse(accepted: accepted, nonce: nonce))
-        _ = Darwin.close(fd)
-    }
-
-    private static func readRequestLine(fd: Int32, maxBytes: Int) -> String? {
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(80)
-
-        var ch: UInt8 = 0
-        while bytes.count < maxBytes {
-            let n = Darwin.recv(fd, &ch, 1, 0)
-            if n < 0 {
-                if errno == EINTR {
-                    continue
-                }
-                return nil
-            }
-            if n == 0 {
-                return nil
-            }
-            bytes.append(ch)
-            if ch == 0x0A { // '\n'
-                return String(bytes: bytes, encoding: .utf8)
-            }
-        }
-        return nil
-    }
-
-    private static func writeAll(fd: Int32, text: String) {
-        let bytes = Array(text.utf8)
-        var sent = 0
-        while sent < bytes.count {
-            let n = bytes.withUnsafeBytes { rawPtr -> Int in
-                guard let base = rawPtr.baseAddress else { return -1 }
-                return Darwin.send(fd, base.advanced(by: sent), bytes.count - sent, 0)
-            }
-            if n < 0 {
-                if errno == EINTR {
-                    continue
-                }
-                return
-            }
-            if n == 0 {
-                return
-            }
-            sent += n
-        }
+        inFlightRunner.handleAuthenticatedClientFD(
+            clientFD,
+            authTimeout: authTimeout,
+            authenticator: authenticator
+        )
     }
 }

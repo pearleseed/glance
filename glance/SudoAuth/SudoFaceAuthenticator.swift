@@ -41,9 +41,16 @@ final class SudoFaceAuthenticator {
     func stop() {
         scanGeneration &+= 1
         camera.stop()
-        if isAuthenticating && NotchOverlayController.shared.phase == .scanning {
-            NotchOverlayController.shared.dismissImmediately()
+        if isAuthenticating {
+            dismissOverlayIfOwned()
         }
+    }
+
+    private func dismissOverlayIfOwned() {
+        guard !NotchOverlayController.shared.isArmed,
+              NotchOverlayController.shared.phase != .onboarding
+        else { return }
+        NotchOverlayController.shared.dismissImmediately()
     }
 
     func authenticate() async -> Bool {
@@ -66,8 +73,8 @@ final class SudoFaceAuthenticator {
             if generation == scanGeneration {
                 camera.stop()
             }
-            if didPresentOverlay && (Task.isCancelled || NotchOverlayController.shared.phase == .scanning) {
-                NotchOverlayController.shared.dismissImmediately()
+            if didPresentOverlay && (Task.isCancelled || generation != scanGeneration || !canAuthenticateNow() || NotchOverlayController.shared.phase == .scanning) {
+                dismissOverlayIfOwned()
             }
         }
 
@@ -115,6 +122,12 @@ final class SudoFaceAuthenticator {
 
             switch outcome {
             case .matched:
+                guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
+                    if showsUI {
+                        dismissOverlayIfOwned()
+                    }
+                    return false
+                }
                 if showsUI {
                     NotchOverlayController.shared.finish(success: true)
                 }
@@ -122,11 +135,17 @@ final class SudoFaceAuthenticator {
 
             case .cancelled, .hardFailure:
                 if showsUI {
-                    NotchOverlayController.shared.finish(success: false)
+                    dismissOverlayIfOwned()
                 }
                 return false
 
             case .failed:
+                guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
+                    if showsUI {
+                        dismissOverlayIfOwned()
+                    }
+                    return false
+                }
                 if showsUI {
                     NotchOverlayController.shared.finish(success: false)
                 }

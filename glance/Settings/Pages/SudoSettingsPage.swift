@@ -53,6 +53,10 @@ struct SudoSettingsPage: View {
                 SettingsCaption(text: "Socket listener error: \(serverError)")
             }
 
+            if pamStatus.trustedBinary == .wrongCasing {
+                SettingsCaption(text: "Bundle path casing mismatch: pam_glance.so requires the exact path /Applications/Glance.app (capital G). Rename or install /Applications/glance.app as /Applications/Glance.app.")
+            }
+
             if !environment.pocController.isSessionUnlocked {
                 SettingsCaption(text: "Glance session is locked — Face-for-sudo is paused until you unlock your session on Face or Password. Touch ID and password still work in Terminal.")
             } else if enrollmentStore.activeIdentities.isEmpty {
@@ -410,12 +414,14 @@ private struct SudoPAMStatus: Equatable {
 
     enum BinaryState: Equatable {
         case verified
+        case wrongCasing
         case notRootOwned
         case missing
 
         var label: String {
             switch self {
             case .verified: return "Root-owned"
+            case .wrongCasing: return "Wrong casing"
             case .notRootOwned: return "Not root-owned"
             case .missing: return "Not in /Applications"
             }
@@ -424,7 +430,7 @@ private struct SudoPAMStatus: Equatable {
         var color: Color {
             switch self {
             case .verified: return SettingsMetrics.qualityGoodColor
-            case .notRootOwned: return SettingsMetrics.qualityFairColor
+            case .wrongCasing, .notRootOwned: return SettingsMetrics.qualityFairColor
             case .missing: return SettingsMetrics.textTertiary
             }
         }
@@ -492,7 +498,10 @@ private struct SudoPAMStatus: Equatable {
             guard Darwin.lstat(dir, &dirStat) == 0 else {
                 return .missing
             }
-            guard (dirStat.st_mode & S_IFMT) == S_IFDIR else {
+            let isDir = (dirStat.st_mode & S_IFMT) == S_IFDIR
+            let isRootOwned = dirStat.st_uid == 0
+            let notWritableByGroupOrOther = (dirStat.st_mode & mode_t(S_IWGRP | S_IWOTH)) == 0
+            guard isDir && isRootOwned && notWritableByGroupOrOther else {
                 return .notRootOwned
             }
         }
@@ -504,6 +513,17 @@ private struct SudoPAMStatus: Equatable {
         let isRegular = (binStat.st_mode & S_IFMT) == S_IFREG
         let isRootOwned = binStat.st_uid == 0
         let notWritableByGroupOrOther = (binStat.st_mode & mode_t(S_IWGRP | S_IWOTH)) == 0
-        return (isRegular && isRootOwned && notWritableByGroupOrOther) ? .verified : .notRootOwned
+        guard isRegular && isRootOwned && notWritableByGroupOrOther else {
+            return .notRootOwned
+        }
+
+        // pam_glance.c compares proc_pidpath byte-for-byte against /Applications/Glance.app/Contents/MacOS/glance,
+        // whereas case-insensitive APFS lets lstat succeed on /Applications/glance.app.
+        let canonicalPath = (try? URL(fileURLWithPath: trustedExecutablePath)
+            .resourceValues(forKeys: [.canonicalPathKey]))?.canonicalPath
+        guard canonicalPath == trustedExecutablePath else {
+            return .wrongCasing
+        }
+        return .verified
     }
 }
