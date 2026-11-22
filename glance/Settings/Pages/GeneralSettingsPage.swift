@@ -178,6 +178,10 @@ struct GeneralSettingsPage: View {
                         GlanceToggle(isOn: $settings.hapticFeedbackEnabled)
                     }
                     SettingsGroupDivider()
+                    SettingsRowContent(title: "Night Boost") {
+                        GlanceToggle(isOn: $settings.nightBoostEnabled)
+                    }
+                    SettingsGroupDivider()
                     SettingsSteppedSliderRowContent(
                         title: "Face detection duration",
                         valueLabel: "\(settings.faceDetectionSeconds)s",
@@ -188,6 +192,7 @@ struct GeneralSettingsPage: View {
                         stopCount: GlanceSettings.faceDetectionRange.count
                     )
                 }
+                SettingsCaption(text: "Night Boost softly illuminates the top of the screen and boosts low-light frames during dark-room Face Unlock.")
             }
 
             VStack(alignment: .leading, spacing: 8) {

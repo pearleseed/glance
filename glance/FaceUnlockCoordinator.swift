@@ -74,6 +74,7 @@ final class FaceUnlockCoordinator {
     private var wakeSettleTask: Task<Void, Never>?
     private var armTask: Task<Void, Never>?
     private var cameraPrewarmTask: Task<Void, Never>?
+    private let sceneIlluminator = SceneIlluminator()
     private let observerBox = ObserverBox()
 
     /// System-wide shortcut for toggling Face Unlock on/off.
@@ -243,7 +244,10 @@ final class FaceUnlockCoordinator {
             disarmOverlay()
             return
         }
-        guard !lockMonitor.isSleeping else { return }
+        guard !lockMonitor.isSleeping else {
+            sceneIlluminator.end()
+            return
+        }
         guard GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) else {
             disarmOverlay()
             return
@@ -344,6 +348,7 @@ final class FaceUnlockCoordinator {
         autoRetryTask?.cancel()
         autoRetryTask = nil
         camera.stop()
+        sceneIlluminator.end()
         NotchOverlayController.shared.disarm()
         // Covers isEnabled being switched off directly, keeping "disarmed" and "not listening for space" in lockstep.
         spaceKeyMonitor.stop()
@@ -447,6 +452,7 @@ final class FaceUnlockCoordinator {
     private func runScanCycle(generation: Int) async {
         guard canArmOrScan else {
             stopPrewarmedCamera()
+            sceneIlluminator.end()
             return
         }
 
@@ -465,6 +471,7 @@ final class FaceUnlockCoordinator {
         if let error = camera.errorMessage {
             statusMessage = error
             camera.stop()
+            sceneIlluminator.end()
             return
         }
 
@@ -483,6 +490,7 @@ final class FaceUnlockCoordinator {
         guard generation == scanGeneration else { return }
 
         camera.stop()
+        sceneIlluminator.end()
 
         switch outcome {
         case .matched:
@@ -557,6 +565,7 @@ final class FaceUnlockCoordinator {
     /// overlay, since headlessly `phase` never becomes `.scanning` at all.
     private func observeScanWindow(deadline: Date, requireOverlayScanning: Bool) async -> ScanOutcome {
         let livenessEnabled = GlanceSettings.shared.livenessChecksEnabled
+        let nightBoostEnabled = GlanceSettings.shared.nightBoostEnabled
         let liveness = LivenessAnalyzer()
         liveness.modeProvider = { GlanceSettings.shared.livenessMode }
         /// Set by the first consecutive non-match. A gap in face detection or
@@ -593,11 +602,31 @@ final class FaceUnlockCoordinator {
 
             let pipeline = self.pipeline
             let previousBoundingBox = lastFaceBoundingBox
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (FaceRecognitionResult, LivenessFrame)? in
-                guard let result = try? pipeline.recognize(in: frame, preferNear: previousBoundingBox, includeQuality: false) else { return nil }
+            let (luminance, outcome) = await Task.detached(priority: .userInitiated) { () -> (Double?, (FaceRecognitionResult, LivenessFrame)?) in
+                let measuredLuminance = nightBoostEnabled ? SceneLuminance.meanLuminance(of: frame.image) : nil
+                let recognitionResult: FaceRecognitionResult?
+                if let measuredLuminance, measuredLuminance < SceneLuminance.enhanceThreshold {
+                    // Only the 640px working frame is lifted for Vision/ArcFace; liveness and glare cues
+                    // continue to inspect the unenhanced original frame and native sensor crop below.
+                    let enhancedImage = LowLightEnhancer.enhance(frame.image, meanLuminance: measuredLuminance)
+                    recognitionResult = try? pipeline.recognize(in: enhancedImage, preferNear: previousBoundingBox, includeQuality: false)
+                } else {
+                    recognitionResult = try? pipeline.recognize(in: frame, preferNear: previousBoundingBox, includeQuality: false)
+                }
+                guard let result = recognitionResult else { return (measuredLuminance, nil) }
                 let faceCrop = CameraManager.renderCrop(from: frame, imageRect: result.face.boundingBox)
-                return (result, LivenessFeatureExtractor.extract(from: result, frame: frame.image, faceCrop: faceCrop))
+                return (measuredLuminance, (result, LivenessFeatureExtractor.extract(from: result, frame: frame.image, faceCrop: faceCrop)))
             }.value
+
+            if nightBoostEnabled,
+               let luminance,
+               luminance < SceneLuminance.darkThreshold,
+               !Task.isCancelled,
+               LockMonitor.isScreenActuallyLocked(),
+               !lockMonitor.isSleeping,
+               !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning {
+                sceneIlluminator.activateIfNeeded()
+            }
 
             guard let (result, livenessFrame) = outcome else {
                 wrongFaceStartedAt = nil

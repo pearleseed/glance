@@ -122,6 +122,7 @@ final class GlanceSettings {
         static let faceDetectionSeconds = "GlanceSettings.faceDetectionSeconds"
         static let autoRetryOnce = "GlanceSettings.autoRetryOnce"
         static let hapticFeedbackEnabled = "GlanceSettings.hapticFeedbackEnabled"
+        static let nightBoostEnabled = "GlanceSettings.nightBoostEnabled"
         static let showsInMenuBar = "GlanceSettings.showsInMenuBar"
         static let preferredDisplayID = "GlanceSettings.preferredDisplayID"
         static let preferredDisplayName = "GlanceSettings.preferredDisplayName"
@@ -254,6 +255,11 @@ final class GlanceSettings {
     /// see `NotchOverlayView`'s hover handler and `.onChange(of: controller.phase)`.
     var hapticFeedbackEnabled: Bool {
         didSet { defaults.set(hapticFeedbackEnabled, forKey: Key.hapticFeedbackEnabled) }
+    }
+    /// Opt-in dark-room helper: softly illuminates the top of the screen and boosts
+    /// low-light recognition frames during Face Unlock without touching liveness inputs.
+    var nightBoostEnabled: Bool {
+        didSet { defaults.set(nightBoostEnabled, forKey: Key.nightBoostEnabled) }
     }
     /// Hiding the status item does not quit Glance; a relaunch still routes
     /// through `AppDelegate.applicationShouldHandleReopen` to show Settings.
@@ -420,6 +426,7 @@ final class GlanceSettings {
             ?? 5
         autoRetryOnce = defaults.object(forKey: Key.autoRetryOnce) as? Bool ?? false
         hapticFeedbackEnabled = defaults.object(forKey: Key.hapticFeedbackEnabled) as? Bool ?? true
+        nightBoostEnabled = defaults.object(forKey: Key.nightBoostEnabled) as? Bool ?? false
         // Keep the icon available for existing and new installs unless the
         // user explicitly opts into the background-only mode.
         showsInMenuBar = defaults.object(forKey: Key.showsInMenuBar) as? Bool ?? true
