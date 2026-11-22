@@ -110,20 +110,23 @@ final class AppLockFaceScanner {
         onStatus("Starting camera…")
         await camera.start()
 
+        defer {
+            if generation == scanGeneration {
+                camera.stop()
+            }
+        }
+
         guard !Task.isCancelled,
               generation == scanGeneration,
               activeChallengeID == challengeID
         else {
-            camera.stop()
             return .cancelled
         }
 
         if let cameraError = camera.errorMessage {
-            camera.stop()
             return .failed(cameraError, canRetry: true)
         }
 
-        defer { camera.stop() }
         onStatus("Looking for your face…")
 
         let scanSeconds = max(TimeInterval(GlanceSettings.shared.faceDetectionSeconds), 1.0)

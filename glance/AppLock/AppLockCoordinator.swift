@@ -306,6 +306,10 @@ final class AppLockCoordinator {
             }
         )
 
+        guard engine.activeChallenge?.id == challenge.id,
+              engine.activeChallenge?.phase == .scanning
+        else { return }
+
         startFaceScan(for: challenge)
     }
 

@@ -112,7 +112,9 @@ final class AppLockCurtainController {
         self.onMissionControlDetected = onMissionControlDetected
 
         refreshWindows()
-        startSyncTimer()
+        if activeChallengeID == challengeID {
+            startSyncTimer()
+        }
     }
 
     func updateStatus(
