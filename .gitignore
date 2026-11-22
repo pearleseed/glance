@@ -17,3 +17,6 @@ __pycache__/
 
 # Local release notes
 RELEASING.md
+
+# Local git worktrees
+.worktrees/
