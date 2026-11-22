@@ -61,6 +61,19 @@ final class FaceUnlockCoordinator {
     /// When off, no notch/pill presence at all — every overlay call in this file is conditioned on this rather than just skipping the video.
     private var showsUI: Bool { GlanceSettings.shared.showUnlockAnimation }
 
+    /// Blocks lock-screen unlock and space-key monitoring until onboarding and the security notice are completed and the overlay isn't hosting onboarding.
+    private var isOnboardingGateSatisfied: Bool {
+        let settings = GlanceSettings.shared
+        return settings.hasCompletedOnboarding
+            && settings.hasAcknowledgedSecurityNotice
+            && NotchOverlayController.shared.phase != .onboarding
+    }
+
+    /// Refuses unlock whenever ArcFace failed to load and the weaker Vision fallback embedder is active.
+    private var hasUnlockCapableEmbedder: Bool {
+        !pipeline.usingFallbackEmbedder && pipeline.embedder.isUnlockCapable
+    }
+
     /// Reads the space key on the lock screen for the "On space" trigger; only runs while locked + opted in.
     private let spaceKeyMonitor = SpaceKeyMonitor()
 
@@ -109,6 +122,11 @@ final class FaceUnlockCoordinator {
         updateSpaceMonitor()
 
         guard isEnabled, !hasArmedForCurrentLock else { return }
+        guard isOnboardingGateSatisfied else { return }
+        guard hasUnlockCapableEmbedder else {
+            statusMessage = "Face unlock unavailable — the discriminative face model could not be loaded."
+            return
+        }
         guard let signal = requiredTrigger(for: lockMonitor.lastEvent) else { return }
         // A pinned display that isn't connected bails entirely rather than showing up elsewhere; "Main display" (nil) always resolves.
         guard NotchGeometry.preferredScreen() != nil else { return }
@@ -169,6 +187,8 @@ final class FaceUnlockCoordinator {
     /// Idempotent and safe to call on every lock/wake event. Deliberately does not prompt for Input Monitoring — a missing grant just means "don't listen."
     private func updateSpaceMonitor() {
         let shouldListen = isEnabled
+            && isOnboardingGateSatisfied
+            && hasUnlockCapableEmbedder
             && GlanceSettings.shared.unlockTriggers.contains(.onSpace)
             && LockMonitor.isScreenActuallyLocked()
             && SpaceKeyMonitor.hasInputMonitoringAccess()
@@ -182,6 +202,8 @@ final class FaceUnlockCoordinator {
     /// Runs the same gate chain as `evaluateTrigger`, then starts a scan. Independent of `LockMonitor` events, so doesn't touch `hasArmedForCurrentLock`.
     private func handleSpaceKeyPress() {
         guard isEnabled,
+              isOnboardingGateSatisfied,
+              hasUnlockCapableEmbedder,
               GlanceSettings.shared.unlockTriggers.contains(.onSpace),
               LockMonitor.isScreenActuallyLocked(),
               NotchGeometry.preferredScreen() != nil,
@@ -207,7 +229,7 @@ final class FaceUnlockCoordinator {
 
     /// Either way the overlay still arms — a deselected trigger only skips the automatic scan, leaving hover-to-start available.
     private func arm(autoScan: Bool) async {
-        guard LockMonitor.isScreenActuallyLocked() else { return }
+        guard LockMonitor.isScreenActuallyLocked(), isEnabled, isOnboardingGateSatisfied, hasUnlockCapableEmbedder else { return }
         guard showsUI else {
             // Headless: evaluateTrigger() already guaranteed autoScan is true here, so this is just "start scanning."
             startScanCycle()
@@ -236,7 +258,10 @@ final class FaceUnlockCoordinator {
     /// of itself. This was a real bug — a superseded `camera.stop()` queued behind the newer cycle's `startRunning()` made the
     /// camera visibly switch on then die mid-warm-up, leaving the surviving cycle polling a dead session and never unlocking.
     private func runScanCycle(generation: Int) async {
-        guard LockMonitor.isScreenActuallyLocked() else { return }
+        guard LockMonitor.isScreenActuallyLocked(),
+              isEnabled,
+              isOnboardingGateSatisfied,
+              hasUnlockCapableEmbedder else { return }
 
         await camera.start()
         guard generation == scanGeneration else { return }
@@ -301,14 +326,14 @@ final class FaceUnlockCoordinator {
 
     /// `delay` waits out whatever the overlay is still showing so the retry doesn't start underneath the previous outcome.
     private func scheduleAutoRetryIfEnabled(after delay: Duration) {
-        guard GlanceSettings.shared.autoRetryOnce, !hasAutoRetriedForCurrentLock else { return }
+        guard GlanceSettings.shared.autoRetryOnce, !hasAutoRetriedForCurrentLock, isOnboardingGateSatisfied else { return }
         hasAutoRetriedForCurrentLock = true
         autoRetryTask?.cancel()
         autoRetryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
             // Re-check rather than trust the delay: the user may have unlocked by password or retried manually while this waited.
-            guard LockMonitor.isScreenActuallyLocked(), self.isEnabled else { return }
+            guard LockMonitor.isScreenActuallyLocked(), self.isEnabled, self.isOnboardingGateSatisfied else { return }
             if self.showsUI {
                 guard NotchOverlayController.shared.phase == .closed else { return }
             }
@@ -324,8 +349,8 @@ final class FaceUnlockCoordinator {
         case noResolution
     }
 
-    /// Recognition and liveness run concurrently and each latches when it succeeds, so unlock fires the moment the second lands;
-    /// liveness never fails the scan by staying undecided, it just keeps scanning until `deadline`.
+    /// Recognition runs first per frame so confirm-liveness only accumulates for a matched identity and resets whenever
+    /// the face disappears, fails to match, or switches identities (while unmatched faces still feed deny-only liveness cues).
     /// `requireOverlayScanning` bails early once the overlay's own timeout collapses the UI — only applied when there is an
     /// overlay, since headlessly `phase` never becomes `.scanning` at all.
     private func observeScanWindow(deadline: Date, requireOverlayScanning: Bool) async -> ScanOutcome {
@@ -336,14 +361,23 @@ final class FaceUnlockCoordinator {
         /// a valid match clears it, so only a sustained wrong face resolves the scan.
         var wrongFaceStartedAt: ContinuousClock.Instant?
 
-        /// Cleared the moment a detected face fails to match, so a latched match can't be handed to whoever steps in next.
+        /// Cleared the moment a detected face fails to match or disappears, so a latched match can't be handed to whoever steps in next.
         var readyMatch: ScoredIdentity?
+        /// Tracks which enrolled identity owns the current confirm-liveness window.
+        var matchedIdentityID: UUID?
         /// Turning liveness off in Settings makes this half permanently ready.
         var livenessConfirmed = !livenessEnabled
         /// Last frame's selected face, passed back so `selectDominantFace` stays on the same person instead of flip-flopping.
         var lastFaceBoundingBox: CGRect?
         /// Cheap way to detect "no new camera frame yet" vs. "fresh frame" — without it a repeat frame would corrupt the liveness motion signal.
         var lastProcessedFrameID: UInt64?
+
+        func resetIdentityLivenessState(to newIdentityID: UUID? = nil) {
+            readyMatch = nil
+            matchedIdentityID = newIdentityID
+            livenessConfirmed = !livenessEnabled
+            if livenessEnabled { liveness.resetConfirmations() }
+        }
 
         while Date() < deadline, !Task.isCancelled,
               !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning {
@@ -367,37 +401,46 @@ final class FaceUnlockCoordinator {
             guard let (result, livenessFrame) = outcome else {
                 wrongFaceStartedAt = nil
                 lastFaceBoundingBox = nil
+                resetIdentityLivenessState()
                 try? await Task.sleep(nanoseconds: 20_000_000)
                 continue
             }
             lastFaceBoundingBox = result.face.normalizedBoundingBox
 
-            // Fed regardless of match, so liveness stays a genuinely independent gate rather than one starved by recognition confidence.
-            var confirmingCue: LivenessCue?
-            if livenessEnabled {
-                let snapshot = liveness.observe(livenessFrame)
-                switch snapshot.decision {
-                case .denied:
-                    // Overrides everything, including a match and any confirmation that already happened.
-                    lastOutcome = snapshot.decision.denialReason
-                    return .spoofSuspected
-                case .confirmed(let cue):
-                    livenessConfirmed = true
-                    confirmingCue = cue
-                case .pending:
-                    break
-                }
-            }
-
             // `activeIdentities`, not `identities`: someone switched off on the Your Face page stays enrolled but must not unlock.
             let scored = pipeline.score(result.embedding, against: FaceEnrollmentStore.shared.activeIdentities)
             let matched = pipeline.bestMatch(in: scored, threshold: matchThreshold)
 
+            var confirmingCue: LivenessCue?
             if let matched {
                 wrongFaceStartedAt = nil
+                if matchedIdentityID != matched.identity.id {
+                    resetIdentityLivenessState(to: matched.identity.id)
+                }
                 readyMatch = matched
+                if livenessEnabled {
+                    let snapshot = liveness.observe(livenessFrame)
+                    switch snapshot.decision {
+                    case .denied:
+                        // Overrides everything, including a match and any confirmation that already happened.
+                        lastOutcome = snapshot.decision.denialReason
+                        return .spoofSuspected
+                    case .confirmed(let cue):
+                        livenessConfirmed = true
+                        confirmingCue = cue
+                    case .pending:
+                        break
+                    }
+                }
             } else {
-                readyMatch = nil
+                resetIdentityLivenessState()
+                if livenessEnabled {
+                    let snapshot = liveness.observeUnmatched(livenessFrame)
+                    if case .denied = snapshot.decision {
+                        lastOutcome = snapshot.decision.denialReason
+                        return .spoofSuspected
+                    }
+                }
                 if wrongFaceStartedAt == nil {
                     wrongFaceStartedAt = .now
                 }
