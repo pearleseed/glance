@@ -152,6 +152,128 @@ struct SettingsMenuPickerPill<MenuContent: View>: View {
     }
 }
 
+/// Pill-shaped global shortcut recorder matching `SettingsMenuPickerPill`'s chrome.
+/// Captures key-downs locally while `isRecording` is active: Escape cancels,
+/// Delete/Backspace clears to `nil`, and any key with ⌘/⌃/⌥ saves and ends recording.
+struct ShortcutRecorderPill: View {
+    @Binding var shortcut: HotKeyShortcut?
+    @Binding var isRecording: Bool
+
+    @State private var keyMonitor: Any?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                if isRecording {
+                    stopRecording()
+                } else {
+                    startRecording()
+                }
+            } label: {
+                Text(labelText)
+                    .font(.system(size: 13, weight: isRecording ? .medium : .regular))
+                    .foregroundStyle(labelColor)
+                    .lineLimit(1)
+                    .padding(.leading, 12)
+                    .padding(.trailing, showsClearButton ? 6 : 12)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showsClearButton {
+                Button {
+                    shortcut = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(SettingsMetrics.textTertiary)
+                        .padding(.trailing, 8)
+                        .frame(height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear shortcut")
+            }
+        }
+        .background(
+            Capsule().fill(
+                isRecording ? GlanceTheme.accent.opacity(0.14) : SettingsMetrics.pickerPillFill
+            )
+        )
+        .overlay {
+            Capsule()
+                .strokeBorder(
+                    isRecording ? GlanceTheme.accent : SettingsMetrics.rowBorder,
+                    lineWidth: isRecording ? 1.5 : SettingsMetrics.rowBorderWidth
+                )
+        }
+        .clipShape(Capsule())
+        .fixedSize()
+        .onChange(of: isRecording) { _, recording in
+            if !recording {
+                removeKeyMonitor()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            stopRecording()
+        }
+        .onDisappear {
+            stopRecording()
+        }
+    }
+
+    private var showsClearButton: Bool {
+        shortcut != nil && !isRecording
+    }
+
+    private var labelText: String {
+        if isRecording { return "Type shortcut…" }
+        return shortcut?.displayString ?? "Record shortcut"
+    }
+
+    private var labelColor: Color {
+        if isRecording { return GlanceTheme.accent }
+        return shortcut == nil ? SettingsMetrics.textSecondary : SettingsMetrics.textPrimary
+    }
+
+    private func startRecording() {
+        removeKeyMonitor()
+        isRecording = true
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch HotKeyShortcut.classify(keyDownEvent: event) {
+            case .cancel:
+                stopRecording()
+                return nil
+            case .clear:
+                shortcut = nil
+                stopRecording()
+                return nil
+            case .assign(let newShortcut):
+                shortcut = newShortcut
+                stopRecording()
+                return nil
+            case .ignore:
+                return nil
+            }
+        }
+    }
+
+    private func stopRecording() {
+        removeKeyMonitor()
+        if isRecording {
+            isRecording = false
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+}
+
 /// Multiple `SettingsRowContent` rows in one card, separated by hairline
 /// dividers that match `rowBorder`.
 struct SettingsGroup<Content: View>: View {

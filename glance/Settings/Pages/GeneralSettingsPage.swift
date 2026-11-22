@@ -50,6 +50,9 @@ struct GeneralSettingsPage: View {
         }
         .animation(SettingsMetrics.stateTransitionAnimation, value: isSessionUnlocked)
         .onAppear { pocController.refreshCredentialStatus() }
+        .onChange(of: isSessionUnlocked) { _, unlocked in
+            if !unlocked { coordinator.isRecordingToggleShortcut = false }
+        }
         // The password prompt runs in the notch, outside this view's hierarchy,
         // so refresh the session state when that flow finishes.
         .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
@@ -100,6 +103,13 @@ struct GeneralSettingsPage: View {
                     GlanceToggle(isOn: $coordinator.isEnabled)
                 }
                 SettingsGroupDivider()
+                SettingsRowContent(title: "Toggle shortcut") {
+                    ShortcutRecorderPill(
+                        shortcut: $settings.faceUnlockToggleShortcut,
+                        isRecording: $coordinator.isRecordingToggleShortcut
+                    )
+                }
+                SettingsGroupDivider()
                 UnlockTriggerPicker(selection: $settings.unlockTriggers, isEnabled: coordinator.isEnabled)
                 SettingsGroupDivider()
                 displayPicker()
@@ -122,6 +132,9 @@ struct GeneralSettingsPage: View {
                     }
                 }
             }
+            if coordinator.isToggleShortcutUnavailable {
+                SettingsCaption(text: "That toggle shortcut is already used by another app or the system — choose a different combination.")
+            }
             if let launchAtLoginError {
                 SettingsCaption(text: launchAtLoginError)
             }
@@ -129,6 +142,25 @@ struct GeneralSettingsPage: View {
                 SettingsCaption(text: "Running from Xcode — permission checks resolve against Xcode’s grants, not glance’s, so this reading is meaningless. Launch glance.app on its own to see the real state.")
             } else if needsInputMonitoring {
                 inputMonitoringNotice()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionTitle(text: "Active when")
+                SettingsGroup {
+                    SettingsRowContent(title: "Built-in only") {
+                        GlanceToggle(isOn: $settings.isFaceUnlockEnabledBuiltInOnly)
+                    }
+                    SettingsGroupDivider()
+                    SettingsRowContent(title: "Built-in + external") {
+                        GlanceToggle(isOn: $settings.isFaceUnlockEnabledBuiltInAndExternal)
+                    }
+                    SettingsGroupDivider()
+                    SettingsRowContent(title: "External only") {
+                        GlanceToggle(isOn: $settings.isFaceUnlockEnabledExternalOnly)
+                    }
+                }
+                .disabled(!coordinator.isEnabled)
+                .opacity(coordinator.isEnabled ? 1 : 0.4)
             }
 
             VStack(alignment: .leading, spacing: 8) {

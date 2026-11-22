@@ -7,6 +7,7 @@
 //  Known limitation: LivenessAnalyzer defeats a photo but not a replayed video (real non-rigid motion looks live) — a successful spoof types the real macOS password.
 //
 
+import AppKit
 import Foundation
 import CoreGraphics
 import Observation
@@ -23,7 +24,11 @@ final class FaceUnlockCoordinator {
     var isEnabled: Bool {
         didSet {
             GlanceSettings.shared.isFaceUnlockEnabled = isEnabled
-            if !isEnabled { disarmOverlay() }
+            if !isEnabled {
+                disarmOverlay()
+            } else {
+                updateSpaceMonitor()
+            }
         }
     }
 
@@ -57,6 +62,31 @@ final class FaceUnlockCoordinator {
     private var autoRetryTask: Task<Void, Never>?
     /// Gap between headless auto-retries, just to keep the camera from restarting in a tight loop.
     private let headlessRetryDelay: Duration = .seconds(1)
+    /// Max wait for `CGSessionCopyCurrentDictionary()` to catch up with a lock/wake notification.
+    private let lockStateSettleTimeout: Duration = .milliseconds(300)
+    /// Polling cadence while waiting for lock state to settle.
+    private let lockStatePollInterval: Duration = .milliseconds(25)
+    /// Polling cadence while waiting for the next fresh camera frame during a scan.
+    private let framePollInterval: Duration = .milliseconds(5)
+    /// Brief buffer past the login window's entrance before showing the notch overlay.
+    private let armDelay: Duration = .milliseconds(250)
+
+    private var wakeSettleTask: Task<Void, Never>?
+    private var armTask: Task<Void, Never>?
+    private var cameraPrewarmTask: Task<Void, Never>?
+    private let observerBox = ObserverBox()
+
+    /// System-wide shortcut for toggling Face Unlock on/off.
+    private let toggleHotKey = GlobalHotKey()
+    /// Pauses global hotkey handling while `ShortcutRecorderPill` is capturing a new binding.
+    var isRecordingToggleShortcut = false {
+        didSet {
+            guard isRecordingToggleShortcut != oldValue else { return }
+            syncToggleHotKeyRegistration()
+        }
+    }
+    /// True when Carbon refused the configured toggle shortcut (e.g. conflict with another app).
+    private(set) var isToggleShortcutUnavailable = false
 
     /// When off, no notch/pill presence at all — every overlay call in this file is conditioned on this rather than just skipping the video.
     private var showsUI: Bool { GlanceSettings.shared.showUnlockAnimation }
@@ -82,7 +112,12 @@ final class FaceUnlockCoordinator {
         self.isEnabled = GlanceSettings.shared.isFaceUnlockEnabled
         self.matchThreshold = GlanceSettings.shared.matchThreshold
         spaceKeyMonitor.onSpaceKeyDown = { [weak self] in self?.handleSpaceKeyPress() }
+        toggleHotKey.onHotKey = { [weak self] in self?.toggleFromShortcut() }
         observeLockAndWakeEvents()
+        observeDisplayContextSettings()
+        observeScreenParameters()
+        observeToggleShortcut()
+        syncToggleHotKeyRegistration()
     }
 
     /// Re-subscribes on every change — `withObservationTracking` only fires once per registration.
@@ -95,11 +130,109 @@ final class FaceUnlockCoordinator {
             _ = lockMonitor.eventCount
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.observeLockAndWakeEvents()
-                // Brief settle delay: CGSession's reported state can lag the true state right after wake.
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                self?.evaluateTrigger()
+                guard let self else { return }
+                self.observeLockAndWakeEvents()
+                self.scheduleLockStateEvaluation()
             }
+        }
+    }
+
+    private func observeDisplayContextSettings() {
+        withObservationTracking {
+            let settings = GlanceSettings.shared
+            _ = settings.isFaceUnlockEnabledBuiltInOnly
+            _ = settings.isFaceUnlockEnabledBuiltInAndExternal
+            _ = settings.isFaceUnlockEnabledExternalOnly
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeDisplayContextSettings()
+                self.handleDisplayContextOrPreferenceChange()
+            }
+        }
+    }
+
+    private func observeScreenParameters() {
+        observerBox.add(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleDisplayContextOrPreferenceChange()
+            }
+        })
+    }
+
+    private func handleDisplayContextOrPreferenceChange() {
+        if !GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) {
+            disarmOverlay()
+        } else {
+            updateSpaceMonitor()
+        }
+    }
+
+    private func observeToggleShortcut() {
+        withObservationTracking {
+            _ = GlanceSettings.shared.faceUnlockToggleShortcut
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeToggleShortcut()
+                self.syncToggleHotKeyRegistration()
+            }
+        }
+    }
+
+    private func syncToggleHotKeyRegistration() {
+        guard !isRecordingToggleShortcut else {
+            toggleHotKey.unregister()
+            isToggleShortcutUnavailable = false
+            return
+        }
+        guard let shortcut = GlanceSettings.shared.faceUnlockToggleShortcut else {
+            toggleHotKey.unregister()
+            isToggleShortcutUnavailable = false
+            return
+        }
+        isToggleShortcutUnavailable = !toggleHotKey.register(shortcut)
+    }
+
+    func toggleFromShortcut() {
+        guard !isRecordingToggleShortcut else { return }
+        isEnabled.toggle()
+        NSSound(named: isEnabled ? "Tink" : "Pop")?.play()
+    }
+
+    /// Polls `LockMonitor.isScreenActuallyLocked()` briefly after wake/lock events since CGSession
+    /// can lag behind distributed/workspace notifications, exiting early as soon as lock state settles.
+    /// `.screenUnlocked` and `.willSleep` evaluate immediately so unlock disarms without delay.
+    private func scheduleLockStateEvaluation() {
+        wakeSettleTask?.cancel()
+        wakeSettleTask = nil
+
+        let lastEvent = lockMonitor.lastEvent
+        let shouldPollForLock = !lockMonitor.isSleeping
+            && lastEvent != .screenUnlocked
+            && lastEvent != .willSleep
+            && (lastEvent == .wake || lastEvent == .screenLocked || lockMonitor.isScreenLocked)
+
+        guard shouldPollForLock, !LockMonitor.isScreenActuallyLocked() else {
+            evaluateTrigger()
+            return
+        }
+
+        wakeSettleTask = Task { [weak self] in
+            guard let self else { return }
+            let deadline = ContinuousClock.now + self.lockStateSettleTimeout
+            while !LockMonitor.isScreenActuallyLocked(),
+                  ContinuousClock.now < deadline,
+                  !Task.isCancelled {
+                try? await Task.sleep(for: self.lockStatePollInterval)
+            }
+            guard !Task.isCancelled else { return }
+            self.wakeSettleTask = nil
+            self.evaluateTrigger()
         }
     }
 
@@ -111,6 +244,10 @@ final class FaceUnlockCoordinator {
             return
         }
         guard !lockMonitor.isSleeping else { return }
+        guard GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) else {
+            disarmOverlay()
+            return
+        }
 
         // `.wake` (sleep, display sleep, or screensaver stopping) is an explicit "let me back in," so clear the one-shot guard.
         // `isWithinRecentArmBurst` keeps the several wake signals from one lid-open from each re-arming and fighting over the camera.
@@ -149,10 +286,30 @@ final class FaceUnlockCoordinator {
 
         hasArmedForCurrentLock = true
         lastArmedAt = .now
-        Task { [weak self] in
-            // arm() only shows a small closed notch silhouette, so this only needs a brief buffer past the login window's entrance.
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            await self?.arm(autoScan: shouldAutoScan)
+
+        armTask?.cancel()
+        armTask = nil
+        cameraPrewarmTask?.cancel()
+        cameraPrewarmTask = nil
+
+        if showsUI {
+            if shouldAutoScan {
+                // Start warming the camera while waiting out the login-window entrance buffer.
+                cameraPrewarmTask = Task { [weak self] in
+                    await self?.camera.start()
+                }
+            }
+            armTask = Task { [weak self] in
+                guard let self else { return }
+                // arm() only shows a small closed notch silhouette, so this only needs a brief buffer past the login window's entrance.
+                try? await Task.sleep(for: self.armDelay)
+                guard !Task.isCancelled else { return }
+                self.armTask = nil
+                self.arm(autoScan: shouldAutoScan)
+            }
+        } else {
+            // Headless has no overlay entrance to wait for — arm and start scanning immediately.
+            arm(autoScan: shouldAutoScan)
         }
     }
 
@@ -172,6 +329,12 @@ final class FaceUnlockCoordinator {
     }
 
     private func disarmOverlay() {
+        wakeSettleTask?.cancel()
+        wakeSettleTask = nil
+        armTask?.cancel()
+        armTask = nil
+        cameraPrewarmTask?.cancel()
+        cameraPrewarmTask = nil
         scanTask?.cancel()
         scanTask = nil
         // Bumping makes any cycle still suspended at `await camera.start()` inert, rather than resuming and re-showing the overlay.
@@ -187,6 +350,7 @@ final class FaceUnlockCoordinator {
     /// Idempotent and safe to call on every lock/wake event. Deliberately does not prompt for Input Monitoring — a missing grant just means "don't listen."
     private func updateSpaceMonitor() {
         let shouldListen = isEnabled
+            && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
             && isOnboardingGateSatisfied
             && hasUnlockCapableEmbedder
             && GlanceSettings.shared.unlockTriggers.contains(.onSpace)
@@ -202,6 +366,7 @@ final class FaceUnlockCoordinator {
     /// Runs the same gate chain as `evaluateTrigger`, then starts a scan. Independent of `LockMonitor` events, so doesn't touch `hasArmedForCurrentLock`.
     private func handleSpaceKeyPress() {
         guard isEnabled,
+              GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()),
               isOnboardingGateSatisfied,
               hasUnlockCapableEmbedder,
               GlanceSettings.shared.unlockTriggers.contains(.onSpace),
@@ -223,13 +388,33 @@ final class FaceUnlockCoordinator {
             // Closed pill/notch already up — expand and scan, like a hover retry.
             startScanCycle()
         } else {
-            Task { [weak self] in await self?.arm(autoScan: true) }
+            armTask?.cancel()
+            armTask = nil
+            arm(autoScan: true)
         }
     }
 
+    /// Shared gate checked at arm, scan-cycle entry, and auto-retry wakeup.
+    private var canArmOrScan: Bool {
+        LockMonitor.isScreenActuallyLocked()
+            && isEnabled
+            && isOnboardingGateSatisfied
+            && hasUnlockCapableEmbedder
+            && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
+    }
+
+    private func stopPrewarmedCamera() {
+        cameraPrewarmTask?.cancel()
+        cameraPrewarmTask = nil
+        camera.stop()
+    }
+
     /// Either way the overlay still arms — a deselected trigger only skips the automatic scan, leaving hover-to-start available.
-    private func arm(autoScan: Bool) async {
-        guard LockMonitor.isScreenActuallyLocked(), isEnabled, isOnboardingGateSatisfied, hasUnlockCapableEmbedder else { return }
+    private func arm(autoScan: Bool) {
+        guard canArmOrScan else {
+            stopPrewarmedCamera()
+            return
+        }
         guard showsUI else {
             // Headless: evaluateTrigger() already guaranteed autoScan is true here, so this is just "start scanning."
             startScanCycle()
@@ -258,13 +443,22 @@ final class FaceUnlockCoordinator {
     /// of itself. This was a real bug — a superseded `camera.stop()` queued behind the newer cycle's `startRunning()` made the
     /// camera visibly switch on then die mid-warm-up, leaving the surviving cycle polling a dead session and never unlocking.
     private func runScanCycle(generation: Int) async {
-        guard LockMonitor.isScreenActuallyLocked(),
-              isEnabled,
-              isOnboardingGateSatisfied,
-              hasUnlockCapableEmbedder else { return }
+        guard canArmOrScan else {
+            stopPrewarmedCamera()
+            return
+        }
 
-        await camera.start()
-        guard generation == scanGeneration else { return }
+        var ranPrewarm = false
+        if let prewarm = cameraPrewarmTask {
+            ranPrewarm = true
+            await prewarm.value
+            guard generation == scanGeneration else { return }
+            cameraPrewarmTask = nil
+        }
+        if !camera.isRunning && !(ranPrewarm && camera.errorMessage != nil) {
+            await camera.start()
+            guard generation == scanGeneration else { return }
+        }
 
         if let error = camera.errorMessage {
             statusMessage = error
@@ -326,14 +520,20 @@ final class FaceUnlockCoordinator {
 
     /// `delay` waits out whatever the overlay is still showing so the retry doesn't start underneath the previous outcome.
     private func scheduleAutoRetryIfEnabled(after delay: Duration) {
-        guard GlanceSettings.shared.autoRetryOnce, !hasAutoRetriedForCurrentLock, isOnboardingGateSatisfied else { return }
+        guard GlanceSettings.shared.autoRetryOnce,
+              !hasAutoRetriedForCurrentLock,
+              isOnboardingGateSatisfied,
+              GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) else { return }
         hasAutoRetriedForCurrentLock = true
         autoRetryTask?.cancel()
         autoRetryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
             // Re-check rather than trust the delay: the user may have unlocked by password or retried manually while this waited.
-            guard LockMonitor.isScreenActuallyLocked(), self.isEnabled, self.isOnboardingGateSatisfied else { return }
+            guard LockMonitor.isScreenActuallyLocked(),
+                  self.isEnabled,
+                  self.isOnboardingGateSatisfied,
+                  GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) else { return }
             if self.showsUI {
                 guard NotchOverlayController.shared.phase == .closed else { return }
             }
@@ -384,8 +584,7 @@ final class FaceUnlockCoordinator {
             guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
 
             guard let frame = camera.currentFrame, frame.id != lastProcessedFrameID else {
-                // 20ms keeps the liveness window's sample count high while staying close to the camera's native ~33ms cadence.
-                try? await Task.sleep(nanoseconds: 20_000_000)
+                try? await Task.sleep(for: framePollInterval)
                 continue
             }
             lastProcessedFrameID = frame.id
@@ -393,7 +592,7 @@ final class FaceUnlockCoordinator {
             let pipeline = self.pipeline
             let previousBoundingBox = lastFaceBoundingBox
             let outcome = await Task.detached(priority: .userInitiated) { () -> (FaceRecognitionResult, LivenessFrame)? in
-                guard let result = try? pipeline.recognize(in: frame.image, preferNear: previousBoundingBox) else { return nil }
+                guard let result = try? pipeline.recognize(in: frame, preferNear: previousBoundingBox, includeQuality: false) else { return nil }
                 let faceCrop = CameraManager.renderCrop(from: frame, imageRect: result.face.boundingBox)
                 return (result, LivenessFeatureExtractor.extract(from: result, frame: frame.image, faceCrop: faceCrop))
             }.value
@@ -402,7 +601,6 @@ final class FaceUnlockCoordinator {
                 wrongFaceStartedAt = nil
                 lastFaceBoundingBox = nil
                 resetIdentityLivenessState()
-                try? await Task.sleep(nanoseconds: 20_000_000)
                 continue
             }
             lastFaceBoundingBox = result.face.normalizedBoundingBox
@@ -458,9 +656,22 @@ final class FaceUnlockCoordinator {
                 await pocController.injectStoredPassword(requireAuthoritativeLock: true)
                 return .matched
             }
-
-            try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return .noResolution
+    }
+
+    /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister them safely under Swift 6.
+    nonisolated private final class ObserverBox: @unchecked Sendable {
+        private var tokens: [NSObjectProtocol] = []
+
+        func add(_ token: NSObjectProtocol) {
+            tokens.append(token)
+        }
+
+        deinit {
+            for token in tokens {
+                NotificationCenter.default.removeObserver(token)
+            }
+        }
     }
 }

@@ -37,14 +37,11 @@ enum CameraDeviceCatalog {
         availableDevices().filter(\.isUsable)
     }
 
-    /// True if the currently-active screen is the Mac's built-in display
-    /// (vs. an external monitor) — used to pick between the built-in/
-    /// external camera overrides.
+    /// True if the Mac's built-in display is active (`.builtInOnly` or
+    /// `.builtInAndExternal`, vs. `.externalOnly` in clamshell mode) — used to
+    /// pick between the built-in/external camera overrides.
     static func isUsingBuiltInDisplay() -> Bool {
-        guard let screen = NSScreen.main,
-              let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-        else { return true }
-        return CGDisplayIsBuiltin(screenNumber) != 0
+        DisplayContext.current() != .externalOnly
     }
 
     /// Reads the MainActor-isolated preference for the active display context so
