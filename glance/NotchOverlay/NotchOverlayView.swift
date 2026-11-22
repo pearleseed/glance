@@ -221,6 +221,7 @@ struct NotchOverlayView: View {
     /// whole panel — hence passing it into `MinimalUnlockView` rather than wrapping `Group`.
     @ViewBuilder
     private var scanContent: some View {
+        let animationColor = GlanceSettings.shared.unlockAnimationColor
         if isMinimalScan {
             MinimalUnlockView(
                 media: controller.media,
@@ -235,11 +236,12 @@ struct NotchOverlayView: View {
                 mediaVerticalInset: style == .notch
                     ? NotchGeometry.minimalNotchMediaVerticalInset
                     : NotchGeometry.minimalMediaVerticalInset,
+                color: animationColor,
                 pulseScale: scanPulseScale,
                 pulseOpacity: scanPulseOpacity
             )
         } else {
-            ScanAnimationView(media: controller.media)
+            ScanAnimationView(media: controller.media, color: animationColor)
                 .padding(.leading, scanContentPaddingLeading)
                 .padding(.trailing, scanContentPaddingTrailing)
                 .padding(.top, scanContentPaddingTop)

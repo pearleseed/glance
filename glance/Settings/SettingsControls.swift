@@ -803,14 +803,28 @@ struct SettingsOptionTile<Preview: View>: View {
     }
 }
 
+@MainActor
+private enum UnlockAnimationPreview {
+    private static var activeTask: Task<Void, Never>?
+    private static let holdDuration: Duration = .seconds(1.5)
+
+    static func trigger(style: UnlockAnimationStyle) {
+        activeTask?.cancel()
+        NotchOverlayController.shared.present(styleOverride: style)
+        activeTask = Task {
+            try? await Task.sleep(for: holdDuration)
+            guard !Task.isCancelled else { return }
+            NotchOverlayController.shared.finish(success: true)
+        }
+    }
+}
+
 /// Unlock animation picker — connects, inside one `SettingsGroup`, to the
 /// "Show animation" toggle above it (see `GeneralSettingsPage`).
 struct UnlockAnimationPicker: View {
     @Binding var selection: UnlockAnimationStyle
+    var color: UnlockAnimationColor = .blue
     var isEnabled: Bool = true
-
-    /// How long the live preview holds on the success animation before collapsing.
-    private static let previewHoldDuration: Duration = .seconds(1.5)
 
     var body: some View {
         SettingsLabeledOptionRow(
@@ -821,7 +835,10 @@ struct UnlockAnimationPicker: View {
                 SettingsOptionTile(
                     title: style.title,
                     isSelected: selection == style,
-                    action: { selectAndPreview(style) },
+                    action: {
+                        selection = style
+                        UnlockAnimationPreview.trigger(style: style)
+                    },
                     previewHeight: SettingsMetrics.unlockAnimationOptionPreviewSize.height,
                     previewWidth: SettingsMetrics.unlockAnimationOptionPreviewSize.width
                 ) {
@@ -831,17 +848,6 @@ struct UnlockAnimationPicker: View {
         }
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.4)
-    }
-
-    /// Picks the tile (a re-tap replays the preview too) and plays that
-    /// style's real animation on the notch/pill via `styleOverride`.
-    private func selectAndPreview(_ style: UnlockAnimationStyle) {
-        selection = style
-        NotchOverlayController.shared.present(styleOverride: style)
-        Task {
-            try? await Task.sleep(for: Self.previewHoldDuration)
-            NotchOverlayController.shared.finish(success: true)
-        }
     }
 
     /// A black pill (minimal) or rounded panel (original), each showing the
@@ -855,7 +861,7 @@ struct UnlockAnimationPicker: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer(minLength: 6)
-                UnlockStillThumbnail()
+                UnlockStillThumbnail(color: color)
                     .frame(width: 18, height: 18)
             }
             .padding(.horizontal, 10)
@@ -864,7 +870,7 @@ struct UnlockAnimationPicker: View {
             .padding(.horizontal, 12)
         case .original:
             VStack {
-            UnlockStillThumbnail()
+            UnlockStillThumbnail(color: color)
                 .padding(10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -878,12 +884,72 @@ struct UnlockAnimationPicker: View {
     }
 }
 
+/// Unlock animation color picker — connects, inside one `SettingsGroup`, below
+/// `UnlockAnimationPicker` (see `GeneralSettingsPage`).
+struct UnlockAnimationColorPicker: View {
+    @Binding var selection: UnlockAnimationColor
+    var style: UnlockAnimationStyle = .original
+    var isEnabled: Bool = true
+
+    var body: some View {
+        SettingsLabeledOptionRow(
+            title: "Color",
+            subtitle: "Color of the face scan and unlock animation"
+        ) {
+            ForEach(UnlockAnimationColor.allCases) { color in
+                SettingsOptionTile(
+                    title: color.title,
+                    isSelected: selection == color,
+                    action: {
+                        selection = color
+                        UnlockAnimationPreview.trigger(style: style)
+                    },
+                    previewHeight: SettingsMetrics.triggerOptionPreviewSize.height,
+                    previewWidth: SettingsMetrics.triggerOptionPreviewSize.width
+                ) {
+                    preview(for: color)
+                }
+            }
+        }
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+
+    @ViewBuilder
+    private func preview(for color: UnlockAnimationColor) -> some View {
+        switch color {
+        case .blueToGreen:
+            HStack(spacing: 4) {
+                UnlockStillThumbnail(color: .blueToGreen, media: .idle)
+                    .frame(width: 16, height: 16)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.65))
+                UnlockStillThumbnail(color: .blueToGreen, media: .success)
+                    .frame(width: 16, height: 16)
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 28)
+            .background(Color.black, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        case .blue, .green:
+            UnlockStillThumbnail(color: color, media: .success)
+                .padding(5)
+                .frame(width: 30, height: 30)
+                .background(Color.black, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+}
 
 private struct UnlockStillThumbnail: View {
+    var color: UnlockAnimationColor = .blue
+    var media: ScanMedia = .success
+
     var body: some View {
-        if let url = Bundle.main.url(forResource: "unlockstatic", withExtension: "png"),
+        if let url = Bundle.main.url(forResource: "unlockstatic-small", withExtension: "png")
+            ?? Bundle.main.url(forResource: "unlockstatic", withExtension: "png"),
            let nsImage = NSImage(contentsOf: url) {
-            Image(nsImage: nsImage)
+            let tinted = AnimationTint.apply(color.resolvedTintRGB(for: media), to: nsImage)
+            Image(nsImage: tinted)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
         } else {

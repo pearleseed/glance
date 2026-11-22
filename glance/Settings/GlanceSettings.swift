@@ -112,6 +112,7 @@ final class GlanceSettings {
         static let strictCloseRangeOnly = "GlanceSettings.strictCloseRangeOnly"
         static let unlockAnimationStyle = "GlanceSettings.unlockAnimationStyle"
         static let showUnlockAnimation = "GlanceSettings.showUnlockAnimation"
+        static let unlockAnimationColor = "GlanceSettings.unlockAnimationColor"
         /// Legacy bool key — read once during migration, then ignored.
         static let playUnlockAnimation = "GlanceSettings.playUnlockAnimation"
         static let unlockTriggers = "GlanceSettings.unlockTriggers"
@@ -200,6 +201,9 @@ final class GlanceSettings {
     }
     var showUnlockAnimation: Bool {
         didSet { defaults.set(showUnlockAnimation, forKey: Key.showUnlockAnimation) }
+    }
+    var unlockAnimationColor: UnlockAnimationColor {
+        didSet { defaults.set(unlockAnimationColor.rawValue, forKey: Key.unlockAnimationColor) }
     }
 
     /// What the overlay should actually render — the pick, or `.none` when
@@ -362,6 +366,8 @@ final class GlanceSettings {
         unlockAnimationStyle = storedStyle == .none ? .original : storedStyle
         showUnlockAnimation = defaults.object(forKey: Key.showUnlockAnimation) as? Bool
             ?? (storedStyle != .none)
+        unlockAnimationColor = defaults.string(forKey: Key.unlockAnimationColor)
+            .flatMap(UnlockAnimationColor.init(rawValue:)) ?? .blue
 
         // On wake/lock by default, not on space — `.onSpace` needs Input
         // Monitoring, which a fresh install shouldn't request unprompted.

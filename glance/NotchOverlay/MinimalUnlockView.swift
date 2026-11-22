@@ -17,6 +17,7 @@ struct MinimalUnlockView: View {
     var lockIconSize: CGFloat = NotchGeometry.minimalLockIconSize
     var mediaWidth: CGFloat = NotchGeometry.minimalMediaWidth
     var mediaVerticalInset: CGFloat = NotchGeometry.minimalMediaVerticalInset
+    var color: UnlockAnimationColor = GlanceSettings.shared.unlockAnimationColor
     /// Applied to the video only; defaults to identity so most callers can ignore it.
     var pulseScale: CGFloat = 1
     var pulseOpacity: Double = 1
@@ -37,7 +38,7 @@ struct MinimalUnlockView: View {
 
             Spacer(minLength: 0)
 
-            ScanAnimationView(media: media)
+            ScanAnimationView(media: media, color: color, compact: true)
                 .padding(.vertical, mediaVerticalInset)
                 .frame(width: mediaWidth)
                 // Scoped to the video alone — the lock icon on the left

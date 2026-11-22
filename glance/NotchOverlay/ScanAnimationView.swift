@@ -10,34 +10,19 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-/// Which media the overlay is showing. `.idle` is a still image (the first
-/// frame of the success video) so the transition into a playing video is
-/// seamless.
-enum ScanMedia: Equatable {
-    case idle
-    case success
-    case failure
-
-    var videoResourceName: String? {
-        switch self {
-        case .idle: return nil
-        case .success: return "unlockanimation"
-        case .failure: return "unsuccessfulunlockanimation"
-        }
-    }
-}
-
 struct ScanAnimationView: NSViewRepresentable {
     let media: ScanMedia
+    var color: UnlockAnimationColor = GlanceSettings.shared.unlockAnimationColor
+    var compact: Bool = false
 
     func makeNSView(context: Context) -> ScanAnimationHostView {
         let view = ScanAnimationHostView()
-        view.apply(media: media)
+        view.apply(media: media, color: color, compact: compact)
         return view
     }
 
     func updateNSView(_ nsView: ScanAnimationHostView, context: Context) {
-        nsView.apply(media: media)
+        nsView.apply(media: media, color: color, compact: compact)
     }
 
     static func dismantleNSView(_ nsView: ScanAnimationHostView, coordinator: ()) {
@@ -50,6 +35,8 @@ final class ScanAnimationHostView: NSView {
     private let playerLayer = AVPlayerLayer()
     private let stillImageLayer = CALayer()
     private var currentMedia: ScanMedia?
+    private var currentColor: UnlockAnimationColor?
+    private var currentCompact: Bool?
     private var readyObservation: NSKeyValueObservation?
     private var fallbackRevealWorkItem: DispatchWorkItem?
 
@@ -59,9 +46,7 @@ final class ScanAnimationHostView: NSView {
         layer = CALayer()
 
         stillImageLayer.contentsGravity = .resizeAspect
-        if let still = Self.loadStillFromBundle() {
-            stillImageLayer.contents = still
-        }
+        stillImageLayer.minificationFilter = .trilinear
         layer?.addSublayer(stillImageLayer)
 
         playerLayer.videoGravity = .resizeAspect
@@ -92,28 +77,58 @@ final class ScanAnimationHostView: NSView {
         CATransaction.commit()
     }
 
-    func apply(media: ScanMedia) {
-        guard media != currentMedia else { return }
-        currentMedia = media
-        readyObservation?.invalidate()
-        readyObservation = nil
-        fallbackRevealWorkItem?.cancel()
-        fallbackRevealWorkItem = nil
+    func apply(media: ScanMedia, color: UnlockAnimationColor, compact: Bool) {
+        let mediaChanged = media != currentMedia
+        let colorChanged = color != currentColor
+        let compactChanged = compact != currentCompact
+        guard mediaChanged || colorChanged || compactChanged else { return }
 
-        guard let resource = media.videoResourceName else {
+        let previousColor = currentColor
+        currentMedia = media
+        currentColor = color
+        currentCompact = compact
+
+        if colorChanged || compactChanged {
+            if let still = Self.loadStillFromBundle(compact: compact) {
+                stillImageLayer.contents = AnimationTint.apply(
+                    color.resolvedTintRGB(for: .idle),
+                    to: still
+                )
+            }
+        }
+
+        guard let baseResource = media.videoResourceName else {
             teardownPlayer()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             playerLayer.isHidden = true
             stillImageLayer.isHidden = false
+            CATransaction.commit()
             return
         }
 
+        let tintChanged = color.resolvedTintRGB(for: media) != previousColor?.resolvedTintRGB(for: media)
+        guard mediaChanged || compactChanged || tintChanged else { return }
+
+        let resource = compact ? "\(baseResource)-small" : baseResource
         guard let url = Bundle.main.url(forResource: resource, withExtension: "mp4") else {
             assertionFailure("\(resource).mp4 missing from bundle — check glance/Resources/")
             return
         }
 
         teardownPlayer()
-        let newPlayer = AVPlayer(url: url)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.isHidden = true
+        stillImageLayer.isHidden = false
+        CATransaction.commit()
+
+        let item = AVPlayerItem(url: url)
+        item.videoComposition = AnimationTint.videoComposition(
+            for: item.asset,
+            rgb: color.resolvedTintRGB(for: media)
+        )
+        let newPlayer = AVPlayer(playerItem: item)
         // This can play at the lock screen — never make noise.
         newPlayer.isMuted = true
         // Leaves the player paused on its final frame rather than rewinding.
@@ -166,8 +181,9 @@ final class ScanAnimationHostView: NSView {
 
     /// The asset lives in Resources/ rather than an asset catalog, so
     /// `NSImage(named:)` won't find it — load by URL instead.
-    private static func loadStillFromBundle() -> NSImage? {
-        guard let url = Bundle.main.url(forResource: "unlockstatic", withExtension: "png") else { return nil }
+    private static func loadStillFromBundle(compact: Bool) -> NSImage? {
+        let resource = compact ? "unlockstatic-small" : "unlockstatic"
+        guard let url = Bundle.main.url(forResource: resource, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
     }
 }
