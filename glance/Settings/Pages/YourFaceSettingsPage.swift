@@ -371,10 +371,11 @@ private struct QualityTickStrip: View {
     private var frontalReference: Float? { identity.frontalQualityReference }
 
     var body: some View {
+        let reference = frontalReference
         HStack(spacing: SettingsMetrics.qualityTickSpacing) {
             ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
                 Capsule()
-                    .fill(color(for: sample.qualityTier(frontalReference: frontalReference)))
+                    .fill(color(for: sample.qualityTier(frontalReference: reference)))
                     // maxWidth, not fixed, so more samples than a guided
                     // enrollment's 18 compress instead of overflowing.
                     .frame(maxWidth: SettingsMetrics.qualityTickWidth)

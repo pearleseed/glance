@@ -269,16 +269,18 @@ struct SecuritySelfTest {
                 pixels[idx + 3] = 255
             }
         }
-        let ctx = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )!
-        return ctx.makeImage()!
+        return pixels.withUnsafeMutableBytes { buffer -> CGImage in
+            let ctx = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            return ctx.makeImage()!
+        }
     }
 
     @MainActor
@@ -374,7 +376,7 @@ struct SecuritySelfTest {
         precondition(nativeCrop != nil, "FAIL: CameraFrame.renderCrop returned nil")
         if let nativeCrop {
             precondition(max(nativeCrop.width, nativeCrop.height) <= 512, "FAIL: native crop exceeded maxEdge 512")
-            precondition(nativeCrop.width > Int(seated.boundingBox.width), "FAIL: native crop should use higher-res pixels")
+            precondition(nativeCrop.width == 512, "FAIL: native crop should render at maxEdge 512 from 1080p source")
         }
         let glareCrop = frame.renderCrop(imageRect: seated.boundingBox)
         precondition(glareCrop != nil && max(glareCrop!.width, glareCrop!.height) <= 448, "FAIL: default glare crop contract")

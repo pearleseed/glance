@@ -212,39 +212,38 @@ final class FaceRecognitionPipeline {
         return face.withQuality(matched.quality)
     }
 
+    /// Max normalized distance from `expectedCenter` in `nativeCrop` for a re-detected face to still match `workingFace`.
+    nonisolated private static let maxCropFaceCenterDistance: CGFloat = 0.45
+
     nonisolated private static func selectCropFace(
         in cropFaces: [DetectedFace],
         correspondingTo workingFace: DetectedFace,
         inWorkingSize workingSize: CGSize
     ) -> DetectedFace? {
         guard !cropFaces.isEmpty else { return nil }
-        if cropFaces.count == 1 { return cropFaces[0] }
 
         let expanded = workingFace.boundingBox.insetBy(
             dx: -workingFace.boundingBox.width * nativeCropPadding,
             dy: -workingFace.boundingBox.height * nativeCropPadding
         )
         let clipped = expanded.intersection(CGRect(origin: .zero, size: workingSize))
-        guard clipped.width > 0, clipped.height > 0 else {
-            return largestFace(in: cropFaces)
-        }
+        guard clipped.width > 0, clipped.height > 0 else { return nil }
 
         let expectedCenter = CGPoint(
             x: (workingFace.boundingBox.midX - clipped.minX) / clipped.width,
             y: (workingFace.boundingBox.midY - clipped.minY) / clipped.height
         )
-        return cropFaces.min { lhs, rhs in
-            let lc = CGPoint(
-                x: lhs.boundingBox.midX / max(lhs.imageSize.width, 1),
-                y: lhs.boundingBox.midY / max(lhs.imageSize.height, 1)
-            )
-            let rc = CGPoint(
-                x: rhs.boundingBox.midX / max(rhs.imageSize.width, 1),
-                y: rhs.boundingBox.midY / max(rhs.imageSize.height, 1)
-            )
-            return hypot(lc.x - expectedCenter.x, lc.y - expectedCenter.y)
-                < hypot(rc.x - expectedCenter.x, rc.y - expectedCenter.y)
-        }
+        let nearest = cropFaces
+            .map { face -> (face: DetectedFace, distance: CGFloat) in
+                let center = CGPoint(
+                    x: face.boundingBox.midX / max(face.imageSize.width, 1),
+                    y: face.boundingBox.midY / max(face.imageSize.height, 1)
+                )
+                return (face, hypot(center.x - expectedCenter.x, center.y - expectedCenter.y))
+            }
+            .min { $0.distance < $1.distance }
+        guard let nearest, nearest.distance <= maxCropFaceCenterDistance else { return nil }
+        return nearest.face
     }
 
     nonisolated private static func distance(from face: DetectedFace, to point: CGPoint) -> CGFloat {

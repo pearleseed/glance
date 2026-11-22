@@ -289,13 +289,15 @@ final class FaceUnlockCoordinator {
 
         armTask?.cancel()
         armTask = nil
-        cameraPrewarmTask?.cancel()
-        cameraPrewarmTask = nil
+        if cameraPrewarmTask != nil {
+            stopPrewarmedCamera()
+        }
 
         if showsUI {
             if shouldAutoScan {
                 // Start warming the camera while waiting out the login-window entrance buffer.
                 cameraPrewarmTask = Task { [weak self] in
+                    guard !Task.isCancelled else { return }
                     await self?.camera.start()
                 }
             }

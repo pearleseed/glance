@@ -83,6 +83,7 @@ final class CameraManager: NSObject {
     }
 
     func start() async {
+        guard !Task.isCancelled else { return }
         sessionGeneration &+= 1
         let token = sessionGeneration
 
@@ -92,7 +93,7 @@ final class CameraManager: NSObject {
             permission = .granted
         case .notDetermined:
             let granted = await AVCaptureDevice.requestAccess(for: .video)
-            guard token == sessionGeneration else { return }
+            guard token == sessionGeneration, !Task.isCancelled else { return }
             permission = granted ? .granted : .denied
         default:
             permission = .denied
@@ -106,6 +107,7 @@ final class CameraManager: NSObject {
             return
         }
 
+        guard !Task.isCancelled else { return }
         errorMessage = nil
         isRunning = true
 
