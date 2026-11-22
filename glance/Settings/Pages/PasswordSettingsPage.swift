@@ -56,6 +56,9 @@ struct PasswordSettingsPage: View {
         .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
             guard newPhase == .closed else { return }
             pocController.refreshCredentialStatus()
+            if pocController.hasStoredPassword {
+                statusMessage = nil
+            }
             FaceEnrollmentStore.shared.reloadIfUnlocked()
         }
     }
@@ -75,14 +78,40 @@ struct PasswordSettingsPage: View {
     // MARK: - Locked
 
     private var lockedState: some View {
-        SettingsEmptyStateView(
-            icon: "lock.fill",
-            message: "Session locked",
-            buttonTitle: isUnlocking ? "Authenticating…" : "Unlock session",
-            isButtonEnabled: !isUnlocking,
-            caption: sessionError,
-            action: unlock
-        )
+        let missingSessionKey = SecureCredentialManager.isSessionKeyMissingWithOrphanedData
+        return VStack(spacing: SettingsMetrics.emptyStateSpacing) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: SettingsMetrics.emptyStateIconSize, weight: .regular))
+                .foregroundStyle(SettingsMetrics.textTertiary)
+
+            Text("Session locked")
+                .font(SettingsMetrics.rowFont)
+                .foregroundStyle(SettingsMetrics.textSecondary)
+
+            SettingsPrimaryButton(
+                title: isUnlocking ? "Authenticating…" : "Unlock session",
+                isEnabled: !isUnlocking,
+                action: unlock
+            )
+
+            if let sessionError {
+                SettingsCaption(text: sessionError)
+                    .multilineTextAlignment(.center)
+            } else if missingSessionKey {
+                SettingsCaption(text: "The session key is missing, so stored encrypted data can no longer be unlocked. Hold below to reset stored data and start fresh.")
+                    .multilineTextAlignment(.center)
+            }
+
+            if sessionError != nil || missingSessionKey {
+                HoldToConfirmButton(title: "Reset stored data", action: removePassword)
+            }
+
+            if let statusMessage {
+                SettingsCaption(text: statusMessage)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: SettingsMetrics.emptyStateMinHeight)
     }
 
     // MARK: - Unlocked
@@ -110,6 +139,25 @@ struct PasswordSettingsPage: View {
 
                 SettingsGroupDivider()
 
+                SettingsRowContent(
+                    title: "Unlock session at login",
+                    info: "Automatically unlocks Glance when you log in so you don't need Touch ID on every launch. Tradeoff: stores a copy of the session key in your Keychain without a Touch ID prompt."
+                ) {
+                    GlanceToggle(isOn: Binding(
+                        get: { pocController.unlocksAtLogin },
+                        set: { newValue in
+                            do {
+                                try pocController.setUnlockAtLogin(newValue)
+                                statusMessage = nil
+                            } catch {
+                                statusMessage = "Couldn't update login unlock: \(error.localizedDescription)"
+                            }
+                        }
+                    ))
+                }
+
+                SettingsGroupDivider()
+
                 SettingsRowContent(title: "Change password") {
                     SettingsPrimaryButton(title: "Change", compact: true) {
                         OnboardingController.startPasswordOnly()
@@ -134,6 +182,7 @@ struct PasswordSettingsPage: View {
     private func unlock() {
         isUnlocking = true
         sessionError = nil
+        statusMessage = nil
         Task {
             await pocController.unlockSession()
             sessionError = pocController.sessionError
@@ -144,13 +193,15 @@ struct PasswordSettingsPage: View {
         }
     }
 
-    /// Face samples must be deleted before the password/session key —
-    /// `deletePassword()` clears the cached session key, and deleting the
-    /// face store requires an unlocked session.
+    /// Delete Keychain items before wiping `FaceEnrollmentStore` so a Keychain failure
+    /// cannot destroy face enrollments on its own (`deleteAll()` removes the encrypted
+    /// file directly and does not require an unlocked session).
     private func removePassword() {
         do {
-            FaceEnrollmentStore.shared.deleteAll()
             try SecureCredentialManager.deletePassword()
+            FaceEnrollmentStore.shared.deleteAll()
+            sessionError = nil
+            pocController.sessionError = nil
             pocController.refreshCredentialStatus()
             statusMessage = "Password and face enrollment removed."
         } catch {

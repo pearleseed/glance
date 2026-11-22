@@ -1072,6 +1072,15 @@ final class OnboardingController {
         defer { isSavingPassword = false }
 
         do {
+            let hadOrphanedData = try await Task.detached(priority: .userInitiated) {
+                guard SecureCredentialManager.isSessionKeyMissingWithOrphanedData else { return false }
+                try SecureCredentialManager.deletePassword()
+                return true
+            }.value
+            if hadOrphanedData {
+                store.deleteAll()
+            }
+
             try await Task.detached(priority: .userInitiated) {
                 try SecureCredentialManager.unlockSession(reason: "Set up Glance")
             }.value

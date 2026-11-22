@@ -16,6 +16,7 @@ final class POCController {
 
     var hasStoredPassword: Bool = SecureCredentialManager.hasStoredPassword()
     var isSessionUnlocked: Bool = SecureCredentialManager.isSessionUnlocked
+    var unlocksAtLogin: Bool = SecureCredentialManager.unlocksAtLogin
     var sessionError: String? = nil
 
     /// Bound to the setup SecureField. Cleared immediately after a successful save.
@@ -34,6 +35,7 @@ final class POCController {
     func refreshCredentialStatus() {
         hasStoredPassword = SecureCredentialManager.hasStoredPassword()
         isSessionUnlocked = SecureCredentialManager.isSessionUnlocked
+        unlocksAtLogin = SecureCredentialManager.unlocksAtLogin
     }
 
     // MARK: - Session (Touch ID gate)
@@ -45,11 +47,29 @@ final class POCController {
             try await Task.detached(priority: .userInitiated) {
                 try SecureCredentialManager.unlockSession(reason: "Authenticate to set up or use glance")
             }.value
-            isSessionUnlocked = true
+            refreshCredentialStatus()
         } catch {
-            isSessionUnlocked = false
+            refreshCredentialStatus()
             sessionError = error.localizedDescription
         }
+    }
+
+    /// Attempts a silent launch-time unlock when the user has opted into "Unlock session at login".
+    func unlockSessionAtLaunch() async {
+        guard !isSessionUnlocked else { return }
+        let unlocked = await Task.detached(priority: .userInitiated) {
+            SecureCredentialManager.unlockSessionFromLoginKey()
+        }.value
+        refreshCredentialStatus()
+        if unlocked {
+            sessionError = nil
+            FaceEnrollmentStore.shared.reloadIfUnlocked()
+        }
+    }
+
+    func setUnlockAtLogin(_ enabled: Bool) throws {
+        try SecureCredentialManager.setUnlockAtLogin(enabled)
+        refreshCredentialStatus()
     }
 
     func lockSession() {
