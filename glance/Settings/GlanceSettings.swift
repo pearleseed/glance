@@ -113,6 +113,8 @@ final class GlanceSettings {
         static let unlockAnimationStyle = "GlanceSettings.unlockAnimationStyle"
         static let showUnlockAnimation = "GlanceSettings.showUnlockAnimation"
         static let unlockAnimationColor = "GlanceSettings.unlockAnimationColor"
+        static let notchWidthAdjustment = "GlanceSettings.notchWidthAdjustment"
+        static let notchHeightAdjustment = "GlanceSettings.notchHeightAdjustment"
         /// Legacy bool key — read once during migration, then ignored.
         static let playUnlockAnimation = "GlanceSettings.playUnlockAnimation"
         static let unlockTriggers = "GlanceSettings.unlockTriggers"
@@ -270,6 +272,35 @@ final class GlanceSettings {
     }
 
     static let faceDetectionRange = 3...10
+    static let notchAdjustmentRange = -20...20
+
+    /// Point adjustments applied to the measured physical notch silhouette on
+    /// notched displays (`-20...20`). Ignored on non-notched (pill) displays.
+    var notchWidthAdjustment: Int {
+        didSet {
+            let clamped = Self.clampNotchAdjustment(notchWidthAdjustment)
+            guard clamped == notchWidthAdjustment else {
+                notchWidthAdjustment = clamped
+                return
+            }
+            defaults.set(notchWidthAdjustment, forKey: Key.notchWidthAdjustment)
+        }
+    }
+
+    var notchHeightAdjustment: Int {
+        didSet {
+            let clamped = Self.clampNotchAdjustment(notchHeightAdjustment)
+            guard clamped == notchHeightAdjustment else {
+                notchHeightAdjustment = clamped
+                return
+            }
+            defaults.set(notchHeightAdjustment, forKey: Key.notchHeightAdjustment)
+        }
+    }
+
+    private static func clampNotchAdjustment(_ value: Int) -> Int {
+        min(max(value, notchAdjustmentRange.lowerBound), notchAdjustmentRange.upperBound)
+    }
 
     /// Which display Face Unlock shows on. `nil` means `NotchGeometry.preferredScreen()`'s
     /// default, re-evaluated live; a pinned display has deliberately no
@@ -368,6 +399,10 @@ final class GlanceSettings {
             ?? (storedStyle != .none)
         unlockAnimationColor = defaults.string(forKey: Key.unlockAnimationColor)
             .flatMap(UnlockAnimationColor.init(rawValue:)) ?? .blue
+        notchWidthAdjustment = (defaults.object(forKey: Key.notchWidthAdjustment) as? Int)
+            .map(Self.clampNotchAdjustment) ?? 0
+        notchHeightAdjustment = (defaults.object(forKey: Key.notchHeightAdjustment) as? Int)
+            .map(Self.clampNotchAdjustment) ?? 0
 
         // On wake/lock by default, not on space — `.onSpace` needs Input
         // Monitoring, which a fresh install shouldn't request unprompted.

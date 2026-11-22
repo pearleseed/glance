@@ -210,7 +210,41 @@ struct GeneralSettingsPage: View {
                     )
                 }
             }
+
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionTitle(text: "Notch size")
+                SettingsGroup {
+                    notchSizeSliderRow(title: "Width", value: $settings.notchWidthAdjustment)
+                    SettingsGroupDivider()
+                    notchSizeSliderRow(title: "Height", value: $settings.notchHeightAdjustment)
+                }
+                SettingsCaption(text: "Fine-tune the notch silhouette if it doesn’t quite match your display’s camera housing. Applies only to displays with a physical notch.")
+            }
+            .onChange(of: settings.notchWidthAdjustment) { _, _ in
+                NotchOverlayController.shared.refreshGeometry()
+            }
+            .onChange(of: settings.notchHeightAdjustment) { _, _ in
+                NotchOverlayController.shared.refreshGeometry()
+            }
         }
+    }
+
+    private func notchSizeSliderRow(title: String, value: Binding<Int>) -> some View {
+        let lowerBound = GlanceSettings.notchAdjustmentRange.lowerBound
+        return SettingsSteppedSliderRowContent(
+            title: title,
+            valueLabel: Self.notchAdjustmentLabel(value.wrappedValue),
+            index: Binding(
+                get: { Double(value.wrappedValue - lowerBound) },
+                set: { value.wrappedValue = lowerBound + Int($0.rounded()) }
+            ),
+            stopCount: GlanceSettings.notchAdjustmentRange.count
+        )
+    }
+
+    private static func notchAdjustmentLabel(_ adjustment: Int) -> String {
+        if adjustment == 0 { return "Default" }
+        return adjustment > 0 ? "+\(adjustment)pt" : "\(adjustment)pt"
     }
 
     private func unlock() {

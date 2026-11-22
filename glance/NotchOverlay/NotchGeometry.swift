@@ -5,10 +5,9 @@
 //  Pure geometry — no AppKit window knowledge.
 //
 
-import AppKit
 import CoreGraphics
 
-struct NotchGeometry {
+nonisolated struct NotchGeometry: Sendable {
     /// Physical notch's own dimensions, or `pillClosedSize`.
     let closedSize: CGSize
     /// True if this screen has a real physical notch (vs. the pill fallback).
@@ -169,79 +168,17 @@ struct NotchGeometry {
     static let notchShadowPadding: CGFloat = 24
     static let pillShadowPadding: CGFloat = 24
 
-    static func windowSize(for style: NotchPanelStyle) -> CGSize {
-        switch style {
-        case .notch:
-            let contentWidth = max(notchOpenSize.width, OnboardingMetrics.maxPanelWidth)
-            let contentHeight = max(notchOpenSize.height, OnboardingMetrics.maxPanelHeight(for: .notch))
-            return CGSize(
-                width: contentWidth + notchShadowPadding * 2 + hoverBump,
-                height: contentHeight + notchShadowPadding + hoverBump
-            )
-        case .pill:
-            let contentWidth = max(pillOpenSize.width, OnboardingMetrics.maxPanelWidth)
-            let contentHeight = max(pillOpenSize.height, OnboardingMetrics.maxPanelHeight(for: .pill))
-            return CGSize(
-                width: contentWidth + pillShadowPadding * 2 + hoverBump,
-                // `pillTopGap` since the detached pill's panel is pushed down by that much.
-                height: contentHeight + pillShadowPadding + hoverBump + pillTopGap
-            )
-        }
-    }
-
-    static func forMainScreen() -> NotchGeometry {
-        guard let screen = NSScreen.main else {
-            return NotchGeometry(closedSize: pillClosedSize, isPhysicalNotch: false)
-        }
-        return forScreen(screen)
-    }
-
-    static func forScreen(_ screen: NSScreen) -> NotchGeometry {
-        guard screen.safeAreaInsets.top > 0 else {
-            return NotchGeometry(closedSize: pillClosedSize, isPhysicalNotch: false)
-        }
-
-        // Width derived from the menu-bar areas flanking the notch — nil/empty on
-        // displays without one, hence the safeAreaInsets check above.
-        let leftPadding = screen.auxiliaryTopLeftArea?.width ?? 0
-        let rightPadding = screen.auxiliaryTopRightArea?.width ?? 0
-        // These are all AppKit point values. Do not impose a model-derived minimum:
-        // the camera housing on a 13-inch MacBook Air is legitimately narrower than
-        // the 200-point housing on several MacBook Pro models.
-        let width = screen.frame.width - leftPadding - rightPadding
-        let height = screen.safeAreaInsets.top
-
-        return NotchGeometry(closedSize: CGSize(width: width, height: height), isPhysicalNotch: true)
-    }
-
-    /// Picks the screen the overlay should show on. If a display is pinned
-    /// (`GlanceSettings.preferredDisplayID`), it's used only if still connected — no
-    /// fallback. Otherwise: the physical notch if any display has one, else the primary screen.
-    @MainActor
-    static func preferredScreen() -> NSScreen? {
-        if let targetID = GlanceSettings.shared.preferredDisplayID {
-            return NSScreen.screens.first { $0.stableDisplayID == targetID }
-        }
-        return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
-    }
-}
-
-extension NSScreen {
-    /// Stable enough to persist a user's display choice across launches — the only
-    /// per-display identity AppKit exposes.
-    var stableDisplayID: String? {
-        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-            return nil
-        }
-        return String(number)
-    }
-
-    /// True for the Mac's own display (vs. an external monitor) — used to pin the Face
-    /// Unlock panel there while the built-in camera is selected.
-    var isBuiltIn: Bool {
-        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-            return false
-        }
-        return CGDisplayIsBuiltin(number) != 0
+    /// Applies user width/height adjustments to the measured physical notch size,
+    /// clamping to safe floors (80pt width, 1pt height) without imposing a 200pt
+    /// minimum so 13-inch MacBook Air notches (< 200pt) keep their true width.
+    nonisolated static func adjustedPhysicalNotchSize(
+        measuredWidth: CGFloat,
+        measuredHeight: CGFloat,
+        widthAdjustment: Int,
+        heightAdjustment: Int
+    ) -> CGSize {
+        let width = max(measuredWidth + CGFloat(widthAdjustment), 80)
+        let height = max(measuredHeight + CGFloat(heightAdjustment), 1)
+        return CGSize(width: width, height: height)
     }
 }

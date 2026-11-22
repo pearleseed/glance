@@ -48,5 +48,23 @@ struct NotchUISelfTest {
                      "FAIL: NSImage tinted green RGB off target: \(nsPx)")
 
         print("PASS: UnlockAnimationColor semantics & linear-light CIColorMatrix tint accuracy verified.")
+
+        // 4. Verify physical notch size adjustment & safe floor (MacBook Air 13" 178pt must NOT be forced to 200pt)
+        let air13 = NotchGeometry.adjustedPhysicalNotchSize(
+            measuredWidth: 178, measuredHeight: 32, widthAdjustment: 0, heightAdjustment: 0
+        )
+        precondition(air13.width == 178 && air13.height == 32, "FAIL: Air 13 notch distorted to \(air13)")
+
+        let adjusted = NotchGeometry.adjustedPhysicalNotchSize(
+            measuredWidth: 178, measuredHeight: 32, widthAdjustment: -10, heightAdjustment: 4
+        )
+        precondition(adjusted.width == 168 && adjusted.height == 36, "FAIL: adjustment math wrong: \(adjusted)")
+
+        let clampedFloor = NotchGeometry.adjustedPhysicalNotchSize(
+            measuredWidth: 90, measuredHeight: 10, widthAdjustment: -20, heightAdjustment: -20
+        )
+        precondition(clampedFloor.width == 80 && clampedFloor.height == 1, "FAIL: safe floor failed: \(clampedFloor)")
+
+        print("PASS: NotchGeometry.adjustedPhysicalNotchSize & safe floor verified.")
     }
 }

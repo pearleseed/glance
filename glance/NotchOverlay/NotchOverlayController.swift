@@ -105,6 +105,11 @@ final class NotchOverlayController {
         }
     }
 
+    /// Re-measures the active screen's geometry (e.g. after user notch size adjustments).
+    func refreshGeometry() {
+        geometry = windowController.currentGeometry
+    }
+
     // MARK: - Armed mode (FaceUnlockCoordinator)
 
     /// Arms the overlay for the lock-screen flow: shows the window and keeps it

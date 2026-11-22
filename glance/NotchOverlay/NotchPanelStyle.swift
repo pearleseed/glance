@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-enum NotchPanelStyle {
+nonisolated enum NotchPanelStyle: Sendable {
     /// Inverted top corners, flush with the screen's top edge.
     case notch
     /// Fully-rounded pill / floating rounded rectangle, detached from the edge.
