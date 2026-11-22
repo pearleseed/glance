@@ -16,6 +16,16 @@ struct glanceApp: App {
 
     var body: some Scene {
         settingsWindow
+            .commands { settingsCommand }
+    }
+
+    private var settingsCommand: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                appDelegate.openSettingsWindow()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
     }
 
     /// Suppressed so Settings doesn't appear on launch/restore. `openWindow` is captured here, not in `onAppear`, since the
@@ -244,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Menu bar "Settings" — the only user-facing way to open the window after onboarding.
-    @objc private func openSettingsWindow() {
+    @objc func openSettingsWindow() {
         revealSettingsWindow()
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -39,6 +39,10 @@ struct ScanAnimationView: NSViewRepresentable {
     func updateNSView(_ nsView: ScanAnimationHostView, context: Context) {
         nsView.apply(media: media)
     }
+
+    static func dismantleNSView(_ nsView: ScanAnimationHostView, coordinator: ()) {
+        nsView.teardownPlayer()
+    }
 }
 
 final class ScanAnimationHostView: NSView {
@@ -69,6 +73,16 @@ final class ScanAnimationHostView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        readyObservation?.invalidate()
+        readyObservation = nil
+        fallbackRevealWorkItem?.cancel()
+        fallbackRevealWorkItem = nil
+        player?.pause()
+        player = nil
+        playerLayer.player = nil
+    }
+
     override func layout() {
         super.layout()
         CATransaction.begin()
@@ -81,8 +95,10 @@ final class ScanAnimationHostView: NSView {
     func apply(media: ScanMedia) {
         guard media != currentMedia else { return }
         currentMedia = media
+        readyObservation?.invalidate()
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
+        fallbackRevealWorkItem = nil
 
         guard let resource = media.videoResourceName else {
             teardownPlayer()
@@ -122,7 +138,9 @@ final class ScanAnimationHostView: NSView {
             guard change.newValue == true else { return }
             DispatchQueue.main.async {
                 self?.fallbackRevealWorkItem?.cancel()
+                self?.fallbackRevealWorkItem = nil
                 reveal()
+                self?.readyObservation?.invalidate()
                 self?.readyObservation = nil
             }
         }
@@ -136,9 +154,11 @@ final class ScanAnimationHostView: NSView {
         newPlayer.play()
     }
 
-    private func teardownPlayer() {
+    func teardownPlayer() {
+        readyObservation?.invalidate()
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
+        fallbackRevealWorkItem = nil
         player?.pause()
         player = nil
         playerLayer.player = nil

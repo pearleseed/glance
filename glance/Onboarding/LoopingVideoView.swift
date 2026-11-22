@@ -23,6 +23,10 @@ struct LoopingVideoView: NSViewRepresentable {
     func updateNSView(_ nsView: LoopingVideoHostView, context: Context) {
         nsView.configure(resourceName: resourceName, pauseBetweenLoops: pauseBetweenLoops)
     }
+
+    static func dismantleNSView(_ nsView: LoopingVideoHostView, coordinator: ()) {
+        nsView.teardown()
+    }
 }
 
 final class LoopingVideoHostView: NSView {
@@ -43,6 +47,18 @@ final class LoopingVideoHostView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = nil
+        player?.pause()
+        player = nil
+        playerLayer.player = nil
     }
 
     override func layout() {
@@ -95,7 +111,7 @@ final class LoopingVideoHostView: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + pauseBetweenLoops, execute: work)
     }
 
-    private func teardown() {
+    func teardown() {
         pendingRestart?.cancel()
         pendingRestart = nil
         if let endObserver {

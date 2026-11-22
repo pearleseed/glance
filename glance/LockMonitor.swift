@@ -41,12 +41,15 @@ final class LockMonitor {
 
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var returnWatchTimer: Timer?
+    private var lastIdleSeconds: Double = 0
 
     init() {
         startMonitoring()
     }
 
     deinit {
+        returnWatchTimer?.invalidate()
         let distributed = DistributedNotificationCenter.default()
         for observer in distributedObservers {
             distributed.removeObserver(observer)
@@ -73,7 +76,15 @@ final class LockMonitor {
             queue: .main
         ) { [weak self] _ in
             self?.isScreenLocked = false
+            self?.stopReturnWatch()
             self?.record(.screenUnlocked)
+        })
+        distributedObservers.append(distributed.addObserver(
+            forName: Notification.Name("com.apple.screensaver.didstart"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.startReturnWatch()
         })
         // Observing the key press that dismissed the screensaver isn't possible — Secure Event Input suppresses keyboard taps
         // on the lock screen regardless of Accessibility trust — so this notification stands in for it.
@@ -82,6 +93,7 @@ final class LockMonitor {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            self?.stopReturnWatch()
             self?.record(.wake)
         })
 
@@ -92,6 +104,7 @@ final class LockMonitor {
             queue: .main
         ) { [weak self] _ in
             self?.isSleeping = true
+            self?.stopReturnWatch()
             self?.record(.willSleep)
         })
         // Display- and system-level wake are treated as equivalent triggers — they land within ~100ms of each other in either order.
@@ -109,6 +122,27 @@ final class LockMonitor {
         ) { [weak self] _ in
             self?.recordWake()
         })
+    }
+
+    private func startReturnWatch() {
+        stopReturnWatch()
+        lastIdleSeconds = 0
+        returnWatchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.checkUserReturned()
+        }
+    }
+
+    private func stopReturnWatch() {
+        returnWatchTimer?.invalidate()
+        returnWatchTimer = nil
+    }
+
+    private func checkUserReturned() {
+        let idle = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
+        if lastIdleSeconds >= 3, idle < 1 {
+            recordWake()
+        }
+        lastIdleSeconds = idle
     }
 
     private func recordWake() {

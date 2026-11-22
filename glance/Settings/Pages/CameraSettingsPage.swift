@@ -3,6 +3,7 @@
 //  glance
 //
 
+import AVFoundation
 import SwiftUI
 
 struct CameraSettingsPage: View {
@@ -36,7 +37,16 @@ struct CameraSettingsPage: View {
             key: HeaderTrailingActionKey.self,
             value: isSessionUnlocked ? HeaderAction(perform: refreshDevices) : nil
         )
-        .onAppear { pocController.refreshCredentialStatus() }
+        .onAppear {
+            pocController.refreshCredentialStatus()
+            refreshDevices()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in
+            refreshDevices()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in
+            refreshDevices()
+        }
         .onChange(of: isSessionUnlocked) { _, unlocked in
             guard !unlocked else { return }
             hidePreview()
@@ -133,7 +143,7 @@ struct CameraSettingsPage: View {
             SettingsMenuPickerPill(label: cameraLabel(for: selection.wrappedValue)) {
                 Button("System default") { selection.wrappedValue = nil }
                 ForEach(devices) { device in
-                    Button(device.name) { selection.wrappedValue = device.id }
+                    Button(displayName(for: device)) { selection.wrappedValue = device.id }
                 }
             }
         }
@@ -148,7 +158,11 @@ struct CameraSettingsPage: View {
         guard let id, let device = devices.first(where: { $0.id == id }) else {
             return "System default"
         }
-        return device.name
+        return displayName(for: device)
+    }
+
+    private func displayName(for device: CameraDevice) -> String {
+        device.isUsable ? device.name : "\(device.name) (unavailable)"
     }
 
     // MARK: - Actions

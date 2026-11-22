@@ -8,6 +8,7 @@
 @preconcurrency import AVFoundation
 import CoreImage
 import Observation
+import os
 
 enum CameraPermission {
     case notDetermined
@@ -16,7 +17,7 @@ enum CameraPermission {
 }
 
 /// `source` is a `CIImage` — a lazy recipe, not rendered pixels — so holding onto it costs nothing until `renderCrop` uses it.
-struct CameraFrame {
+nonisolated struct CameraFrame: @unchecked Sendable {
     let id: UInt64
     let image: CGImage
     let source: CIImage
@@ -32,25 +33,61 @@ final class CameraManager: NSObject {
     private(set) var errorMessage: String?
 
     /// Exposed read-only so `CameraPreviewView` can attach a preview layer to the same session.
-    let session = AVCaptureSession()
-    private let videoOutput = AVCaptureVideoDataOutput()
+    var session: AVCaptureSession { sessionBox.session }
     private let sessionQueue = DispatchQueue(label: "com.jonathan.glance.camera.session")
 
-    /// Handed to the delegate outside the actor; only ever touched via `Task { @MainActor ... }`.
+    /// Handed to the delegate outside the actor; coalesces frames back onto `@MainActor`.
     private let framePublisher = FramePublisher()
+    private let sessionBox: SessionBox
+    private let observerBox = ObserverBox()
+    /// Monotonic token bumped on `start()` and `stop()` so suspended `start()` / `reconcileDeviceIfNeeded()`
+    /// callbacks cannot clobber state after a subsequent `stop()` or restart.
+    private var sessionGeneration: UInt64 = 0
 
     override init() {
+        self.sessionBox = SessionBox(framePublisher: framePublisher, queue: sessionQueue)
         super.init()
         framePublisher.owner = self
+
+        let center = NotificationCenter.default
+        let onDeviceChange: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else { return }
+                self.reconcileDeviceIfNeeded()
+            }
+        }
+        observerBox.add(center.addObserver(
+            forName: AVCaptureDevice.wasConnectedNotification,
+            object: nil,
+            queue: nil,
+            using: onDeviceChange
+        ))
+        observerBox.add(center.addObserver(
+            forName: AVCaptureDevice.wasDisconnectedNotification,
+            object: nil,
+            queue: nil,
+            using: onDeviceChange
+        ))
+    }
+
+    deinit {
+        let box = sessionBox
+        sessionQueue.async {
+            box.stop()
+        }
     }
 
     func start() async {
+        sessionGeneration &+= 1
+        let token = sessionGeneration
+
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         switch status {
         case .authorized:
             permission = .granted
         case .notDetermined:
             let granted = await AVCaptureDevice.requestAccess(for: .video)
+            guard token == sessionGeneration else { return }
             permission = granted ? .granted : .denied
         default:
             permission = .denied
@@ -65,25 +102,28 @@ final class CameraManager: NSObject {
         }
 
         errorMessage = nil
-        configureSessionIfNeeded()
-        reconcileDeviceIfNeeded()
+        isRunning = true
 
-        sessionQueue.async { [session] in
-            if !session.isRunning {
-                session.startRunning()
+        let preferredID = CameraDeviceCatalog.preferredCameraID()
+        let startError = await withCheckedContinuation { continuation in
+            sessionQueue.async { [sessionBox] in
+                let error = sessionBox.start(preferredID: preferredID)
+                continuation.resume(returning: error)
             }
         }
-        isRunning = true
+
+        guard token == sessionGeneration else { return }
+        errorMessage = startError
     }
 
     func stop() {
-        sessionQueue.async { [session] in
-            if session.isRunning {
-                session.stopRunning()
-            }
-        }
+        sessionGeneration &+= 1
         isRunning = false
         currentFrame = nil
+        framePublisher.discardPending()
+        sessionQueue.async { [sessionBox] in
+            sessionBox.stop()
+        }
     }
 
     private func describe(_ status: AVAuthorizationStatus) -> String {
@@ -96,70 +136,25 @@ final class CameraManager: NSObject {
         }
     }
 
-    private var isConfigured = false
-    private var currentInput: AVCaptureDeviceInput?
-
-    private func configureSessionIfNeeded() {
-        guard !isConfigured else { return }
-        isConfigured = true
-
-        session.beginConfiguration()
-        // `.high` doesn't guarantee the sensor's max resolution; macOS (unlike iOS) doesn't fight an explicitly-set
-        // `activeFormat`, so leaving this at `.high` and locking the format separately below is sufficient.
-        session.sessionPreset = .high
-
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.setSampleBufferDelegate(framePublisher, queue: sessionQueue)
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
-        }
-
-        session.commitConfiguration()
-    }
-
-    /// Called on every `start()` so a camera preference change in Settings takes effect without an app restart.
+    /// Re-resolves the active camera on `sessionQueue` when devices connect/disconnect while running.
     private func reconcileDeviceIfNeeded() {
-        guard let device = CameraDeviceCatalog.resolvedDevice() else {
-            errorMessage = "No camera device found."
-            return
-        }
-        guard device.uniqueID != currentInput?.device.uniqueID else { return }
-
-        session.beginConfiguration()
-        if let currentInput {
-            session.removeInput(currentInput)
-        }
-        if let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
-            session.addInput(input)
-            currentInput = input
-            selectHighestResolutionFormat(for: device)
-        } else {
-            currentInput = nil
-            errorMessage = "No camera device found."
-        }
-        session.commitConfiguration()
-    }
-
-    /// Highest resolution regardless of fps — Vision still works from the downscaled frame; this only affects
-    /// what `CameraFrame.source` (and therefore `renderCrop`) has to work with.
-    private func selectHighestResolutionFormat(for device: AVCaptureDevice) {
-        let best = device.formats.max { lhs, rhs in
-            let l = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
-            let r = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
-            return Int(l.width) * Int(l.height) < Int(r.width) * Int(r.height)
-        }
-        guard let best else { return }
-        do {
-            try device.lockForConfiguration()
-            device.activeFormat = best
-            device.unlockForConfiguration()
-        } catch {
-            errorMessage = "Couldn't select the camera's highest-resolution format: \(error.localizedDescription)"
+        guard isRunning else { return }
+        let token = sessionGeneration
+        let preferredID = CameraDeviceCatalog.preferredCameraID()
+        sessionQueue.async { [weak self, sessionBox] in
+            let result = sessionBox.reconcileIfRunning(preferredID: preferredID)
+            Task { @MainActor [weak self] in
+                guard let self, token == self.sessionGeneration, let result else { return }
+                self.errorMessage = result.errorMessage
+                if result.clearedInput {
+                    self.currentFrame = nil
+                }
+            }
         }
     }
 
     fileprivate func publish(frame: CameraFrame) {
+        guard isRunning else { return }
         currentFrame = frame
     }
 
@@ -201,14 +196,176 @@ final class CameraManager: NSObject {
     /// on this `@MainActor` class would otherwise be main-actor-isolated, which the `nonisolated renderCrop` can't touch.
     private nonisolated static let cropRenderContext = CIContext()
 
-    /// Sample-buffer callbacks arrive on `sessionQueue`, off the main actor; this delegate converts there, then hops back.
-    private final class FramePublisher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister them safely under Swift 6.
+    nonisolated private final class ObserverBox: @unchecked Sendable {
+        private var tokens: [NSObjectProtocol] = []
+
+        func add(_ token: NSObjectProtocol) {
+            tokens.append(token)
+        }
+
+        deinit {
+            for token in tokens {
+                NotificationCenter.default.removeObserver(token)
+            }
+        }
+    }
+
+    /// Serializes all `AVCaptureSession` configuration, device switching, start, and stop onto `sessionQueue`.
+    nonisolated private final class SessionBox: @unchecked Sendable {
+        let session = AVCaptureSession()
+        private let videoOutput = AVCaptureVideoDataOutput()
+        private let framePublisher: FramePublisher
+        private let queue: DispatchQueue
+        private var isConfigured = false
+        private var wantsRunning = false
+        private var currentInput: AVCaptureDeviceInput?
+
+        struct ReconcileResult: Sendable {
+            let errorMessage: String?
+            let clearedInput: Bool
+        }
+
+        init(framePublisher: FramePublisher, queue: DispatchQueue) {
+            self.framePublisher = framePublisher
+            self.queue = queue
+        }
+
+        func start(preferredID: String?) -> String? {
+            wantsRunning = true
+            configureSessionIfNeeded()
+            let result = reconcileDevice(preferredID: preferredID)
+            syncSessionRunningState()
+            return result.errorMessage
+        }
+
+        func reconcileIfRunning(preferredID: String?) -> ReconcileResult? {
+            guard wantsRunning else { return nil }
+            let result = reconcileDevice(preferredID: preferredID)
+            syncSessionRunningState()
+            return result
+        }
+
+        func stop() {
+            wantsRunning = false
+            if session.isRunning {
+                session.stopRunning()
+            }
+        }
+
+        private func syncSessionRunningState() {
+            if currentInput != nil {
+                if !session.isRunning {
+                    session.startRunning()
+                }
+            } else if session.isRunning {
+                session.stopRunning()
+            }
+        }
+
+        private func configureSessionIfNeeded() {
+            guard !isConfigured else { return }
+            isConfigured = true
+
+            session.beginConfiguration()
+            // `.high` doesn't guarantee the sensor's max resolution; macOS (unlike iOS) doesn't fight an explicitly-set
+            // `activeFormat`, so leaving this at `.high` and locking the format separately below is sufficient.
+            session.sessionPreset = .high
+
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.setSampleBufferDelegate(framePublisher, queue: queue)
+            if session.canAddOutput(videoOutput) {
+                session.addOutput(videoOutput)
+            }
+
+            session.commitConfiguration()
+        }
+
+        private func reconcileDevice(preferredID: String?) -> ReconcileResult {
+            guard let device = CameraDeviceCatalog.resolvedDevice(preferredID: preferredID) else {
+                let cleared = clearCurrentInput()
+                return ReconcileResult(errorMessage: "No camera device found.", clearedInput: cleared)
+            }
+            if device.uniqueID == currentInput?.device.uniqueID {
+                return ReconcileResult(errorMessage: nil, clearedInput: false)
+            }
+
+            session.beginConfiguration()
+            if let currentInput {
+                session.removeInput(currentInput)
+            }
+            let errorMessage: String?
+            let clearedInput: Bool
+            if let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
+                session.addInput(input)
+                currentInput = input
+                errorMessage = selectHighestResolutionFormat(for: device)
+                clearedInput = false
+            } else {
+                clearedInput = (currentInput != nil)
+                currentInput = nil
+                errorMessage = "No camera device found."
+            }
+            session.commitConfiguration()
+            return ReconcileResult(errorMessage: errorMessage, clearedInput: clearedInput)
+        }
+
+        private func clearCurrentInput() -> Bool {
+            guard let existing = currentInput else { return false }
+            session.beginConfiguration()
+            session.removeInput(existing)
+            currentInput = nil
+            session.commitConfiguration()
+            return true
+        }
+
+        /// Highest resolution supporting `>= 24 fps` (keeping USB webcams off 5–10 fps modes),
+        /// falling back to all formats only when none reach 24 fps.
+        private func selectHighestResolutionFormat(for device: AVCaptureDevice) -> String? {
+            let smoothFormats = device.formats.filter { format in
+                format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 24 }
+            }
+            let candidates = smoothFormats.isEmpty ? device.formats : smoothFormats
+            let best = candidates.max { lhs, rhs in
+                let l = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
+                let r = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
+                return Int(l.width) * Int(l.height) < Int(r.width) * Int(r.height)
+            }
+            guard let best else { return nil }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.activeFormat = best
+                return nil
+            } catch {
+                return "Couldn't select the camera's highest-resolution format: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Sample-buffer callbacks arrive on `sessionQueue`, off the main actor; this delegate converts there,
+    /// coalesces to the latest unconsumed frame, and hops to `@MainActor` at most once per drain cycle.
+    nonisolated private final class FramePublisher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         weak var owner: CameraManager?
         private let ciContext = CIContext()
         /// Detection only needs a modest resolution; the live preview renders from the capture session directly and
         /// is unaffected. The undownscaled `source` is kept alongside for callers needing native pixels (`renderCrop`).
         private let maxLongEdge: CGFloat = 640
         private var nextFrameID: UInt64 = 0
+
+        private struct PendingState {
+            var pendingFrame: CameraFrame?
+            var isDeliveryScheduled = false
+        }
+        private let pendingState = OSAllocatedUnfairLock(initialState: PendingState())
+
+        func discardPending() {
+            pendingState.withLock { state in
+                state.pendingFrame = nil
+                state.isDeliveryScheduled = false
+            }
+        }
 
         func captureOutput(
             _ output: AVCaptureOutput,
@@ -234,7 +391,31 @@ final class CameraManager: NSObject {
                 sourceSize: sourceExtent.size
             )
 
-            Task { @MainActor [weak owner] in
+            let shouldSchedule = pendingState.withLock { state -> Bool in
+                state.pendingFrame = frame
+                if state.isDeliveryScheduled {
+                    return false
+                }
+                state.isDeliveryScheduled = true
+                return true
+            }
+
+            if shouldSchedule {
+                Task { @MainActor [weak self] in
+                    self?.drainPendingFrame()
+                }
+            }
+        }
+
+        @MainActor
+        private func drainPendingFrame() {
+            let frame = pendingState.withLock { state -> CameraFrame? in
+                let next = state.pendingFrame
+                state.pendingFrame = nil
+                state.isDeliveryScheduled = false
+                return next
+            }
+            if let frame {
                 owner?.publish(frame: frame)
             }
         }
