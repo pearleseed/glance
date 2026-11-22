@@ -136,6 +136,7 @@ final class GlanceSettings {
         static let isAppLockEnabled = "GlanceSettings.isAppLockEnabled"
         static let lockedApps = "GlanceSettings.lockedApps"
         static let defaultAppRelockPolicy = "GlanceSettings.defaultAppRelockPolicy"
+        static let sudoFaceAuthEnabled = "GlanceSettings.sudoFaceAuthEnabled"
     }
 
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -381,6 +382,10 @@ final class GlanceSettings {
             }
         }
     }
+    /// Opt-in Face-for-sudo PAM authentication; defaults to `false`.
+    var sudoFaceAuthEnabled: Bool {
+        didSet { defaults.set(sudoFaceAuthEnabled, forKey: Key.sudoFaceAuthEnabled) }
+    }
 
     private init() {
         // Enabled by default — onboarding already enrolled a face and set a
@@ -484,6 +489,7 @@ final class GlanceSettings {
         } else {
             defaultAppRelockPolicy = .everyTime
         }
+        sudoFaceAuthEnabled = defaults.object(forKey: Key.sudoFaceAuthEnabled) as? Bool ?? false
 
         // Push into the nonisolated mirror immediately, or FaceRecognitionPipeline
         // would keep its own default until the toggle is first switched.
