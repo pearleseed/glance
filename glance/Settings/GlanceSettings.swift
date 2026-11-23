@@ -314,8 +314,8 @@ final class GlanceSettings {
         isFaceUnlockEnabledExternalOnly = defaults.bool(forKey: Key.isFaceUnlockEnabledExternalOnly, default: true)
         faceUnlockToggleShortcut = Self.decodeToggleShortcut(from: defaults)
 
-        // Matches `MatchConfidenceLevel.standard` — see RecognitionSettingsPage.swift.
-        matchThreshold = defaults.object(forKey: Key.matchThreshold) as? Float ?? 0.66
+        // Must stay synchronized with `MatchConfidenceLevel.standard.threshold` (0.62) — see RecognitionSettingsPage.swift.
+        matchThreshold = defaults.object(forKey: Key.matchThreshold) as? Float ?? 0.62
         livenessChecksEnabled = defaults.bool(forKey: Key.livenessChecksEnabled, default: true)
         livenessMode = defaults.string(forKey: Key.livenessMode).flatMap(LivenessMode.init(rawValue:)) ?? .light
         strictCloseRangeOnly = defaults.bool(forKey: Key.strictCloseRangeOnly, default: false)

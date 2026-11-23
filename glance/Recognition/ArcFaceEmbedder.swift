@@ -5,6 +5,7 @@
 //  Requires a canonically-aligned 112x112 input (see FaceAligner) — unlike VisionFeaturePrintEmbedder, accuracy depends on alignment.
 //
 
+import Accelerate
 import CoreGraphics
 import CoreML
 import CoreVideo
@@ -36,8 +37,11 @@ enum ArcFaceEmbedderError: LocalizedError {
 }
 
 nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
-    nonisolated let name = "ArcFace (w600k_mbf)"
-    nonisolated let modelIdentifier = "arcface-w600k_mbf-v1"
+    nonisolated static let name = "ArcFace (w600k_r50)"
+    nonisolated static let modelIdentifier = "arcface-w600k_r50-v1"
+
+    nonisolated var name: String { Self.name }
+    nonisolated var modelIdentifier: String { Self.modelIdentifier }
     nonisolated let embeddingDimension = 512
     nonisolated let requiresAlignment = true
     nonisolated let isUnlockCapable = true
@@ -51,6 +55,16 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private let model: MLModel
     private let pixelBufferPool: CVPixelBufferPool
 
+    /// Apple Silicon executes the Float16 MLProgram on the Neural Engine while bypassing GPU shader dispatch;
+    /// Intel Macs lack an ANE, so `.cpuOnly` targets BNNS directly without GPU warmup cost.
+    nonisolated static func preferredComputeUnits() -> MLComputeUnits {
+        #if arch(arm64)
+        return .cpuAndNeuralEngine
+        #else
+        return .cpuOnly
+        #endif
+    }
+
     /// Throws immediately if the model isn't bundled, so callers can fall back to `VisionFeaturePrintEmbedder`.
     init() throws {
         guard let modelURL = Self.locateModel() else {
@@ -58,7 +72,7 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         }
 
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        configuration.computeUnits = Self.preferredComputeUnits()
 
         do {
             model = try MLModel(contentsOf: modelURL, configuration: configuration)
@@ -74,7 +88,7 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
 
     /// Both names are checked in case the file was added under a different name.
     private static func locateModel() -> URL? {
-        for name in ["ArcFace", "w600k_mbf"] {
+        for name in ["ArcFace", "w600k_r50"] {
             if let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") {
                 return url
             }
@@ -144,14 +158,32 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
     }
 
-    /// Uses a direct buffer copy for contiguous Float32 storage (avoiding 512 NSNumber boxings per inference),
+    /// Uses a direct contiguous buffer extraction for Float16/Float32 storage (avoiding 512 NSNumber boxings per inference),
     /// falling back to `MLMultiArray` subscripting when storage is non-contiguous or uses another numeric type.
-    private static func floatVector(from array: MLMultiArray) -> [Float] {
+    nonisolated static func floatVector(from array: MLMultiArray) -> [Float] {
         let count = array.count
         guard count > 0 else { return [] }
-        if array.dataType == .float32, isContiguous(array) {
-            let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: count)
-            return Array(UnsafeBufferPointer(start: pointer, count: count))
+        if isContiguous(array) {
+            switch array.dataType {
+            case .float16:
+                #if arch(arm64)
+                let pointer = array.dataPointer.bindMemory(to: Float16.self, capacity: count)
+                var result = [Float](repeating: 0, count: count)
+                for index in 0..<count {
+                    result[index] = Float(pointer[index])
+                }
+                return result
+                #else
+                if let decoded = float16BufferToFloats(array.dataPointer, count: count) {
+                    return decoded
+                }
+                #endif
+            case .float32:
+                let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: count)
+                return Array(UnsafeBufferPointer(start: pointer, count: count))
+            default:
+                break
+            }
         }
         var result = [Float](repeating: 0, count: count)
         for index in 0..<count {
@@ -159,6 +191,29 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         }
         return result
     }
+
+    #if !arch(arm64)
+    private static func float16BufferToFloats(_ rawPointer: UnsafeMutableRawPointer, count: Int) -> [Float]? {
+        var result = [Float](repeating: 0, count: count)
+        let status = result.withUnsafeMutableBytes { dstBytes -> vImage_Error in
+            guard let dstBase = dstBytes.baseAddress else { return kvImageNullPointerArgument }
+            var srcBuffer = vImage_Buffer(
+                data: rawPointer,
+                height: 1,
+                width: vImagePixelCount(count),
+                rowBytes: count * MemoryLayout<UInt16>.stride
+            )
+            var dstBuffer = vImage_Buffer(
+                data: dstBase,
+                height: 1,
+                width: vImagePixelCount(count),
+                rowBytes: count * MemoryLayout<Float>.stride
+            )
+            return vImageConvert_Planar16FtoPlanarF(&srcBuffer, &dstBuffer, 0)
+        }
+        return status == kvImageNoError ? result : nil
+    }
+    #endif
 
     private static func isContiguous(_ array: MLMultiArray) -> Bool {
         let shape = array.shape.map(\.intValue)
