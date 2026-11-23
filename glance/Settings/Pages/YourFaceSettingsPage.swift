@@ -263,9 +263,7 @@ struct YourFaceSettingsPage: View {
         sessionError = nil
         Task {
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try SecureCredentialManager.unlockSession(reason: "Authenticate to view your enrolled face")
-                }.value
+                try await SecureCredentialManager.unlockSession(reason: "Authenticate to view your enrolled face")
                 store.reloadIfUnlocked()
             } catch {
                 sessionError = error.localizedDescription

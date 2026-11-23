@@ -285,9 +285,7 @@ final class OnboardingController {
     private static func unlockForEnrollment(reason: String) async -> Bool {
         guard !SecureCredentialManager.isSessionUnlocked else { return true }
         do {
-            try await Task.detached(priority: .userInitiated) {
-                try SecureCredentialManager.unlockSession(reason: reason)
-            }.value
+            try await SecureCredentialManager.unlockSession(reason: reason)
             return true
         } catch {
             return false

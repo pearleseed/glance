@@ -224,9 +224,7 @@ extension OnboardingController {
         if hadOrphanedData {
             store.deleteAll()
         }
-        try await Task.detached(priority: .userInitiated) {
-            try SecureCredentialManager.unlockSession(reason: "Set up Glance")
-        }.value
+        try await SecureCredentialManager.unlockSession(reason: "Set up Glance")
         store.reloadIfUnlocked()
     }
 

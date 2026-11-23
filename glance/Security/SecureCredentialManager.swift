@@ -147,50 +147,113 @@ enum SecureCredentialManager {
         return KeychainManager.exists(account: passwordBlobAccount)
     }
 
-    /// Prompts Touch ID and unwraps the session key, creating it Touch-ID-gated on first run. Caches only after a real gated
-    /// read-back succeeds — `SecItemAdd` alone returns success even if the user hit Cancel on the auth UI, and bridging
-    /// `LAContext.evaluatePolicy` synchronously via a semaphore deadlocks the thread pool and crashes the process.
-    /// Must succeed before `savePassword`/`readPassword`. Blocking; call from a background task.
-    nonisolated static func unlockSession(reason: String) throws {
+    /// Prompts Touch ID (or Mac password) and unwraps the session key, creating it on first run.
+    /// Prefers the macOS Data Protection Keychain (`.userPresence` hardware/OS gate) on signed builds,
+    /// and falls back cleanly to `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` + the legacy
+    /// Login Keychain when `errSecMissingEntitlement` (-34018) occurs on ad-hoc / unsigned builds.
+    /// Must succeed before `savePassword`/`readPassword`.
+    nonisolated static func unlockSession(reason: String) async throws {
         _ = legacyMigration
         if cachedKey() != nil { return }
 
         // The existence check, not the read, decides whether a key gets created (load-bearing): a cancelled Touch ID prompt on
         // a user-presence item reports `errSecItemNotFound`, indistinguishable from no key — deciding on the read's error would
         // mint a fresh key (destroying the one that decrypts existing data) on every mis-tap.
-        if KeychainManager.exists(account: sessionKeyAccount) {
-            let context = LAContext()
-            context.localizedReason = reason
-            var data = try KeychainManager.read(account: sessionKeyAccount, context: context)
-            defer { data.resetBytes(in: 0..<data.count) }
-            setCachedKey(SymmetricKey(data: data))
+        if await runKeychainIO({ KeychainManager.existsInDataProtection(account: sessionKeyAccount) }) {
+            try await runKeychainIO {
+                let context = LAContext()
+                context.localizedReason = reason
+                var data = try KeychainManager.readDataProtection(account: sessionKeyAccount, context: context)
+                defer { data.resetBytes(in: 0..<data.count) }
+                setCachedKey(SymmetricKey(data: data))
+            }
+            return
+        }
+
+        if await runKeychainIO({ KeychainManager.existsInLegacy(account: sessionKeyAccount) }) {
+            try await KeychainManager.authenticateUser(reason: reason)
+            try await runKeychainIO {
+                var data = try KeychainManager.readLegacy(account: sessionKeyAccount)
+                defer { data.resetBytes(in: 0..<data.count) }
+                setCachedKey(SymmetricKey(data: data))
+            }
             return
         }
 
         // No key at all, but minting one is still destructive if data is already encrypted under a previous key (e.g. a
         // re-signed dev build) — refuse rather than silently render it unreadable forever.
-        guard !hasSessionEncryptedData else {
+        guard await !runKeychainIO({ hasSessionEncryptedData }) else {
             throw SecureCredentialError.sessionKeyUnavailable
         }
 
-        try? KeychainManager.delete(account: loginKeyAccount)
+        if try await createDataProtectionSessionKey(reason: reason) { return }
+        try await createLegacySessionKey(reason: reason)
+    }
 
-        let key = SymmetricKey(size: .bits256)
-        let access = try KeychainManager.makeUserPresenceAccessControl()
-        var keyData = key.withUnsafeBytes { Data($0) }
-        defer { keyData.resetBytes(in: 0..<keyData.count) }
-        try KeychainManager.save(
-            account: sessionKeyAccount,
-            data: keyData,
-            accessControl: access
-        )
+    nonisolated private static func runKeychainIO<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await Task.detached(priority: .userInitiated, operation: operation).value
+    }
 
-        // Read back through the gated path rather than trusting the write — only a real read proves authentication happened.
-        let readBackContext = LAContext()
-        readBackContext.localizedReason = reason
-        var data = try KeychainManager.read(account: sessionKeyAccount, context: readBackContext)
-        defer { data.resetBytes(in: 0..<data.count) }
-        setCachedKey(SymmetricKey(data: data))
+    nonisolated private static func runKeychainIO<T: Sendable>(
+        _ operation: @escaping @Sendable () -> T
+    ) async -> T {
+        await Task.detached(priority: .userInitiated, operation: operation).value
+    }
+
+    /// Attempts to mint and read back a `.userPresence`-gated key in the Data Protection Keychain.
+    /// Returns `false` only on `errSecMissingEntitlement` (-34018) so ad-hoc builds can fall back cleanly.
+    nonisolated private static func createDataProtectionSessionKey(reason: String) async throws -> Bool {
+        try await runKeychainIO {
+            try? KeychainManager.delete(account: loginKeyAccount)
+
+            let key = SymmetricKey(size: .bits256)
+            let access = try KeychainManager.makeUserPresenceAccessControl()
+            var keyData = key.withUnsafeBytes { Data($0) }
+            defer { keyData.resetBytes(in: 0..<keyData.count) }
+            do {
+                try KeychainManager.save(
+                    account: sessionKeyAccount,
+                    data: keyData,
+                    accessControl: access
+                )
+            } catch KeychainError.osStatus(errSecMissingEntitlement) {
+                return false
+            }
+
+            // Read back through the gated path rather than trusting the write — only a real read proves auth happened.
+            let readBackContext = LAContext()
+            readBackContext.localizedReason = reason
+            var data = try KeychainManager.readDataProtection(account: sessionKeyAccount, context: readBackContext)
+            defer { data.resetBytes(in: 0..<data.count) }
+            setCachedKey(SymmetricKey(data: data))
+            return true
+        }
+    }
+
+    /// Ad-hoc / unsigned fallback: authenticates with Touch ID / Mac password BEFORE persisting a key
+    /// in the legacy Login Keychain so cancelling the prompt never leaves an orphaned key behind.
+    nonisolated private static func createLegacySessionKey(reason: String) async throws {
+        try await KeychainManager.authenticateUser(reason: reason)
+        try await runKeychainIO {
+            if cachedKey() != nil { return }
+            if KeychainManager.existsInLegacy(account: sessionKeyAccount) {
+                var existing = try KeychainManager.readLegacy(account: sessionKeyAccount)
+                defer { existing.resetBytes(in: 0..<existing.count) }
+                setCachedKey(SymmetricKey(data: existing))
+                return
+            }
+
+            let key = SymmetricKey(size: .bits256)
+            var keyData = key.withUnsafeBytes { Data($0) }
+            defer { keyData.resetBytes(in: 0..<keyData.count) }
+            try KeychainManager.saveLegacy(account: sessionKeyAccount, data: keyData)
+
+            var verified = try KeychainManager.readLegacy(account: sessionKeyAccount)
+            defer { verified.resetBytes(in: 0..<verified.count) }
+            setCachedKey(SymmetricKey(data: verified))
+        }
     }
 
     /// Checked without needing the key itself, so this stays answerable precisely when the key can't be read.

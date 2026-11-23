@@ -44,9 +44,7 @@ final class POCController {
     func unlockSession() async {
         sessionError = nil
         do {
-            try await Task.detached(priority: .userInitiated) {
-                try SecureCredentialManager.unlockSession(reason: "Authenticate to set up or use glance")
-            }.value
+            try await SecureCredentialManager.unlockSession(reason: "Authenticate to set up or use glance")
             refreshCredentialStatus()
         } catch {
             refreshCredentialStatus()

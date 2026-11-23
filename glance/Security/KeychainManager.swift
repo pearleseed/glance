@@ -61,9 +61,65 @@ enum KeychainManager {
         return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
+    nonisolated static func existsInDataProtection(account: String) -> Bool {
+        exists(account: account, dataProtection: true)
+    }
+
+    nonisolated static func existsInLegacy(account: String) -> Bool {
+        exists(account: account, dataProtection: false)
+    }
+
     /// Attributes-only existence check — never prompts, even for access-controlled items.
     nonisolated static func exists(account: String) -> Bool {
-        exists(account: account, dataProtection: true) || exists(account: account, dataProtection: false)
+        existsInDataProtection(account: account) || existsInLegacy(account: account)
+    }
+
+    /// Prompts Touch ID, Apple Watch, or Mac login password via LocalAuthentication.
+    /// Used to gate legacy Login Keychain reads/writes on ad-hoc / unsigned builds where
+    /// Data Protection Keychain entitlements (`-34018`) are unavailable.
+    nonisolated static func authenticateUser(reason: String) async throws {
+        let context = LAContext()
+        defer { context.invalidate() }
+
+        var policyError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
+            throw KeychainError.authenticationFailed
+        }
+
+        do {
+            let authenticated = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: reason
+            )
+            guard authenticated else { throw KeychainError.authenticationFailed }
+        } catch {
+            throw KeychainError.authenticationFailed
+        }
+    }
+
+    nonisolated static func readDataProtection(account: String, context: LAContext? = nil) throws -> Data {
+        let (status, item) = rawRead(account: account, context: context, dataProtection: true)
+        return try unwrapReadResult(status: status, item: item)
+    }
+
+    nonisolated static func readLegacy(account: String) throws -> Data {
+        let (status, item) = rawRead(account: account, context: nil, dataProtection: false)
+        return try unwrapReadResult(status: status, item: item)
+    }
+
+    /// Saves an ungated item directly to the legacy Login Keychain (used on ad-hoc / unsigned builds).
+    nonisolated static func saveLegacy(
+        account: String,
+        data: Data,
+        accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    ) throws {
+        try saveSingle(
+            account: account,
+            data: data,
+            accessControl: nil,
+            accessible: accessible,
+            dataProtection: false
+        )
     }
 
     nonisolated private static func rawRead(
