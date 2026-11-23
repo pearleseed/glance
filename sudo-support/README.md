@@ -5,7 +5,7 @@ Opt-in OpenPAM authentication module (`pam_glance.so`) that lets `sudo` verify y
 ## How It Works
 
 1. When you run `sudo`, OpenPAM loads `/usr/local/lib/pam/pam_glance.so` from `/etc/pam.d/sudo_local`.
-2. `pam_glance.so` refuses remote/SSH sessions (`PAM_RHOST` set) and `root` (`uid == 0`) invocations.
+2. `pam_glance.so` refuses remote/SSH/headless sessions (checking `PAM_RHOST` and failing closed via `getaudit_addr` if `AU_SESSION_FLAG_IS_REMOTE` is set or `AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS` is missing) and `root` (`uid == 0`) invocations.
 3. It resolves the invoking user's home directory and connects to `~/Library/Application Support/glance-sudo/glance-sudo.sock` (inside a `0700` user-owned directory) with a 30-second send/receive timeout.
 4. Before sending any challenge, `pam_glance.so` verifies the listening peer via `getpeereid` (must match the invoking non-root `uid`), `LOCAL_PEERPID` + `proc_pidpath` (must equal `/Applications/Glance.app/Contents/MacOS/glance`), and `lstat` (must be a regular root-owned file with no group/world write bits).
 5. `pam_glance.so` generates a fresh 256-bit random nonce via `arc4random_buf` and sends `AUTH <64-hex>\n`.

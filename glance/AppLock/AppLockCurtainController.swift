@@ -257,8 +257,11 @@ final class AppLockCurtainController {
     }
 
     private func showFallbackPanelIfNeeded(viewModel: AppLockCurtainViewModel) {
+        guard let screen = Self.preferredScreen() else {
+            dismissFallbackPanel()
+            return
+        }
         let size = NSSize(width: 400, height: 280)
-        let screen = Self.preferredScreen()
         let origin = NSPoint(
             x: screen.frame.midX - size.width / 2,
             y: screen.frame.midY - size.height / 2
@@ -294,11 +297,11 @@ final class AppLockCurtainController {
         self.fallbackPanel = nil
     }
 
-    private static func preferredScreen() -> NSScreen {
+    private static func preferredScreen() -> NSScreen? {
         let mouseLocation = NSEvent.mouseLocation
         return NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
             ?? NSScreen.main
-            ?? NSScreen.screens[0]
+            ?? NSScreen.screens.first
     }
 
     private static func extractTargetWindows(

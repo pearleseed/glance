@@ -14,6 +14,7 @@
 #define __STDC_WANT_LIB_EXT1__ 1
 #define PAM_SM_AUTH
 
+#include <bsm/audit.h>
 #include <errno.h>
 #include <libproc.h>
 #include <limits.h>
@@ -49,6 +50,17 @@ is_remote_session(pam_handle_t *pamh)
             return true;
         }
     }
+
+    auditinfo_addr_t aia;
+    memset(&aia, 0, sizeof(aia));
+    if (getaudit_addr(&aia, (u_int)sizeof(aia)) != 0) {
+        return true;
+    }
+    if ((aia.ai_flags & AU_SESSION_FLAG_IS_REMOTE) != 0 ||
+        (aia.ai_flags & AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS) == 0) {
+        return true;
+    }
+
     return false;
 }
 

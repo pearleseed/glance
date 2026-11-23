@@ -520,7 +520,11 @@ nonisolated private final class SocketSession: @unchecked Sendable {
             }
 
             clientQueue.async { [weak self] in
-                self?.handleClient(clientFD)
+                guard let self else {
+                    _ = Darwin.close(clientFD)
+                    return
+                }
+                self.handleClient(clientFD)
             }
         }
     }
