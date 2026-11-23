@@ -17,7 +17,7 @@ enum CameraPermission {
 
 @Observable
 @MainActor
-final class CameraManager: NSObject {
+final class CameraManager {
     private(set) var permission: CameraPermission = .notDetermined
     private(set) var isRunning: Bool = false
     private(set) var currentFrame: CameraFrame?
@@ -28,17 +28,19 @@ final class CameraManager: NSObject {
     private let sessionQueue = DispatchQueue(label: "com.pearleseed.glance.camera.session")
 
     /// Handed to the delegate outside the actor; coalesces frames back onto `@MainActor`.
-    private let framePublisher = CameraFramePublisher()
+    private let framePublisher: CameraFramePublisher
+    private let frameWaiter = CameraFrameWaiter(isActive: false)
     private let sessionBox: CameraSessionBox
     private let observerBox = NotificationObserverBox()
     /// Monotonic token bumped on `start()` and `stop()` so suspended `start()` / `reconcileDeviceIfNeeded()`
     /// callbacks cannot clobber state after a subsequent `stop()` or restart.
     private var sessionGeneration: UInt64 = 0
 
-    override init() {
-        self.sessionBox = CameraSessionBox(framePublisher: framePublisher, queue: sessionQueue)
-        super.init()
-        framePublisher.owner = self
+    init(publishesFrames: Bool = true) {
+        let publisher = CameraFramePublisher(publishesFrames: publishesFrames)
+        self.framePublisher = publisher
+        self.sessionBox = CameraSessionBox(framePublisher: publisher, queue: sessionQueue)
+        publisher.owner = self
 
         let queue = sessionQueue
         let box = sessionBox
@@ -93,6 +95,8 @@ final class CameraManager: NSObject {
         guard !Task.isCancelled else { return }
         errorMessage = nil
         isRunning = true
+        frameWaiter.start()
+        framePublisher.beginCapture()
 
         let preferredID = CameraDeviceCatalog.preferredCameraID()
         let startError = await withCheckedContinuation { continuation in
@@ -110,15 +114,29 @@ final class CameraManager: NSObject {
         sessionGeneration &+= 1
         isRunning = false
         currentFrame = nil
-        framePublisher.discardPending()
+        framePublisher.endCapture()
+        frameWaiter.stop()
         sessionQueue.async { [sessionBox] in
             sessionBox.stop()
         }
     }
 
+    func setConsumerBusy(_ busy: Bool) {
+        framePublisher.setConsumerBusy(busy)
+    }
+
+    func nextFrame(
+        after lastFrameID: UInt64?,
+        until deadline: ContinuousClock.Instant
+    ) async -> CameraFrame? {
+        guard isRunning else { return nil }
+        return await frameWaiter.nextFrame(after: lastFrameID, until: deadline)
+    }
+
     func publish(frame: CameraFrame) {
         guard isRunning else { return }
         currentFrame = frame
+        frameWaiter.deliver(frame)
     }
 
     /// Renders a native-resolution crop of `imageRect` from `frame.source`, for spoof-cue extraction which
@@ -144,6 +162,7 @@ final class CameraManager: NSObject {
                 self.errorMessage = result.errorMessage
                 if result.clearedInput {
                     self.currentFrame = nil
+                    self.frameWaiter.clearLatestFrame()
                 }
             }
         }

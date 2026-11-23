@@ -10,7 +10,6 @@ import CoreGraphics
 import CoreImage
 
 nonisolated enum LowLightEnhancer: Sendable {
-    private static let context = CIContext()
     private static let srgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB)
     private static let maxExposureEV: Double = 1.8
     private static let minGammaPower: Double = 0.65
@@ -55,6 +54,6 @@ nonisolated enum LowLightEnhancer: Sendable {
         }
 
         let bounded = output.cropped(to: extent)
-        return context.createCGImage(bounded, from: extent, format: .RGBA8, colorSpace: srgbColorSpace) ?? image
+        return SharedCoreImageContext.srgb.createCGImage(bounded, from: extent, format: .RGBA8, colorSpace: srgbColorSpace) ?? image
     }
 }

@@ -8,10 +8,14 @@
 //    3. `FaceIdentity.isStale(comparedTo:)` migration from `arcface-w600k_mbf-v1` to `arcface-w600k_r50-v1`
 //    4. `FaceRecognitionPipeline` non-blocking background model load & concurrent `waitUntilReady()`
 //    5. `FaceRecognitionPipeline` async loader failure fails closed to `VisionFeaturePrintEmbedder`
+//    6. `CameraFrameWaiter` event-driven wakeup (`nextFrame(after:until:)`)
+//    7. `CameraFrameWaiter` cancellation on `stop()`, timeout expiry, external `Task.cancel()`, and `start -> stop -> start` isolation
+//    8. `PendingCameraFrameState` preview-only (`publishesFrames: false`) & `isConsumerBusy` backpressure gating
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/performance_selftest \
 //        glance/Liveness/LandmarkGeometry.swift \
+//        glance/Camera/SharedCoreImageContext.swift \
 //        glance/Camera/CameraFrame.swift \
 //        glance/Recognition/FaceAligner.swift \
 //        glance/Recognition/FaceDetector.swift \
@@ -28,6 +32,7 @@
 
 import Accelerate
 import CoreGraphics
+import CoreImage
 import CoreML
 import Foundation
 import Observation
@@ -62,6 +67,9 @@ struct PerformanceSelfTest {
         testStaleMigrationFromW600kMbf()
         try await testAsyncPipelineInitDoesNotBlockAndWaitsCleanly()
         await testAsyncPipelineFailureFailsClosed()
+        try await testFrameDeliveryWakesImmediately()
+        try await testFrameWaiterCancelledOnStopAndTimeout()
+        testCaptureBackpressureAndPreviewOnlyGate()
         print("\nAll performance self-tests passed.")
     }
 
@@ -361,5 +369,224 @@ struct PerformanceSelfTest {
         )
 
         print("PASS: async FaceRecognitionPipeline loader failure fails closed")
+    }
+
+    private static func makeDummyCameraFrame(id: UInt64) -> CameraFrame {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        var pixel: [UInt8] = [128, 128, 128, 255]
+        let cgImage = pixel.withUnsafeMutableBytes { buf in
+            let ctx = CGContext(
+                data: buf.baseAddress,
+                width: 1,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            return ctx.makeImage()!
+        }
+        return CameraFrame(
+            id: id,
+            image: cgImage,
+            source: CIImage(cgImage: cgImage),
+            sourceSize: CGSize(width: 1, height: 1)
+        )
+    }
+
+    @MainActor
+    private static func testFrameDeliveryWakesImmediately() async throws {
+        let clock = ContinuousClock()
+        let waiter = CameraFrameWaiter()
+        let frame1 = makeDummyCameraFrame(id: 1)
+        let frame2 = makeDummyCameraFrame(id: 2)
+
+        let deliverTask = Task {
+            try await Task.sleep(for: .milliseconds(15))
+            waiter.deliver(frame1)
+        }
+
+        let start1 = clock.now
+        let received1 = await waiter.nextFrame(after: nil, until: start1 + .seconds(1))
+        let elapsed1 = clock.now - start1
+        try await deliverTask.value
+
+        precondition(
+            received1?.id == frame1.id,
+            "FAIL: expected frame1 (id 1), got \(String(describing: received1?.id))"
+        )
+        precondition(
+            elapsed1 < .milliseconds(50),
+            "FAIL: waiter took too long to wake on delivery: \(elapsed1)"
+        )
+
+        // Waiting after frame1 must suspend until frame2 arrives.
+        let deliverTask2 = Task {
+            try await Task.sleep(for: .milliseconds(10))
+            waiter.deliver(frame2)
+        }
+        let start2 = clock.now
+        let received2 = await waiter.nextFrame(after: frame1.id, until: start2 + .seconds(1))
+        let elapsed2 = clock.now - start2
+        try await deliverTask2.value
+
+        precondition(
+            received2?.id == frame2.id,
+            "FAIL: expected frame2 (id 2), got \(String(describing: received2?.id))"
+        )
+        precondition(
+            elapsed2 < .milliseconds(50),
+            "FAIL: waiter took too long to wake on frame2 delivery: \(elapsed2)"
+        )
+
+        // Immediate return if a newer frame is already present.
+        let start3 = clock.now
+        let cached = await waiter.nextFrame(after: frame1.id, until: start3 + .seconds(1))
+        let elapsed3 = clock.now - start3
+        precondition(cached?.id == frame2.id, "FAIL: expected cached frame2 immediately")
+        precondition(elapsed3 < .milliseconds(10), "FAIL: cached frame return took \(elapsed3)")
+
+        print("PASS: CameraFrameWaiter wakes immediately on frame delivery")
+    }
+
+    @MainActor
+    private static func testFrameWaiterCancelledOnStopAndTimeout() async throws {
+        let clock = ContinuousClock()
+        let waiter = CameraFrameWaiter()
+
+        // 1. stop() while waiting must wake immediately with nil.
+        let stopTask = Task {
+            try await Task.sleep(for: .milliseconds(12))
+            waiter.stop()
+        }
+        let stopStart = clock.now
+        let afterStop = await waiter.nextFrame(after: nil, until: stopStart + .seconds(2))
+        let stopElapsed = clock.now - stopStart
+        try await stopTask.value
+
+        precondition(afterStop == nil, "FAIL: expected nil when stop() cancels waiting nextFrame")
+        precondition(stopElapsed < .milliseconds(35), "FAIL: stop() took too long to wake waiter: \(stopElapsed)")
+
+        // Calling nextFrame while stopped must immediately return nil.
+        let stoppedNow = clock.now
+        let whileStopped = await waiter.nextFrame(after: nil, until: stoppedNow + .seconds(1))
+        precondition(whileStopped == nil, "FAIL: expected nil when waiter is stopped")
+        precondition(clock.now - stoppedNow < .milliseconds(10), "FAIL: stopped waiter suspended")
+
+        // 2. Deadline expiry with no frame delivered returns nil on time.
+        waiter.start()
+        let timeoutStart = clock.now
+        let timedOut = await waiter.nextFrame(after: nil, until: timeoutStart + .milliseconds(35))
+        let timeoutElapsed = clock.now - timeoutStart
+        precondition(timedOut == nil, "FAIL: expected nil on deadline expiry")
+        precondition(
+            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(200),
+            "FAIL: timeout elapsed out of expected range: \(timeoutElapsed)"
+        )
+
+        // 3. External Task.cancel() releases continuation cleanly.
+        let cancelStart = clock.now
+        let waitingTask = Task {
+            await waiter.nextFrame(after: nil, until: cancelStart + .seconds(2))
+        }
+        try await Task.sleep(for: .milliseconds(12))
+        waitingTask.cancel()
+        let cancelledResult = await waitingTask.value
+        let cancelElapsed = clock.now - cancelStart
+        precondition(cancelledResult == nil, "FAIL: expected nil when waiting task is cancelled")
+        precondition(cancelElapsed < .milliseconds(35), "FAIL: task cancellation took too long: \(cancelElapsed)")
+
+        // 4. Stale-frame isolation across start -> deliver -> stop -> start.
+        let oldFrame = makeDummyCameraFrame(id: 100)
+        waiter.deliver(oldFrame)
+        waiter.stop()
+        waiter.start()
+        let staleCheck = await waiter.nextFrame(after: nil, until: clock.now + .milliseconds(25))
+        precondition(staleCheck == nil, "FAIL: stale frame leaked across stop() -> start()")
+
+        // Subsequent delivery after restart still wakes normally.
+        let freshFrame = makeDummyCameraFrame(id: 101)
+        let deliverFresh = Task {
+            try await Task.sleep(for: .milliseconds(10))
+            waiter.deliver(freshFrame)
+        }
+        let freshResult = await waiter.nextFrame(after: nil, until: clock.now + .seconds(1))
+        try await deliverFresh.value
+        precondition(freshResult?.id == freshFrame.id, "FAIL: expected freshFrame after restart")
+
+        // 5. Stress rapid stop/start/deliver/cancel races (both pre-suspend and post-suspend) to confirm
+        // every continuation resumes exactly once without leaking or trapping.
+        for iteration in 0..<40 {
+            waiter.start()
+            let iterFrame = makeDummyCameraFrame(id: UInt64(200 + iteration))
+            let raceTask = Task.detached {
+                await waiter.nextFrame(after: nil, until: clock.now + .milliseconds(20))
+            }
+            if iteration.isMultiple(of: 2) {
+                await Task.yield()
+            }
+            if iteration % 3 == 0 {
+                waiter.deliver(iterFrame)
+                waiter.stop()
+            } else if iteration % 3 == 1 {
+                waiter.stop()
+            } else {
+                raceTask.cancel()
+            }
+            let raceResult = await raceTask.value
+            if iteration % 3 != 0 {
+                precondition(raceResult == nil, "FAIL: expected nil in race iteration \(iteration)")
+            } else if let raceResult {
+                precondition(raceResult.id == iterFrame.id, "FAIL: unexpected frame id \(raceResult.id) in race iteration \(iteration)")
+            }
+        }
+
+        print("PASS: CameraFrameWaiter cancellation on stop, timeout, Task.cancel, and restart isolation")
+    }
+
+    private static func testCaptureBackpressureAndPreviewOnlyGate() {
+        let dummy1 = makeDummyCameraFrame(id: 1)
+        let dummy2 = makeDummyCameraFrame(id: 2)
+
+        // Preview-only mode (`publishesFrames: false`) never renders or schedules frames.
+        var previewState = PendingCameraFrameState(publishesFrames: false, isCapturing: true)
+        precondition(!previewState.shouldRenderSample, "FAIL: preview-only mode must skip rendering")
+        let genPreview = previewState.captureGeneration
+        precondition(
+            !previewState.enqueueIfActive(dummy1, generation: genPreview),
+            "FAIL: preview-only mode must not schedule delivery"
+        )
+        precondition(previewState.drainPending() == nil, "FAIL: preview-only pendingFrame must remain nil")
+
+        // Capture mode (`publishesFrames: true`) gates on `isConsumerBusy` and coalesces newest frame.
+        var captureState = PendingCameraFrameState(publishesFrames: true, isCapturing: true)
+        precondition(captureState.shouldRenderSample, "FAIL: active capture mode should render")
+        captureState.isConsumerBusy = true
+        precondition(!captureState.shouldRenderSample, "FAIL: busy consumer must skip CIImage/CGImage rendering")
+        captureState.isConsumerBusy = false
+        precondition(captureState.shouldRenderSample, "FAIL: clearing busy flag must re-enable rendering")
+
+        let gen1 = captureState.captureGeneration
+        precondition(captureState.enqueueIfActive(dummy1, generation: gen1), "FAIL: first frame should schedule drain")
+        precondition(!captureState.enqueueIfActive(dummy2, generation: gen1), "FAIL: second frame while scheduled should coalesce")
+        precondition(captureState.drainPending()?.id == dummy2.id, "FAIL: drained frame must be newest coalesced frame")
+        precondition(captureState.drainPending() == nil, "FAIL: second drain must be empty")
+
+        // Stopping clears pending + resets isConsumerBusy while preserving publishesFrames and blocking stale generations.
+        captureState.isConsumerBusy = true
+        _ = captureState.enqueueIfActive(dummy1, generation: gen1)
+        captureState.endCapture()
+        precondition(!captureState.isCapturing, "FAIL: endCapture must set isCapturing = false")
+        precondition(!captureState.isConsumerBusy, "FAIL: endCapture must reset isConsumerBusy = false")
+        precondition(captureState.publishesFrames, "FAIL: endCapture must preserve publishesFrames")
+        precondition(captureState.drainPending() == nil, "FAIL: endCapture must discard pending frame")
+
+        captureState.beginCapture()
+        precondition(
+            !captureState.enqueueIfActive(dummy1, generation: gen1),
+            "FAIL: stale generation frame from before stop() must be rejected"
+        )
+
+        print("PASS: PendingCameraFrameState preview-only and consumer backpressure gating")
     }
 }

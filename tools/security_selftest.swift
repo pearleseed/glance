@@ -14,6 +14,7 @@
 //      swiftc -O -o /tmp/security_selftest \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Liveness/DeviceBezelDetector.swift \
+//        glance/Camera/SharedCoreImageContext.swift \
 //        glance/Camera/CameraFrame.swift \
 //        glance/Recognition/FaceDetector.swift \
 //        glance/Recognition/FaceAligner.swift \

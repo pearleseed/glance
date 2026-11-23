@@ -15,21 +15,24 @@ nonisolated struct CameraReconcileResult: Sendable {
     let clearedInput: Bool
 }
 
-nonisolated struct PendingCameraFrameState {
-    var pendingFrame: CameraFrame?
-    var isDeliveryScheduled = false
-}
-
 /// Serializes all `AVCaptureSession` configuration, device switching, start, and stop onto `sessionQueue`.
+/// `AVCaptureSession` and `AVCaptureVideoDataOutput` are created lazily on first use so idle app launch
+/// allocates zero AVFoundation capture objects.
 nonisolated final class CameraSessionBox: @unchecked Sendable {
-    let session = AVCaptureSession()
-    private let videoOutput = AVCaptureVideoDataOutput()
+    private struct LazySessionSlot: @unchecked Sendable {
+        var session: AVCaptureSession?
+    }
+
+    private let sessionLock = OSAllocatedUnfairLock(initialState: LazySessionSlot())
+    private var videoOutput: AVCaptureVideoDataOutput?
     private let framePublisher: CameraFramePublisher
     private let queue: DispatchQueue
     private var isConfigured = false
     private var wantsRunning = false
     private var needsDeviceRebind = false
     private var currentInput: AVCaptureDeviceInput?
+
+    var session: AVCaptureSession { ensureSession() }
 
     init(framePublisher: CameraFramePublisher, queue: DispatchQueue) {
         self.framePublisher = framePublisher
@@ -42,27 +45,45 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
 
     func start(preferredID: String?) -> String? {
         wantsRunning = true
-        configureSessionIfNeeded()
-        let result = reconcileDevice(preferredID: preferredID)
-        syncSessionRunningState()
+        let session = ensureSession()
+        configureSessionIfNeeded(on: session)
+        let result = reconcileDevice(on: session, preferredID: preferredID)
+        syncSessionRunningState(on: session)
         return result.errorMessage
     }
 
     func reconcileIfRunning(preferredID: String?) -> CameraReconcileResult? {
         guard wantsRunning else { return nil }
-        let result = reconcileDevice(preferredID: preferredID)
-        syncSessionRunningState()
+        let session = ensureSession()
+        configureSessionIfNeeded(on: session)
+        let result = reconcileDevice(on: session, preferredID: preferredID)
+        syncSessionRunningState(on: session)
         return result
     }
 
     func stop() {
         wantsRunning = false
+        framePublisher.discardPending()
+        let session = sessionLock.withLock { $0.session }
+        guard let session else { return }
         if session.isRunning {
             session.stopRunning()
         }
+        SharedCoreImageContext.clearCaches()
     }
 
-    private func syncSessionRunningState() {
+    private func ensureSession() -> AVCaptureSession {
+        sessionLock.withLock { slot in
+            if let existing = slot.session {
+                return existing
+            }
+            let created = AVCaptureSession()
+            slot.session = created
+            return created
+        }
+    }
+
+    private func syncSessionRunningState(on session: AVCaptureSession) {
         if currentInput != nil {
             if !session.isRunning {
                 session.startRunning()
@@ -72,7 +93,7 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
         }
     }
 
-    private func configureSessionIfNeeded() {
+    private func configureSessionIfNeeded(on session: AVCaptureSession) {
         guard !isConfigured else { return }
         isConfigured = true
 
@@ -81,19 +102,21 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
         // `activeFormat`, so leaving this at `.high` and locking the format separately below is sufficient.
         session.sessionPreset = .high
 
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.setSampleBufferDelegate(framePublisher, queue: queue)
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
+        let output = AVCaptureVideoDataOutput()
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(framePublisher, queue: queue)
+        if session.canAddOutput(output) {
+            session.addOutput(output)
         }
+        self.videoOutput = output
 
         session.commitConfiguration()
     }
 
-    private func reconcileDevice(preferredID: String?) -> CameraReconcileResult {
+    private func reconcileDevice(on session: AVCaptureSession, preferredID: String?) -> CameraReconcileResult {
         guard let device = CameraDeviceCatalog.resolvedDevice(preferredID: preferredID) else {
-            let cleared = clearCurrentInput()
+            let cleared = clearCurrentInput(on: session)
             return CameraReconcileResult(errorMessage: "No camera device found.", clearedInput: cleared)
         }
         if !needsDeviceRebind,
@@ -128,7 +151,7 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
         return CameraReconcileResult(errorMessage: errorMessage, clearedInput: clearedInput)
     }
 
-    private func clearCurrentInput() -> Bool {
+    private func clearCurrentInput(on session: AVCaptureSession) -> Bool {
         needsDeviceRebind = false
         framePublisher.discardPending()
         guard let existing = currentInput else { return false }
@@ -167,19 +190,34 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
 /// coalesces to the latest unconsumed frame, and hops to `@MainActor` at most once per drain cycle.
 nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: CameraManager?
-    private let ciContext = CIContext()
     /// Detection only needs a modest resolution; the live preview renders from the capture session directly and
     /// is unaffected. The undownscaled `source` is kept alongside for callers needing native pixels (`renderCrop`).
     private let maxLongEdge: CGFloat = 640
     private var nextFrameID: UInt64 = 0
 
-    private let pendingState = OSAllocatedUnfairLock(initialState: PendingCameraFrameState())
+    private let pendingState: OSAllocatedUnfairLock<PendingCameraFrameState>
+
+    init(publishesFrames: Bool = true) {
+        self.pendingState = OSAllocatedUnfairLock(
+            initialState: PendingCameraFrameState(publishesFrames: publishesFrames, isCapturing: false)
+        )
+        super.init()
+    }
+
+    func beginCapture() {
+        pendingState.withLock { $0.beginCapture() }
+    }
+
+    func endCapture() {
+        pendingState.withLock { $0.endCapture() }
+    }
 
     func discardPending() {
-        pendingState.withLock { state in
-            state.pendingFrame = nil
-            state.isDeliveryScheduled = false
-        }
+        pendingState.withLock { $0.discardPending() }
+    }
+
+    func setConsumerBusy(_ busy: Bool) {
+        pendingState.withLock { $0.isConsumerBusy = busy }
     }
 
     func captureOutput(
@@ -187,6 +225,12 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        let captureGen: UInt64? = pendingState.withLock { state in
+            guard state.shouldRenderSample else { return nil }
+            return state.captureGeneration
+        }
+        guard let captureGen else { return }
+
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
         let sourceExtent = sourceImage.extent
@@ -196,7 +240,7 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
             let scale = maxLongEdge / longEdge
             ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         }
-        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
+        guard let cgImage = SharedCoreImageContext.srgb.createCGImage(ciImage, from: ciImage.extent) else { return }
 
         nextFrameID &+= 1
         let frame = CameraFrame(
@@ -207,12 +251,7 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
         )
 
         let shouldSchedule = pendingState.withLock { state -> Bool in
-            state.pendingFrame = frame
-            if state.isDeliveryScheduled {
-                return false
-            }
-            state.isDeliveryScheduled = true
-            return true
+            state.enqueueIfActive(frame, generation: captureGen)
         }
 
         if shouldSchedule {
@@ -224,11 +263,8 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
 
     @MainActor
     private func drainPendingFrame() {
-        let frame = pendingState.withLock { state -> CameraFrame? in
-            let next = state.pendingFrame
-            state.pendingFrame = nil
-            state.isDeliveryScheduled = false
-            return next
+        let frame = pendingState.withLock { state in
+            state.drainPending()
         }
         if let frame {
             owner?.publish(frame: frame)

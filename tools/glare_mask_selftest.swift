@@ -7,6 +7,7 @@
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/glare_mask_selftest \
+//        glance/Camera/SharedCoreImageContext.swift \
 //        glance/Camera/CameraFrame.swift \
 //        glance/Liveness/GlareCue.swift \
 //        glance/Liveness/GlareFaceRegion.swift \
