@@ -249,13 +249,20 @@ final class FaceLabController {
     func startAddIdentity() {
         camera.stop()
         log("Starting guided enrollment for a new identity.")
-        OnboardingController.startAddIdentity(pipeline: pipeline)
+        OnboardingController.startAddIdentity(
+            pipeline: pipeline,
+            onUnavailable: { [weak self] message in self?.log(message) }
+        )
     }
 
     func startRecapture(of identity: FaceIdentity) {
         camera.stop()
         log("Starting guided re-capture of \"\(identity.name)\".")
-        OnboardingController.startRecapture(of: identity, pipeline: pipeline)
+        OnboardingController.startRecapture(
+            of: identity,
+            pipeline: pipeline,
+            onUnavailable: { [weak self] message in self?.log(message) }
+        )
     }
 
     static func qualityLabel(_ quality: Float?) -> String {

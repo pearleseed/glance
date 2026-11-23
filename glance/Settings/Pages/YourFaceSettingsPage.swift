@@ -20,6 +20,7 @@ struct YourFaceSettingsPage: View {
     /// lapsed between rendering and tapping). The store rolls back on
     /// failure, so the control snaps back on its own — this explains why.
     @State private var writeError: String?
+    @State private var enrollmentError: String?
 
     /// Locked takes priority over enrollment status: `FaceIdentity` data is
     /// encrypted under the session key, so whether anyone is enrolled is
@@ -142,7 +143,14 @@ struct YourFaceSettingsPage: View {
             message: "Face enrollment",
             buttonTitle: "Set up Face Unlock",
             isButtonEnabled: !enrollmentFlowIsRunning,
-            action: { OnboardingController.startEnrollmentOnly(pipeline: environment.recognitionPipeline) }
+            caption: enrollmentError,
+            action: {
+                enrollmentError = nil
+                OnboardingController.startEnrollmentOnly(
+                    pipeline: environment.recognitionPipeline,
+                    onUnavailable: { enrollmentError = $0 }
+                )
+            }
         )
     }
 
@@ -164,7 +172,12 @@ struct YourFaceSettingsPage: View {
                     canStartFlow: !enrollmentFlowIsRunning,
                     isEnabled: enabledBinding(for: identity),
                     recapture: {
-                        OnboardingController.startRecapture(of: identity, pipeline: environment.recognitionPipeline)
+                        enrollmentError = nil
+                        OnboardingController.startRecapture(
+                            of: identity,
+                            pipeline: environment.recognitionPipeline,
+                            onUnavailable: { enrollmentError = $0 }
+                        )
                     },
                     delete: { identityPendingDeletion = identity }
                 )
@@ -178,6 +191,8 @@ struct YourFaceSettingsPage: View {
 
             if let writeError {
                 SettingsCaption(text: writeError)
+            } else if let enrollmentError {
+                SettingsCaption(text: enrollmentError)
             }
         }
     }
@@ -216,7 +231,11 @@ struct YourFaceSettingsPage: View {
             SettingsSectionTitle(text: "Identities")
 
             Button {
-                OnboardingController.startAddIdentity(pipeline: environment.recognitionPipeline)
+                enrollmentError = nil
+                OnboardingController.startAddIdentity(
+                    pipeline: environment.recognitionPipeline,
+                    onUnavailable: { enrollmentError = $0 }
+                )
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))

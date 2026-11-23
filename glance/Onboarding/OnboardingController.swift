@@ -65,6 +65,9 @@ final class OnboardingController {
     let sweepWindow = EnrollmentSweepWindowController()
     @ObservationIgnored private var isObservingFrames = false
     @ObservationIgnored private var isTornDown = false
+    @ObservationIgnored private(set) var enrollGeneration: UInt64 = 0
+    @MainActor private static var isPreparingEnrollment = false
+    static let enrollmentUnavailableReason = "Face model unavailable — cannot enroll right now."
 
     /// Persists the resume point for a true first-run flow on every step change, so
     /// `AppDelegate` can drop a relaunched, mid-onboarding user back where they left off.
@@ -158,6 +161,7 @@ final class OnboardingController {
     var isTooFar = false
     var excessiveTurn: ExcessiveTurn?
     var enrollmentComplete = false
+    var enrollmentUnavailableMessage: String?
     var capturedPoses: Set<EnrollmentPose> = []
     var centerPulseTick = 0
     var guideVisible = false
@@ -231,9 +235,16 @@ final class OnboardingController {
     /// and permissions polling. Idempotent.
     func teardown() {
         isTornDown = true
+        bumpEnrollGeneration()
         stopPermissionsPolling()
         stopCameraIfCreated()
         sweepWindow.dismiss()
+    }
+
+    @discardableResult
+    func bumpEnrollGeneration() -> UInt64 {
+        enrollGeneration &+= 1
+        return enrollGeneration
     }
 
     func stopCameraIfCreated() {
@@ -273,36 +284,70 @@ final class OnboardingController {
         NotchOverlayController.shared.presentOnboarding(controller)
     }
 
-    static func startEnrollmentOnly(pipeline: FaceRecognitionPipeline) {
-        Task { @MainActor in
-            guard await unlockForEnrollment(reason: "Authenticate to re-enroll your face") else { return }
-            await pipeline.waitUntilReady()
-            let store = FaceEnrollmentStore.shared
-            store.reloadIfUnlocked()
-            let existing = store.identities.first
-            present(
-                pipeline: pipeline,
+    static func startEnrollmentOnly(
+        pipeline: FaceRecognitionPipeline,
+        onUnavailable: ((String) -> Void)? = nil
+    ) {
+        launchEnrollment(
+            reason: "Authenticate to re-enroll your face",
+            pipeline: pipeline,
+            onUnavailable: onUnavailable
+        ) {
+            let existing = FaceEnrollmentStore.shared.identities.first
+            return (
                 target: existing.map { .replacing($0.id) } ?? .newIdentity,
                 prefillName: existing?.name ?? defaultName
             )
         }
     }
 
-    static func startAddIdentity(pipeline: FaceRecognitionPipeline) {
-        Task { @MainActor in
-            guard await unlockForEnrollment(reason: "Authenticate to enroll another face") else { return }
-            await pipeline.waitUntilReady()
-            FaceEnrollmentStore.shared.reloadIfUnlocked()
-            present(pipeline: pipeline, target: .newIdentity, prefillName: "")
+    static func startAddIdentity(
+        pipeline: FaceRecognitionPipeline,
+        onUnavailable: ((String) -> Void)? = nil
+    ) {
+        launchEnrollment(
+            reason: "Authenticate to enroll another face",
+            pipeline: pipeline,
+            onUnavailable: onUnavailable
+        ) {
+            (target: .newIdentity, prefillName: "")
         }
     }
 
-    static func startRecapture(of identity: FaceIdentity, pipeline: FaceRecognitionPipeline) {
+    static func startRecapture(
+        of identity: FaceIdentity,
+        pipeline: FaceRecognitionPipeline,
+        onUnavailable: ((String) -> Void)? = nil
+    ) {
+        launchEnrollment(
+            reason: "Authenticate to re-enroll this face",
+            pipeline: pipeline,
+            onUnavailable: onUnavailable
+        ) {
+            (target: .replacing(identity.id), prefillName: identity.name)
+        }
+    }
+
+    private static func launchEnrollment(
+        reason: String,
+        pipeline: FaceRecognitionPipeline,
+        onUnavailable: ((String) -> Void)?,
+        makeTarget: @escaping () -> (target: EnrollmentTarget, prefillName: String)
+    ) {
+        guard !isPreparingEnrollment, NotchOverlayController.shared.phase != .onboarding else { return }
+        isPreparingEnrollment = true
         Task { @MainActor in
-            guard await unlockForEnrollment(reason: "Authenticate to re-enroll this face") else { return }
+            defer { isPreparingEnrollment = false }
+            guard await unlockForEnrollment(reason: reason) else { return }
             await pipeline.waitUntilReady()
+            guard pipeline.isUnlockCapable else {
+                onUnavailable?(enrollmentUnavailableReason)
+                return
+            }
+            guard NotchOverlayController.shared.phase != .onboarding else { return }
             FaceEnrollmentStore.shared.reloadIfUnlocked()
-            present(pipeline: pipeline, target: .replacing(identity.id), prefillName: identity.name)
+            let resolved = makeTarget()
+            present(pipeline: pipeline, target: resolved.target, prefillName: resolved.prefillName)
         }
     }
 

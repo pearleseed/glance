@@ -21,9 +21,10 @@ extension OnboardingController {
         isCenterCaptured ? nil : .center
     }
 
-    /// Copy shown under the camera: calibration guidance, continuous circular prompt,
-    /// distance/turn warnings, or the completion line.
+    /// Copy shown under the camera: unavailable warning, calibration guidance, continuous
+    /// circular prompt, distance/turn warnings, or the completion line.
     var enrollmentInstruction: String {
+        if let enrollmentUnavailableMessage { return enrollmentUnavailableMessage }
         if enrollmentComplete { return "Face captured" }
         if let excessiveTurn { return excessiveTurn.instruction }
         if isTooFar { return "Bring your face closer" }
@@ -87,6 +88,7 @@ extension OnboardingController {
 
     /// Note `pendingName` deliberately survives — no reason to make the user retype it.
     func resetEnrollmentState() {
+        bumpEnrollGeneration()
         collectedSamples = []
         nameError = nil
         poseEvaluator = EnrollmentPoseEvaluator()
@@ -101,6 +103,7 @@ extension OnboardingController {
         isTooFar = false
         excessiveTurn = nil
         enrollmentComplete = false
+        enrollmentUnavailableMessage = nil
         guideVisible = false
         cameraPreviewVisible = true
         showCheckmark = false
@@ -109,6 +112,8 @@ extension OnboardingController {
 
     func beginEnrollment() async {
         guard step == .enroll, shouldObserveFrames else { return }
+        let generation = bumpEnrollGeneration()
+        enrollmentUnavailableMessage = nil
         guideVisible = true
         cameraPreviewVisible = true
         showCheckmark = false
@@ -116,11 +121,24 @@ extension OnboardingController {
         excessiveTurn = nil
         sweepWindow.present(for: self)
 
+        if let pipeline, pipeline.loadState != .loading, !pipeline.isUnlockCapable {
+            sweepWindow.dismiss()
+            enrollmentUnavailableMessage = Self.enrollmentUnavailableReason
+            return
+        }
+
         async let cameraStart: Void = camera.start()
         await pipeline?.waitUntilReady()
         _ = await cameraStart
 
-        guard step == .enroll, shouldObserveFrames else { return }
+        guard step == .enroll, shouldObserveFrames, generation == enrollGeneration else { return }
+        guard let pipeline, pipeline.isUnlockCapable else {
+            stopCameraIfCreated()
+            sweepWindow.dismiss()
+            enrollmentUnavailableMessage = Self.enrollmentUnavailableReason
+            return
+        }
+
         poseStartedAt = .now
         captureReadyAt = .now + initialCaptureDelay
         observeFramesIfNeeded()
@@ -152,9 +170,10 @@ extension OnboardingController {
     private func processEnrollFrame() async {
         guard step == .enroll, !enrollmentComplete, !isProcessingFrame,
             let pipeline = self.pipeline,
-            pipeline.loadState != .loading,
+            pipeline.isUnlockCapable,
             let cameraFrame = camera.currentFrame
         else { return }
+        let generation = enrollGeneration
         isProcessingFrame = true
         defer { isProcessingFrame = false }
 
@@ -174,7 +193,9 @@ extension OnboardingController {
             }
         }.value
 
-        guard step == .enroll, !enrollmentComplete else { return }
+        guard step == .enroll, !enrollmentComplete, generation == enrollGeneration, pipeline.isUnlockCapable else {
+            return
+        }
         await applyEnrollFrameOutcome(outcome)
     }
 
