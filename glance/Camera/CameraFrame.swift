@@ -61,6 +61,48 @@ nonisolated struct CameraFrame: @unchecked Sendable {
 
         return SharedCoreImageContext.srgb.createCGImage(cropped, from: cropped.extent)
     }
+
+    /// Zero-copy slices the `paddingFraction` glare crop (`0.15`) from an already-rendered Phase-2 `nativeCrop`,
+    /// mapping `faceBoundingBox`'s padded working-frame rect (top-left/y-down) into `nativeCrop`'s pixel bounds.
+    /// Returns `nil` if the mapped rect is invalid or `CGImage.cropping(to:)` fails, allowing fallback to `renderCrop`.
+    static func sliceGlareCrop(
+        from nativeCrop: CGImage,
+        nativeCropWorkingRect: CGRect,
+        faceBoundingBox: CGRect,
+        workingSize: CGSize,
+        paddingFraction: CGFloat = 0.15
+    ) -> CGImage? {
+        guard workingSize.width > 0, workingSize.height > 0,
+            nativeCropWorkingRect.width > 0, nativeCropWorkingRect.height > 0,
+            nativeCrop.width > 0, nativeCrop.height > 0,
+            faceBoundingBox.width > 0, faceBoundingBox.height > 0
+        else { return nil }
+
+        let expanded = faceBoundingBox.insetBy(
+            dx: -faceBoundingBox.width * paddingFraction,
+            dy: -faceBoundingBox.height * paddingFraction
+        )
+        let workingBounds = CGRect(origin: .zero, size: workingSize)
+        let glareWorkingRect = expanded.intersection(workingBounds)
+        guard !glareWorkingRect.isNull, !glareWorkingRect.isEmpty,
+            glareWorkingRect.width > 0, glareWorkingRect.height > 0
+        else { return nil }
+
+        let cropBounds = CGRect(x: 0, y: 0, width: nativeCrop.width, height: nativeCrop.height)
+        let scaleX = cropBounds.width / nativeCropWorkingRect.width
+        let scaleY = cropBounds.height / nativeCropWorkingRect.height
+        let cropRect = CGRect(
+            x: (glareWorkingRect.minX - nativeCropWorkingRect.minX) * scaleX,
+            y: (glareWorkingRect.minY - nativeCropWorkingRect.minY) * scaleY,
+            width: glareWorkingRect.width * scaleX,
+            height: glareWorkingRect.height * scaleY
+        ).intersection(cropBounds)
+        guard !cropRect.isNull, !cropRect.isEmpty, cropRect.width >= 1, cropRect.height >= 1 else {
+            return nil
+        }
+
+        return nativeCrop.cropping(to: cropRect)
+    }
 }
 
 /// Lock-protected state shared between sample-buffer capture (`sessionQueue`) and main-actor drain,

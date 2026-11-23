@@ -45,10 +45,16 @@ struct DetectedFace {
 /// Pure, synchronous, CPU-bound work — `nonisolated` so it can run on a
 /// background task despite the project's default main-actor isolation.
 nonisolated enum FaceDetector {
-    /// Runs face-rectangle, landmarks, and optionally capture-quality detection on a single frame.
+    /// Runs face-rectangle, and optionally landmarks and capture-quality detection on a single frame.
     /// Skipping quality (`includeQuality: false`) omits `VNDetectFaceCaptureQualityRequest` without
     /// altering face boxes or landmarks, so embeddings stay bit-for-bit identical.
-    static func detectFaces(in image: CGImage, includeQuality: Bool = true) throws -> [DetectedFace] {
+    /// Skipping both quality and landmarks (`includeQuality: false, includeLandmarks: false`)
+    /// runs only `VNDetectFaceRectanglesRequest` in a single Vision pass.
+    static func detectFaces(
+        in image: CGImage,
+        includeQuality: Bool = true,
+        includeLandmarks: Bool = true
+    ) throws -> [DetectedFace] {
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
 
         let rectanglesRequest = VNDetectFaceRectanglesRequest()
@@ -56,23 +62,31 @@ nonisolated enum FaceDetector {
         let faceObservations = rectanglesRequest.results ?? []
         guard !faceObservations.isEmpty else { return [] }
 
-        // Chained to the rectangles results (via `inputFaceObservations`) rather than run independently, so results
-        // correspond 1:1 in order — avoids the fragility of matching back via boundingBox float equality.
-        var requests: [VNRequest] = []
-        var qualityRequest: VNDetectFaceCaptureQualityRequest?
-        if includeQuality {
-            let request = VNDetectFaceCaptureQualityRequest()
-            request.inputFaceObservations = faceObservations
-            requests.append(request)
-            qualityRequest = request
+        var qualityResults: [VNFaceObservation] = []
+        var landmarkResults: [VNFaceObservation] = []
+        if includeQuality || includeLandmarks {
+            // Chained to the rectangles results (via `inputFaceObservations`) rather than run independently, so results
+            // correspond 1:1 in order — avoids the fragility of matching back via boundingBox float equality.
+            var requests: [VNRequest] = []
+            var qualityRequest: VNDetectFaceCaptureQualityRequest?
+            var landmarksRequest: VNDetectFaceLandmarksRequest?
+            if includeQuality {
+                let request = VNDetectFaceCaptureQualityRequest()
+                request.inputFaceObservations = faceObservations
+                requests.append(request)
+                qualityRequest = request
+            }
+            if includeLandmarks {
+                let request = VNDetectFaceLandmarksRequest()
+                request.inputFaceObservations = faceObservations
+                requests.append(request)
+                landmarksRequest = request
+            }
+            try handler.perform(requests)
+            qualityResults = qualityRequest?.results ?? []
+            landmarkResults = landmarksRequest?.results ?? []
         }
-        let landmarksRequest = VNDetectFaceLandmarksRequest()
-        landmarksRequest.inputFaceObservations = faceObservations
-        requests.append(landmarksRequest)
-        try handler.perform(requests)
 
-        let qualityResults = qualityRequest?.results ?? []
-        let landmarkResults = landmarksRequest.results ?? []
         let imageSize = CGSize(width: image.width, height: image.height)
 
         return faceObservations.enumerated().map { index, observation in

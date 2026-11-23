@@ -9,7 +9,7 @@
 import CoreGraphics
 import Foundation
 
-struct GeometryTuning {
+nonisolated struct GeometryTuning: Sendable {
     /// Excess (`probeResidual / fitResidual`) at which the planar signal starts ramping off 0; ~1 means a plane.
     var excessFloor: CGFloat = 1.15
     /// Excess at which the planar signal saturates at 1.
@@ -25,7 +25,7 @@ struct GeometryTuning {
     nonisolated static let `default` = GeometryTuning()
 }
 
-struct GeometryLivenessResult: Equatable {
+nonisolated struct GeometryLivenessResult: Equatable, Sendable {
     let planarResidualScore: Float
     let planarConfidence: Float
 
@@ -73,7 +73,11 @@ nonisolated enum GeometryLiveness {
         let weight: CGFloat
     }
 
-    static func evaluate(_ window: [LivenessFrame], tuning: GeometryTuning = .default) -> GeometryLivenessResult {
+    static func evaluate(
+        _ window: [LivenessFrame],
+        tuning: GeometryTuning = .default,
+        includeDiagnostics: Bool = false
+    ) -> GeometryLivenessResult {
         let lastLandmarks = window.last?.landmarks.count ?? 0
         var diagnostics = diagnosticRatios(from: window.last)
 
@@ -90,6 +94,16 @@ nonisolated enum GeometryLiveness {
         let yawRange = yawRangeDegrees(window)
         let yawGateOK = (yawRange ?? 0) >= tuning.minYawRangeDegrees
         if let yawRange { diagnostics["yaw range (deg)"] = yawRange }
+
+        guard yawGateOK || includeDiagnostics else {
+            return GeometryLivenessResult(
+                planarResidualScore: 0, planarConfidence: 0,
+                validLandmarkCount: lastLandmarks, pairsAnalyzed: 0, rejectedPairCount: 0,
+                medianFitResidual: nil, medianProbeResidual: nil,
+                excessRatio: nil, coherence: nil, motionMagnitude: nil,
+                diagnosticRatios: diagnostics
+            )
+        }
 
         var excesses: [CGFloat] = []
         var coherences: [CGFloat] = []

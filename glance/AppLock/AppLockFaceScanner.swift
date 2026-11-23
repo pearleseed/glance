@@ -154,9 +154,10 @@ final class AppLockFaceScanner {
         challengeID: UUID,
         deadline: ContinuousClock.Instant
     ) async -> ScanOutcome {
+        let livenessEnabled = GlanceSettings.shared.livenessChecksEnabled
         let evaluator = FaceAuthEvaluator(
             pipeline: pipeline,
-            livenessEnabled: GlanceSettings.shared.livenessChecksEnabled,
+            livenessEnabled: livenessEnabled,
             livenessModeProvider: { GlanceSettings.shared.livenessMode },
             wrongFaceGraceDuration: wrongFaceGraceDuration
         )
@@ -190,7 +191,9 @@ final class AppLockFaceScanner {
                 extracted = await FaceAuthEvaluator.extractFrame(
                     from: frame,
                     pipeline: pipeline,
-                    previousBoundingBox: evaluator.lastFaceBoundingBox
+                    previousBoundingBox: evaluator.lastFaceBoundingBox,
+                    livenessEnabled: livenessEnabled,
+                    geometryContext: evaluator.geometryContextIfNeeded()
                 )
             }
 

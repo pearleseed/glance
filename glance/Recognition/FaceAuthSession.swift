@@ -15,6 +15,22 @@ nonisolated struct ExtractedAuthFrame: @unchecked Sendable {
     let luminance: Double?
     let recognition: FaceRecognitionResult?
     let livenessFrame: LivenessFrame?
+    let precomputedGeometry: GeometryLivenessResult?
+    let geometryGeneration: UInt64?
+
+    init(
+        luminance: Double?,
+        recognition: FaceRecognitionResult?,
+        livenessFrame: LivenessFrame?,
+        precomputedGeometry: GeometryLivenessResult? = nil,
+        geometryGeneration: UInt64? = nil
+    ) {
+        self.luminance = luminance
+        self.recognition = recognition
+        self.livenessFrame = livenessFrame
+        self.precomputedGeometry = precomputedGeometry
+        self.geometryGeneration = geometryGeneration
+    }
 }
 
 enum FaceAuthStepOutcome {
@@ -52,12 +68,37 @@ final class FaceAuthEvaluator {
         self.wrongFaceGraceDuration = wrongFaceGraceDuration
     }
 
-    /// Runs Vision detection, alignment, ArcFace embedding, and liveness feature extraction off `@MainActor`.
+    /// Snapshots the rolling liveness window when Heavy geometry needs to run off `@MainActor`.
+    func geometryContextIfNeeded() -> LivenessAnalyzer.GeometryEvaluationContext? {
+        guard livenessEnabled else { return nil }
+        return liveness.heavyGeometryContextIfNeeded()
+    }
+
+    /// Zero-copy slices the `padding 0.15` glare crop out of Phase-2 `nativeCrop` when present,
+    /// falling back to `CameraManager.renderCrop` when `nativeCrop` is unavailable or slicing fails.
+    nonisolated static func glareCrop(from frame: CameraFrame, recognition result: FaceRecognitionResult) -> CGImage? {
+        if let nativeCrop = result.nativeCrop,
+            let nativeCropWorkingRect = result.nativeCropWorkingRect,
+            let sliced = CameraFrame.sliceGlareCrop(
+                from: nativeCrop,
+                nativeCropWorkingRect: nativeCropWorkingRect,
+                faceBoundingBox: result.face.boundingBox,
+                workingSize: result.face.imageSize
+            )
+        {
+            return sliced
+        }
+        return CameraManager.renderCrop(from: frame, imageRect: result.face.boundingBox)
+    }
+
+    /// Runs Vision detection, alignment, ArcFace embedding, and optional liveness + Heavy geometry extraction off `@MainActor`.
     nonisolated static func extractFrame(
         from frame: CameraFrame,
         pipeline: FaceRecognitionPipeline,
         previousBoundingBox: CGRect?,
-        nightBoostEnabled: Bool = false
+        livenessEnabled: Bool = true,
+        nightBoostEnabled: Bool = false,
+        geometryContext: LivenessAnalyzer.GeometryEvaluationContext? = nil
     ) async -> ExtractedAuthFrame {
         await Task.detached(priority: .userInitiated) {
             let measuredLuminance = nightBoostEnabled ? SceneLuminance.meanLuminance(of: frame.image) : nil
@@ -81,16 +122,22 @@ final class FaceAuthEvaluator {
             guard let result = recognitionResult else {
                 return ExtractedAuthFrame(luminance: measuredLuminance, recognition: nil, livenessFrame: nil)
             }
-            let faceCrop = CameraManager.renderCrop(from: frame, imageRect: result.face.boundingBox)
+            guard livenessEnabled else {
+                return ExtractedAuthFrame(luminance: measuredLuminance, recognition: result, livenessFrame: nil)
+            }
+            let faceCrop = glareCrop(from: frame, recognition: result)
             let livenessFrame = LivenessFeatureExtractor.extract(
                 from: result,
                 frame: frame.image,
                 faceCrop: faceCrop
             )
+            let precomputedGeometry = geometryContext?.computeGeometry(appending: livenessFrame)
             return ExtractedAuthFrame(
                 luminance: measuredLuminance,
                 recognition: result,
-                livenessFrame: livenessFrame
+                livenessFrame: livenessFrame,
+                precomputedGeometry: precomputedGeometry,
+                geometryGeneration: geometryContext?.generation
             )
         }.value
     }
@@ -102,7 +149,13 @@ final class FaceAuthEvaluator {
         threshold: Float,
         now: ContinuousClock.Instant = .now
     ) -> FaceAuthStepOutcome {
-        guard let result = extracted.recognition, let livenessFrame = extracted.livenessFrame else {
+        guard let result = extracted.recognition else {
+            wrongFaceStartedAt = nil
+            lastFaceBoundingBox = nil
+            resetIdentityLivenessState()
+            return .pending
+        }
+        if livenessEnabled, extracted.livenessFrame == nil {
             wrongFaceStartedAt = nil
             lastFaceBoundingBox = nil
             resetIdentityLivenessState()
@@ -116,14 +169,21 @@ final class FaceAuthEvaluator {
         let matched = pipeline.bestMatch(in: scored, threshold: threshold)
 
         if let matched {
-            return evaluateMatched(matched, livenessFrame: livenessFrame)
+            return evaluateMatched(
+                matched,
+                livenessFrame: extracted.livenessFrame,
+                precomputedGeometry: extracted.precomputedGeometry,
+                geometryGeneration: extracted.geometryGeneration
+            )
         }
-        return evaluateUnmatched(livenessFrame: livenessFrame, now: now)
+        return evaluateUnmatched(livenessFrame: extracted.livenessFrame, now: now)
     }
 
     private func evaluateMatched(
         _ matched: ScoredIdentity,
-        livenessFrame: LivenessFrame
+        livenessFrame: LivenessFrame?,
+        precomputedGeometry: GeometryLivenessResult?,
+        geometryGeneration: UInt64?
     ) -> FaceAuthStepOutcome {
         wrongFaceStartedAt = nil
         if matchedIdentityID != matched.identity.id {
@@ -133,7 +193,12 @@ final class FaceAuthEvaluator {
 
         var confirmingCue: LivenessCue?
         if livenessEnabled {
-            let snapshot = liveness.observe(livenessFrame)
+            guard let livenessFrame else { return .pending }
+            let snapshot = liveness.observe(
+                livenessFrame,
+                precomputedGeometry: precomputedGeometry,
+                sourceGeneration: geometryGeneration
+            )
             switch snapshot.decision {
             case .denied:
                 return .spoofDenied(reason: snapshot.decision.denialReason)
@@ -152,11 +217,12 @@ final class FaceAuthEvaluator {
     }
 
     private func evaluateUnmatched(
-        livenessFrame: LivenessFrame,
+        livenessFrame: LivenessFrame?,
         now: ContinuousClock.Instant
     ) -> FaceAuthStepOutcome {
         resetIdentityLivenessState()
         if livenessEnabled {
+            guard let livenessFrame else { return .pending }
             let snapshot = liveness.observeUnmatched(livenessFrame)
             if case .denied = snapshot.decision {
                 return .spoofDenied(reason: snapshot.decision.denialReason)

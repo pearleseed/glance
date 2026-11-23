@@ -125,9 +125,15 @@ nonisolated enum GlareCueExtractor {
                         maskedPixelCount += 1
 
                         let offset = rowBase + x * 4
-                        let red = Float(bytes[offset])
-                        let green = Float(bytes[offset + 1])
-                        let blue = Float(bytes[offset + 2])
+                        let r = bytes[offset]
+                        let g = bytes[offset + 1]
+                        let b = bytes[offset + 2]
+                        // Necessary condition for `luma >= 235` and `|Cb|, |Cr| <= 10` (exact BT.601 min channel >= 218).
+                        guard r >= 215 && g >= 215 && b >= 215 else { continue }
+
+                        let red = Float(r)
+                        let green = Float(g)
+                        let blue = Float(b)
 
                         let luma = 0.299 * red + 0.587 * green + 0.114 * blue
                         guard luma >= specularLumaFloor else { continue }

@@ -171,18 +171,25 @@ final class FaceLabController {
         if pipeline.loadState == .loading {
             await pipeline.waitUntilReady()
         }
+        let geometryContext = livenessAnalyzer.heavyGeometryContextIfNeeded()
         do {
-            let (result, livenessFrame) = try await Task.detached(priority: .userInitiated) {
+            let (result, livenessFrame, precomputedGeometry) = try await Task.detached(priority: .userInitiated) {
                 let result = try pipeline.recognize(in: cameraFrame)
-                let faceCrop = CameraManager.renderCrop(from: cameraFrame, imageRect: result.face.boundingBox)
-                return (
-                    result, LivenessFeatureExtractor.extract(from: result, frame: cameraFrame.image, faceCrop: faceCrop)
+                let faceCrop = FaceAuthEvaluator.glareCrop(from: cameraFrame, recognition: result)
+                let livenessFrame = LivenessFeatureExtractor.extract(
+                    from: result, frame: cameraFrame.image, faceCrop: faceCrop
                 )
+                let precomputedGeometry = geometryContext?.computeGeometry(appending: livenessFrame)
+                return (result, livenessFrame, precomputedGeometry)
             }.value
             detectedFaces = [result.face]
             currentResult = result
             lastLivenessFrame = livenessFrame
-            currentLiveness = livenessAnalyzer.observe(livenessFrame)
+            currentLiveness = livenessAnalyzer.observe(
+                livenessFrame,
+                precomputedGeometry: precomputedGeometry,
+                sourceGeneration: geometryContext?.generation
+            )
             currentGeometry = livenessAnalyzer.lastGeometry
         } catch FaceRecognitionPipelineError.noFaceDetected {
             detectedFaces = []

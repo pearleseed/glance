@@ -11,7 +11,7 @@ import Vision
 
 /// Every landmark region this app reads from `VNFaceLandmarks2D`. Includes several regions
 /// `FaceAligner` never needed — liveness samples more of them for its residual-coherence check.
-enum LandmarkRegion: String, CaseIterable, Hashable {
+enum LandmarkRegion: String, CaseIterable, Hashable, Sendable {
     case leftEye, rightEye
     case leftEyebrow, rightEyebrow
     case nose, noseCrest
@@ -21,7 +21,7 @@ enum LandmarkRegion: String, CaseIterable, Hashable {
 
 /// One landmark point, tagged with where it came from. `indexInRegion` lets two frames'
 /// points be paired up for cross-frame comparison.
-struct LandmarkPoint {
+nonisolated struct LandmarkPoint: Sendable {
     let point: CGPoint
     let region: LandmarkRegion
     let indexInRegion: Int
@@ -30,14 +30,41 @@ struct LandmarkPoint {
 /// Pure geometry — `nonisolated` so it's callable from the same background
 /// tasks `FaceAligner`/`FaceDetector` already run on.
 nonisolated enum LandmarkGeometry {
-    /// Vision returns points in bottom-left-origin, y-up; flipped here to top-left/y-down
-    /// to match `DetectedFace.boundingBox`.
-    static func imagePoints(of region: VNFaceLandmarkRegion2D, imageSize: CGSize) -> [CGPoint] {
-        region.pointsInImage(imageSize: imageSize).map { CGPoint(x: $0.x, y: imageSize.height - $0.y) }
+    /// Maps a point from top-left/y-down crop pixel space (`0...cropSize`) back into
+    /// top-left/y-down working-frame pixel space inside `cropWorkingRect`.
+    static func mapPointFromCrop(
+        _ point: CGPoint,
+        cropSize: CGSize,
+        toWorkingRect cropWorkingRect: CGRect
+    ) -> CGPoint {
+        guard cropSize.width > 0, cropSize.height > 0 else { return point }
+        return CGPoint(
+            x: cropWorkingRect.minX + (point.x / cropSize.width) * cropWorkingRect.width,
+            y: cropWorkingRect.minY + (point.y / cropSize.height) * cropWorkingRect.height
+        )
     }
 
-    static func centroid(of region: VNFaceLandmarkRegion2D, imageSize: CGSize) -> CGPoint? {
-        let points = imagePoints(of: region, imageSize: imageSize)
+    /// Vision returns points in bottom-left-origin, y-up; flipped here to top-left/y-down
+    /// to match `DetectedFace.boundingBox`. When `workingRect` is provided, maps crop-space
+    /// points linearly into working-frame coordinates.
+    static func imagePoints(
+        of region: VNFaceLandmarkRegion2D,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> [CGPoint] {
+        let points = region.pointsInImage(imageSize: imageSize).map {
+            CGPoint(x: $0.x, y: imageSize.height - $0.y)
+        }
+        guard let workingRect else { return points }
+        return points.map { mapPointFromCrop($0, cropSize: imageSize, toWorkingRect: workingRect) }
+    }
+
+    static func centroid(
+        of region: VNFaceLandmarkRegion2D,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> CGPoint? {
+        let points = imagePoints(of: region, imageSize: imageSize, mappedTo: workingRect)
         guard !points.isEmpty else { return nil }
         let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
         return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
@@ -46,17 +73,29 @@ nonisolated enum LandmarkGeometry {
     /// Prefers the pupil landmark (a precise point) over the eye outline's
     /// centroid (an approximation from eyelid boundary points) when Vision
     /// provides one.
-    static func eyeCenter(pupil: VNFaceLandmarkRegion2D?, eye: VNFaceLandmarkRegion2D?, imageSize: CGSize) -> CGPoint? {
-        if let pupil, let center = centroid(of: pupil, imageSize: imageSize) { return center }
-        if let eye { return centroid(of: eye, imageSize: imageSize) }
+    static func eyeCenter(
+        pupil: VNFaceLandmarkRegion2D?,
+        eye: VNFaceLandmarkRegion2D?,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> CGPoint? {
+        if let pupil, let center = centroid(of: pupil, imageSize: imageSize, mappedTo: workingRect) { return center }
+        if let eye { return centroid(of: eye, imageSize: imageSize, mappedTo: workingRect) }
         return nil
     }
 
     /// Distance between the two eye centers — the normalization scale used throughout
     /// liveness scoring so scores stay comparable regardless of camera distance.
-    static func interocularDistance(from landmarks: VNFaceLandmarks2D, imageSize: CGSize) -> CGFloat? {
-        guard let left = eyeCenter(pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize),
-            let right = eyeCenter(pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize)
+    static func interocularDistance(
+        from landmarks: VNFaceLandmarks2D,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> CGFloat? {
+        guard
+            let left = eyeCenter(
+                pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize, mappedTo: workingRect),
+            let right = eyeCenter(
+                pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize, mappedTo: workingRect)
         else { return nil }
         return hypot(left.x - right.x, left.y - right.y)
     }
@@ -99,8 +138,12 @@ nonisolated enum LandmarkGeometry {
         return (maxProj - minProj) / maxDist
     }
 
-    static func eyeAspectRatio(of eyeRegion: VNFaceLandmarkRegion2D, imageSize: CGSize) -> CGFloat? {
-        contourAspectRatio(points: imagePoints(of: eyeRegion, imageSize: imageSize))
+    static func eyeAspectRatio(
+        of eyeRegion: VNFaceLandmarkRegion2D,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> CGFloat? {
+        contourAspectRatio(points: imagePoints(of: eyeRegion, imageSize: imageSize, mappedTo: workingRect))
     }
 
     /// Projects the nose-to-eye-midpoint vector onto the inter-eye unit axis and normalizes
@@ -136,11 +179,15 @@ nonisolated enum LandmarkGeometry {
 
     /// Every point Vision detected, tagged by region and position so a later frame's
     /// points can be matched back up; a region missing this frame just contributes nothing.
-    static func allPoints(from landmarks: VNFaceLandmarks2D, imageSize: CGSize) -> [LandmarkPoint] {
+    static func allPoints(
+        from landmarks: VNFaceLandmarks2D,
+        imageSize: CGSize,
+        mappedTo workingRect: CGRect? = nil
+    ) -> [LandmarkPoint] {
         var result: [LandmarkPoint] = []
         for regionCase in LandmarkRegion.allCases {
             guard let vnRegion = region(regionCase, of: landmarks) else { continue }
-            let points = imagePoints(of: vnRegion, imageSize: imageSize)
+            let points = imagePoints(of: vnRegion, imageSize: imageSize, mappedTo: workingRect)
             for (index, point) in points.enumerated() {
                 result.append(LandmarkPoint(point: point, region: regionCase, indexInRegion: index))
             }
@@ -166,14 +213,28 @@ nonisolated enum LandmarkGeometry {
     }
 
     /// Hartley-normalized DLT homography with `h33 = 1`, solved as an 8×8
-    /// normal-equation system. Needs at least 4 correspondences; 6+ is
-    /// the practical floor used by callers so the fit is overdetermined.
+    /// normal-equation system using stack-allocated flat buffers (0 heap allocations).
+    /// Needs at least 4 correspondences; 6+ is the practical floor used by callers.
     static func solveHomography(
         from sourcePoints: [CGPoint], to destinationPoints: [CGPoint], weights: [CGFloat]? = nil
     ) -> Homography? {
-        guard sourcePoints.count == destinationPoints.count, sourcePoints.count >= 4 else { return nil }
         if let weights {
             guard weights.count == sourcePoints.count else { return nil }
+            return weights.withUnsafeBufferPointer { buffer in
+                solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: buffer)
+            }
+        }
+        return solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: nil)
+    }
+
+    private static func solveHomography(
+        from sourcePoints: [CGPoint],
+        to destinationPoints: [CGPoint],
+        weightsBuffer: UnsafeBufferPointer<CGFloat>?
+    ) -> Homography? {
+        guard sourcePoints.count == destinationPoints.count, sourcePoints.count >= 4 else { return nil }
+        if let weightsBuffer {
+            guard weightsBuffer.count == sourcePoints.count else { return nil }
         }
 
         guard let srcT = normalizingTransform(sourcePoints),
@@ -181,64 +242,108 @@ nonisolated enum LandmarkGeometry {
         else { return nil }
 
         let n = sourcePoints.count
-        var ata = Array(repeating: Array(repeating: CGFloat(0), count: 8), count: 8)
-        var atb = Array(repeating: CGFloat(0), count: 8)
+        return withUnsafeTemporaryAllocation(of: Double.self, capacity: 64) { ata in
+            ata.initialize(repeating: 0)
+            return withUnsafeTemporaryAllocation(of: Double.self, capacity: 8) { atb in
+                atb.initialize(repeating: 0)
 
-        for i in 0..<n {
-            let src = applyNormalization(sourcePoints[i], srcT)
-            let dst = applyNormalization(destinationPoints[i], dstT)
-            let w = (weights?[i] ?? 1).squareRoot()
-            guard w > 0 else { continue }
-            let x = src.x
-            let y = src.y
-            let u = dst.x
-            let v = dst.y
-            // Two DLT rows, h33 fixed at 1:
-            // [x y 1 0 0 0 -u x -u y] · h = u
-            // [0 0 0 x y 1 -v x -v y] · h = v
-            let row0: [CGFloat] = [x * w, y * w, w, 0, 0, 0, -u * x * w, -u * y * w]
-            let row1: [CGFloat] = [0, 0, 0, x * w, y * w, w, -v * x * w, -v * y * w]
-            let b0 = u * w
-            let b1 = v * w
-            accumulateNormalEquations(row0, b0, into: &ata, atb: &atb)
-            accumulateNormalEquations(row1, b1, into: &ata, atb: &atb)
+                for i in 0..<n {
+                    let src = applyNormalization(sourcePoints[i], srcT)
+                    let dst = applyNormalization(destinationPoints[i], dstT)
+                    let w = Double((weightsBuffer?[i] ?? 1).squareRoot())
+                    guard w > 0 else { continue }
+                    let x = Double(src.x)
+                    let y = Double(src.y)
+                    let u = Double(dst.x)
+                    let v = Double(dst.y)
+                    let xw = x * w
+                    let yw = y * w
+                    // Two DLT rows, h33 fixed at 1:
+                    // [x y 1 0 0 0 -u x -u y] · h = u
+                    // [0 0 0 x y 1 -v x -v y] · h = v
+                    accumulateDLTRowUpper(
+                        blockStart: 0,
+                        xw: xw, yw: yw, ww: w,
+                        pxw: -u * xw, pyw: -u * yw,
+                        rhs: u * w,
+                        ata: ata, atb: atb
+                    )
+                    accumulateDLTRowUpper(
+                        blockStart: 3,
+                        xw: xw, yw: yw, ww: w,
+                        pxw: -v * xw, pyw: -v * yw,
+                        rhs: v * w,
+                        ata: ata, atb: atb
+                    )
+                }
+
+                for i in 0..<8 {
+                    for j in (i + 1)..<8 {
+                        ata[j * 8 + i] = ata[i * 8 + j]
+                    }
+                }
+
+                guard solveLinearSystemInPlace(ata, atb, count: 8) else { return nil }
+                let hNorm = Homography(
+                    h11: CGFloat(atb[0]), h12: CGFloat(atb[1]), h13: CGFloat(atb[2]),
+                    h21: CGFloat(atb[3]), h22: CGFloat(atb[4]), h23: CGFloat(atb[5]),
+                    h31: CGFloat(atb[6]), h32: CGFloat(atb[7]), h33: 1
+                )
+                return denormalizeHomography(hNorm, source: srcT, destination: dstT)
+            }
         }
-
-        guard let h = solveLinearSystem(ata, atb) else { return nil }
-        let hNorm = Homography(
-            h11: h[0], h12: h[1], h13: h[2],
-            h21: h[3], h22: h[4], h23: h[5],
-            h31: h[6], h32: h[7], h33: 1
-        )
-        return denormalizeHomography(hNorm, source: srcT, destination: dstT)
     }
 
     /// Two-pass IRLS around `solveHomography`, Tukey biweight, so one wildly jittered
     /// landmark can't pull the plane around. Cutoff uses the full-set median so a smiling
     /// mouth stays in the fit rather than letting an underconstrained homography absorb parallax.
     static func solveRobustHomography(from sourcePoints: [CGPoint], to destinationPoints: [CGPoint]) -> Homography? {
-        guard var current = solveHomography(from: sourcePoints, to: destinationPoints) else { return nil }
-        for _ in 0..<2 {
-            let residuals = zip(sourcePoints, destinationPoints).map {
-                hypot($1.x - current.apply($0).x, $1.y - current.apply($0).y)
-            }
-            let scale = max(medianValue(residuals), 1e-4)
-            let cutoff = 4.685 * 1.4826 * scale
-            var weights: [CGFloat] = residuals.map { r in
-                let u = r / cutoff
-                if u >= 1 { return 0 }
-                let t = 1 - u * u
-                return t * t
-            }
-            let inliers = weights.filter { $0 > 0 }.count
-            if inliers < 6 {
-                weights = Array(repeating: 1, count: sourcePoints.count)
-            }
-            if let refined = solveHomography(from: sourcePoints, to: destinationPoints, weights: weights) {
-                current = refined
-            }
+        guard var current = solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: nil) else {
+            return nil
         }
-        return current
+        let n = sourcePoints.count
+        return withUnsafeTemporaryAllocation(of: CGFloat.self, capacity: n * 3) { buffer in
+            let residuals = UnsafeMutableBufferPointer(start: buffer.baseAddress, count: n)
+            var scratch = UnsafeMutableBufferPointer(start: buffer.baseAddress! + n, count: n)
+            let weights = UnsafeMutableBufferPointer(start: buffer.baseAddress! + n * 2, count: n)
+
+            for _ in 0..<2 {
+                for i in 0..<n {
+                    let predicted = current.apply(sourcePoints[i])
+                    let r = hypot(destinationPoints[i].x - predicted.x, destinationPoints[i].y - predicted.y)
+                    residuals[i] = r
+                    scratch[i] = r
+                }
+                scratch.sort()
+                let mid = n / 2
+                let median = n.isMultiple(of: 2) ? (scratch[mid - 1] + scratch[mid]) / 2 : scratch[mid]
+                let scale = max(median, 1e-4)
+                let cutoff = 4.685 * 1.4826 * scale
+                var inliers = 0
+                for i in 0..<n {
+                    let u = residuals[i] / cutoff
+                    if u >= 1 {
+                        weights[i] = 0
+                    } else {
+                        let t = 1 - u * u
+                        let w = t * t
+                        weights[i] = w
+                        if w > 0 { inliers += 1 }
+                    }
+                }
+                if inliers < 6 {
+                    weights.initialize(repeating: 1)
+                }
+                if let refined = solveHomography(
+                    from: sourcePoints,
+                    to: destinationPoints,
+                    weightsBuffer: UnsafeBufferPointer(weights)
+                ) {
+                    current = refined
+                }
+            }
+            return current
+        }
     }
 
     private struct SimilarityNorm {
@@ -316,63 +421,126 @@ nonisolated enum LandmarkGeometry {
         )
     }
 
-    private static func accumulateNormalEquations(
-        _ row: [CGFloat], _ b: CGFloat, into ata: inout [[CGFloat]], atb: inout [CGFloat]
+    @inline(__always)
+    private static func accumulateDLTRowUpper(
+        blockStart: Int,
+        xw: Double, yw: Double, ww: Double,
+        pxw: Double, pyw: Double,
+        rhs: Double,
+        ata: UnsafeMutableBufferPointer<Double>,
+        atb: UnsafeMutableBufferPointer<Double>
     ) {
-        for i in 0..<8 {
-            atb[i] += row[i] * b
-            for j in 0..<8 {
-                ata[i][j] += row[i] * row[j]
-            }
-        }
+        let c0 = blockStart
+        let c1 = blockStart + 1
+        let c2 = blockStart + 2
+
+        atb[c0] += xw * rhs
+        atb[c1] += yw * rhs
+        atb[c2] += ww * rhs
+        atb[6] += pxw * rhs
+        atb[7] += pyw * rhs
+
+        let r0 = c0 * 8
+        ata[r0 + c0] += xw * xw
+        ata[r0 + c1] += xw * yw
+        ata[r0 + c2] += xw * ww
+        ata[r0 + 6] += xw * pxw
+        ata[r0 + 7] += xw * pyw
+
+        let r1 = c1 * 8
+        ata[r1 + c1] += yw * yw
+        ata[r1 + c2] += yw * ww
+        ata[r1 + 6] += yw * pxw
+        ata[r1 + 7] += yw * pyw
+
+        let r2 = c2 * 8
+        ata[r2 + c2] += ww * ww
+        ata[r2 + 6] += ww * pxw
+        ata[r2 + 7] += ww * pyw
+
+        let r6 = 6 * 8
+        ata[r6 + 6] += pxw * pxw
+        ata[r6 + 7] += pxw * pyw
+
+        let r7 = 7 * 8
+        ata[r7 + 7] += pyw * pyw
     }
 
-    /// Gaussian elimination with partial pivoting. `nil` if singular.
-    static func solveLinearSystem(_ matrix: [[CGFloat]], _ rhs: [CGFloat]) -> [CGFloat]? {
-        let n = rhs.count
-        guard matrix.count == n, matrix.allSatisfy({ $0.count == n }) else { return nil }
-        var a = matrix
-        var b = rhs
+    /// In-place Gaussian elimination with partial pivoting on an `n x n` row-major flat buffer `a`
+    /// and RHS buffer `b` (solution written back into `b`). Returns `false` if singular.
+    private static func solveLinearSystemInPlace(
+        _ a: UnsafeMutableBufferPointer<Double>,
+        _ b: UnsafeMutableBufferPointer<Double>,
+        count n: Int
+    ) -> Bool {
         for k in 0..<n {
             var pivot = k
-            var maxVal = abs(a[k][k])
+            var maxVal = abs(a[k * n + k])
             if k + 1 < n {
                 for i in (k + 1)..<n {
-                    let v = abs(a[i][k])
+                    let v = abs(a[i * n + k])
                     if v > maxVal {
                         maxVal = v
                         pivot = i
                     }
                 }
             }
-            if maxVal < 1e-12 { return nil }
+            if maxVal < 1e-12 { return false }
             if pivot != k {
-                a.swapAt(k, pivot)
+                let rowK = k * n
+                let rowP = pivot * n
+                for j in k..<n {
+                    let tmp = a[rowK + j]
+                    a[rowK + j] = a[rowP + j]
+                    a[rowP + j] = tmp
+                }
                 b.swapAt(k, pivot)
             }
-            let diag = a[k][k]
+            let rowK = k * n
+            let diag = a[rowK + k]
             if k + 1 < n {
                 for i in (k + 1)..<n {
-                    let factor = a[i][k] / diag
+                    let rowI = i * n
+                    let factor = a[rowI + k] / diag
                     for j in k..<n {
-                        a[i][j] -= factor * a[k][j]
+                        a[rowI + j] -= factor * a[rowK + j]
                     }
                     b[i] -= factor * b[k]
                 }
             }
         }
-        var x = [CGFloat](repeating: 0, count: n)
         for i in stride(from: n - 1, through: 0, by: -1) {
+            let rowI = i * n
             var sum = b[i]
             if i + 1 < n {
                 for j in (i + 1)..<n {
-                    sum -= a[i][j] * x[j]
+                    sum -= a[rowI + j] * b[j]
                 }
             }
-            guard abs(a[i][i]) > 1e-12 else { return nil }
-            x[i] = sum / a[i][i]
+            let diag = a[rowI + i]
+            guard abs(diag) > 1e-12 else { return false }
+            b[i] = sum / diag
         }
-        return x
+        return true
+    }
+
+    /// Gaussian elimination with partial pivoting. `nil` if singular.
+    static func solveLinearSystem(_ matrix: [[CGFloat]], _ rhs: [CGFloat]) -> [CGFloat]? {
+        let n = rhs.count
+        guard matrix.count == n, matrix.allSatisfy({ $0.count == n }) else { return nil }
+        if n == 0 { return [] }
+        return withUnsafeTemporaryAllocation(of: Double.self, capacity: n * n) { a in
+            return withUnsafeTemporaryAllocation(of: Double.self, capacity: n) { b in
+                for i in 0..<n {
+                    b[i] = Double(rhs[i])
+                    for j in 0..<n {
+                        a[i * n + j] = Double(matrix[i][j])
+                    }
+                }
+                guard solveLinearSystemInPlace(a, b, count: n) else { return nil }
+                return (0..<n).map { CGFloat(b[$0]) }
+            }
+        }
     }
 
     static func medianValue(_ values: [CGFloat]) -> CGFloat {

@@ -212,7 +212,9 @@ extension FaceUnlockCoordinator {
                     from: frame,
                     pipeline: pipeline,
                     previousBoundingBox: evaluator.lastFaceBoundingBox,
-                    nightBoostEnabled: nightBoostEnabled
+                    livenessEnabled: livenessEnabled,
+                    nightBoostEnabled: nightBoostEnabled,
+                    geometryContext: evaluator.geometryContextIfNeeded()
                 )
             }
 

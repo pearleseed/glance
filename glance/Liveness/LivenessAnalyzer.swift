@@ -11,6 +11,23 @@ import Foundation
 
 @MainActor
 final class LivenessAnalyzer {
+    nonisolated struct GeometryEvaluationContext: Sendable {
+        let window: [LivenessFrame]
+        let windowDuration: TimeInterval
+        let generation: UInt64
+        let includeDiagnostics: Bool
+
+        nonisolated func computeGeometry(appending frame: LivenessFrame) -> GeometryLivenessResult {
+            var nextWindow = window
+            nextWindow.append(frame)
+            nextWindow.removeAll { frame.timestamp.timeIntervalSince($0.timestamp) > windowDuration }
+            return LivenessAnalyzer.computeHeavyGeometry(
+                window: nextWindow,
+                includeDiagnostics: includeDiagnostics
+            )
+        }
+    }
+
     private let windowDuration: TimeInterval
 
     /// Read fresh on every `observe()`, not captured at init, so a mid-scan Settings change takes effect immediately.
@@ -24,6 +41,7 @@ final class LivenessAnalyzer {
     var keepsComputingConfirmCuesAfterConfirmation = false
 
     private var frames: [LivenessFrame] = []
+    private var windowGeneration: UInt64 = 0
     private var evaluator = LivenessEvaluator()
     private(set) var lastSnapshot = LivenessSnapshot.empty
     /// Kept for Face Lab's diagnostics panel (excess ratio, coherence, pair
@@ -36,6 +54,7 @@ final class LivenessAnalyzer {
 
     func reset() {
         frames.removeAll()
+        windowGeneration &+= 1
         evaluator.reset()
         lastSnapshot = .empty
         lastGeometry = .empty
@@ -45,10 +64,36 @@ final class LivenessAnalyzer {
     /// keeping any accumulated deny-cue evidence intact.
     func resetConfirmations() {
         frames.removeAll()
+        windowGeneration &+= 1
         lastGeometry = .empty
         syncEvaluatorConfig()
         evaluator.resetConfirmations()
         lastSnapshot = evaluator.observeDenyOnly([:])
+    }
+
+    /// Snapshots the rolling window when Heavy geometry evaluation is needed so callers
+    /// can run `GeometryLiveness` off `@MainActor` alongside feature extraction.
+    func heavyGeometryContextIfNeeded() -> GeometryEvaluationContext? {
+        syncEvaluatorConfig()
+        let alreadyConfirmedInHeavy = lastSnapshot.mode == .heavy && lastSnapshot.decision.isConfirmed
+        let needsConfirmCues =
+            evaluator.mode == .heavy && (keepsComputingConfirmCuesAfterConfirmation || !alreadyConfirmedInHeavy)
+        guard needsConfirmCues else { return nil }
+        return GeometryEvaluationContext(
+            window: frames,
+            windowDuration: windowDuration,
+            generation: windowGeneration,
+            includeDiagnostics: keepsComputingConfirmCuesAfterConfirmation
+        )
+    }
+
+    /// Pure off-actor Heavy geometry computation. Safe to run on any background executor.
+    nonisolated static func computeHeavyGeometry(
+        window: [LivenessFrame],
+        tuning: GeometryTuning = .default,
+        includeDiagnostics: Bool = false
+    ) -> GeometryLivenessResult {
+        GeometryLiveness.evaluate(window, tuning: tuning, includeDiagnostics: includeDiagnostics)
     }
 
     /// Feeds an unmatched frame through deny-only evaluation so spoof cues still
@@ -66,7 +111,13 @@ final class LivenessAnalyzer {
     /// so liveness stays an independent gate. The window is time-pruned (~2s) but the evaluator's
     /// fire counts are not — they accumulate across the whole scan, so a spoof tell can't be waited out.
     @discardableResult
-    func observe(_ frame: LivenessFrame) -> LivenessSnapshot {
+    func observe(
+        _ frame: LivenessFrame,
+        precomputedGeometry: GeometryLivenessResult? = nil,
+        sourceGeneration: UInt64? = nil
+    ) -> LivenessSnapshot {
+        let snapshotGeneration = windowGeneration
+        windowGeneration &+= 1
         frames.append(frame)
         frames.removeAll { frame.timestamp.timeIntervalSince($0.timestamp) > windowDuration }
 
@@ -79,7 +130,16 @@ final class LivenessAnalyzer {
         let geometry: GeometryLivenessResult
         let readings: [LivenessCue: CueReading]
         if needsConfirmCues {
-            geometry = GeometryLiveness.evaluate(frames)
+            if let precomputedGeometry,
+                sourceGeneration.map({ $0 == snapshotGeneration }) ?? true
+            {
+                geometry = precomputedGeometry
+            } else {
+                geometry = Self.computeHeavyGeometry(
+                    window: frames,
+                    includeDiagnostics: keepsComputingConfirmCuesAfterConfirmation
+                )
+            }
             readings = LivenessCues.readings(window: frames, geometry: geometry)
         } else {
             geometry = .empty

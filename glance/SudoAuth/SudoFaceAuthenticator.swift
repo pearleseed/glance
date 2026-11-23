@@ -335,7 +335,9 @@ final class SudoFaceAuthenticator {
                 extracted = await FaceAuthEvaluator.extractFrame(
                     from: frame,
                     pipeline: pipeline,
-                    previousBoundingBox: evaluator.lastFaceBoundingBox
+                    previousBoundingBox: evaluator.lastFaceBoundingBox,
+                    livenessEnabled: true,
+                    geometryContext: evaluator.geometryContextIfNeeded()
                 )
             }
 

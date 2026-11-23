@@ -9,7 +9,7 @@
 import Foundation
 import Observation
 
-struct FaceSample: Codable, Equatable {
+nonisolated struct FaceSample: Codable, Equatable {
     let embedding: [Float]
     /// Which guided-enrollment pose this came from, or nil for untagged captures (e.g. Face Lab's manual capture).
     let pose: String?
@@ -58,7 +58,11 @@ extension FaceSample {
 struct FaceIdentity: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
-    var samples: [FaceSample]
+    var samples: [FaceSample] {
+        didSet {
+            cachedTemplate = FaceEmbedding.average(samples.map(\.embedding))
+        }
+    }
     /// Which `FaceEmbedder.modelIdentifier` produced these samples — different models' embeddings live in unrelated
     /// vector spaces. See `isStale(comparedTo:)`.
     var modelIdentifier: String
@@ -66,6 +70,19 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
     var createdAt: Date
     /// Turning off keeps the enrollment intact but excludes it from `activeIdentities`, which unlock scores against.
     var isEnabled: Bool
+
+    /// Derived cache of `FaceEmbedding.average(samples.map(\.embedding))`, kept out of JSON via `CodingKeys`.
+    private var cachedTemplate: [Float]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case samples
+        case modelIdentifier
+        case embeddingDimension
+        case createdAt
+        case isEnabled
+    }
 
     init(
         id: UUID,
@@ -83,6 +100,7 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
         self.embeddingDimension = embeddingDimension
         self.createdAt = createdAt
         self.isEnabled = isEnabled
+        self.cachedTemplate = FaceEmbedding.average(samples.map(\.embedding))
     }
 
     /// Hand-written so `isEnabled` defaults to `true` when absent — a synthesized decoder would throw on a missing
@@ -96,11 +114,22 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
         embeddingDimension = try container.decode(Int.self, forKey: .embeddingDimension)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        cachedTemplate = FaceEmbedding.average(samples.map(\.embedding))
+    }
+
+    nonisolated static func == (lhs: FaceIdentity, rhs: FaceIdentity) -> Bool {
+        lhs.id == rhs.id
+            && lhs.name == rhs.name
+            && lhs.samples == rhs.samples
+            && lhs.modelIdentifier == rhs.modelIdentifier
+            && lhs.embeddingDimension == rhs.embeddingDimension
+            && lhs.createdAt == rhs.createdAt
+            && lhs.isEnabled == rhs.isEnabled
     }
 
     /// The single vector actually compared against at recognition time.
     nonisolated var template: [Float]? {
-        FaceEmbedding.average(samples.map(\.embedding))
+        cachedTemplate
     }
 
     /// True if samples came from a different embedder than the one currently active — should prompt re-enrollment.

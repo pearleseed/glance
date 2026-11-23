@@ -17,6 +17,32 @@ nonisolated struct FaceRecognitionResult {
     let alignmentTier: AlignmentTier
     let quality: Float?
     let face: DetectedFace
+    /// Phase-2 native-resolution crop (`paddingFraction = 0.5`, `maxEdge = 512`) and its
+    /// clipped working-frame rect, plus the detected crop face (carrying high-res landmarks),
+    /// so liveness can zero-copy slice glare crops and reuse Pass-2 landmarks.
+    let nativeCrop: CGImage?
+    let nativeCropWorkingRect: CGRect?
+    let nativeCropFace: DetectedFace?
+
+    init(
+        embedding: [Float],
+        alignedImage: CGImage,
+        alignmentTier: AlignmentTier,
+        quality: Float?,
+        face: DetectedFace,
+        nativeCrop: CGImage? = nil,
+        nativeCropWorkingRect: CGRect? = nil,
+        nativeCropFace: DetectedFace? = nil
+    ) {
+        self.embedding = embedding
+        self.alignedImage = alignedImage
+        self.alignmentTier = alignmentTier
+        self.quality = quality
+        self.face = face
+        self.nativeCrop = nativeCrop
+        self.nativeCropWorkingRect = nativeCropWorkingRect
+        self.nativeCropFace = nativeCropFace
+    }
 }
 
 nonisolated enum FaceRecognitionPipelineError: LocalizedError {
@@ -207,10 +233,11 @@ final class FaceRecognitionPipeline {
         let workingWidth = CGFloat(frame.image.width)
         let willAttemptNativeCrop =
             workingWidth > 0 && (frame.sourceSize.width / workingWidth) > Self.nativeUpscaleThreshold
-        // Skip quality on the 640px pass when we expect to evaluate quality on the high-res crop.
+        // Skip quality and landmarks on the 640px pass when Phase 2 will run both on the 512px native crop.
         let faces = try FaceDetector.detectFaces(
             in: frame.image,
-            includeQuality: willAttemptNativeCrop ? false : includeQuality
+            includeQuality: willAttemptNativeCrop ? false : includeQuality,
+            includeLandmarks: !willAttemptNativeCrop
         )
         guard let face = Self.selectDominantFace(in: faces, preferNear: previousBoundingBox) else {
             throw FaceRecognitionPipelineError.noFaceDetected
@@ -226,9 +253,15 @@ final class FaceRecognitionPipeline {
         includeQuality: Bool = true
     ) throws -> FaceRecognitionResult {
         let workingWidth = CGFloat(frame.image.width)
+        let workingSize = CGSize(width: workingWidth, height: CGFloat(frame.image.height))
         let upscale = workingWidth > 0 ? frame.sourceSize.width / workingWidth : 1
 
         if upscale > Self.nativeUpscaleThreshold,
+            let clippedWorkingRect = Self.nativeCropWorkingRect(
+                for: face.boundingBox,
+                paddingFraction: Self.nativeCropPadding,
+                inWorkingSize: workingSize
+            ),
             let nativeCrop = frame.renderCrop(
                 imageRect: face.boundingBox,
                 paddingFraction: Self.nativeCropPadding,
@@ -238,7 +271,7 @@ final class FaceRecognitionPipeline {
             let cropFace = Self.selectCropFace(
                 in: cropFaces,
                 correspondingTo: face,
-                inWorkingSize: CGSize(width: frame.image.width, height: frame.image.height)
+                clippedWorkingRect: clippedWorkingRect
             ),
             let cropResult = try? recognize(cropFace, in: nativeCrop)
         {
@@ -248,11 +281,14 @@ final class FaceRecognitionPipeline {
                 alignedImage: cropResult.alignedImage,
                 alignmentTier: cropResult.alignmentTier,
                 quality: quality,
-                face: face.withQuality(quality)
+                face: face.withQuality(quality),
+                nativeCrop: nativeCrop,
+                nativeCropWorkingRect: clippedWorkingRect,
+                nativeCropFace: cropFace
             )
         }
 
-        let resolvedFace = faceWithQualityIfNeeded(face, in: frame.image, includeQuality: includeQuality)
+        let resolvedFace = resolveFaceForWorkingFrame(face, in: frame.image, includeQuality: includeQuality)
         return try recognize(resolvedFace, in: frame.image)
     }
 
@@ -338,22 +374,57 @@ final class FaceRecognitionPipeline {
         }
     }
 
-    nonisolated private func faceWithQualityIfNeeded(_ face: DetectedFace, in image: CGImage, includeQuality: Bool)
-        -> DetectedFace
-    {
-        guard includeQuality else {
-            return face.quality == nil ? face : face.withQuality(nil)
+    nonisolated private func resolveFaceForWorkingFrame(
+        _ face: DetectedFace,
+        in image: CGImage,
+        includeQuality: Bool
+    ) -> DetectedFace {
+        let needsQuality = includeQuality && face.quality == nil
+        let needsLandmarks = face.landmarks == nil
+        guard needsQuality || needsLandmarks else {
+            return (!includeQuality && face.quality != nil) ? face.withQuality(nil) : face
         }
-        guard face.quality == nil else { return face }
         let targetCenter = CGPoint(x: face.normalizedBoundingBox.midX, y: face.normalizedBoundingBox.midY)
-        guard let faces = try? FaceDetector.detectFaces(in: image, includeQuality: true),
+        guard let faces = try? FaceDetector.detectFaces(
+            in: image,
+            includeQuality: needsQuality,
+            includeLandmarks: needsLandmarks
+        ),
             let matched = faces.min(by: {
                 Self.distance(from: $0, to: targetCenter) < Self.distance(from: $1, to: targetCenter)
             })
         else {
-            return face
+            return (!includeQuality && face.quality != nil) ? face.withQuality(nil) : face
         }
-        return face.withQuality(matched.quality)
+        return DetectedFace(
+            boundingBox: face.boundingBox,
+            normalizedBoundingBox: face.normalizedBoundingBox,
+            quality: includeQuality ? (face.quality ?? matched.quality) : nil,
+            yaw: face.yaw ?? matched.yaw,
+            roll: face.roll ?? matched.roll,
+            pitch: face.pitch ?? matched.pitch,
+            landmarks: face.landmarks ?? matched.landmarks,
+            imageSize: face.imageSize
+        )
+    }
+
+    /// Computes the working-frame rectangle (`top-left/y-down`) covered by a padded crop of `boundingBox`,
+    /// clamped by `intersection` with `CGRect(origin: .zero, size: workingSize)`.
+    nonisolated static func nativeCropWorkingRect(
+        for boundingBox: CGRect,
+        paddingFraction: CGFloat = nativeCropPadding,
+        inWorkingSize workingSize: CGSize
+    ) -> CGRect? {
+        guard workingSize.width > 0, workingSize.height > 0,
+            boundingBox.width > 0, boundingBox.height > 0
+        else { return nil }
+        let expanded = boundingBox.insetBy(
+            dx: -boundingBox.width * paddingFraction,
+            dy: -boundingBox.height * paddingFraction
+        )
+        let clipped = expanded.intersection(CGRect(origin: .zero, size: workingSize))
+        guard !clipped.isNull, !clipped.isEmpty, clipped.width > 0, clipped.height > 0 else { return nil }
+        return clipped
     }
 
     /// Max normalized distance from `expectedCenter` in `nativeCrop` for a re-detected face to still match `workingFace`.
@@ -362,20 +433,13 @@ final class FaceRecognitionPipeline {
     nonisolated private static func selectCropFace(
         in cropFaces: [DetectedFace],
         correspondingTo workingFace: DetectedFace,
-        inWorkingSize workingSize: CGSize
+        clippedWorkingRect: CGRect
     ) -> DetectedFace? {
-        guard !cropFaces.isEmpty else { return nil }
-
-        let expanded = workingFace.boundingBox.insetBy(
-            dx: -workingFace.boundingBox.width * nativeCropPadding,
-            dy: -workingFace.boundingBox.height * nativeCropPadding
-        )
-        let clipped = expanded.intersection(CGRect(origin: .zero, size: workingSize))
-        guard clipped.width > 0, clipped.height > 0 else { return nil }
+        guard !cropFaces.isEmpty, clippedWorkingRect.width > 0, clippedWorkingRect.height > 0 else { return nil }
 
         let expectedCenter = CGPoint(
-            x: (workingFace.boundingBox.midX - clipped.minX) / clipped.width,
-            y: (workingFace.boundingBox.midY - clipped.minY) / clipped.height
+            x: (workingFace.boundingBox.midX - clippedWorkingRect.minX) / clippedWorkingRect.width,
+            y: (workingFace.boundingBox.midY - clippedWorkingRect.minY) / clippedWorkingRect.height
         )
         let nearest =
             cropFaces
