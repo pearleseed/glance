@@ -43,7 +43,8 @@ struct SettingsWindowView: View {
     /// branch, only a blank frame before `dismissWindow` closes it.
     var body: some View {
         if GlanceSettings.shared.hasCompletedOnboarding,
-           environment.allowsSettingsWindowPresentation {
+            environment.allowsSettingsWindowPresentation
+        {
             settingsContent
         } else {
             Color.clear
@@ -320,7 +321,7 @@ private final class SwipeHostingView: NSView {
         let horizontalDistance = abs(accumulatedHorizontalScroll)
         let verticalDistance = abs(accumulatedVerticalScroll)
         guard horizontalDistance >= swipeDistanceThreshold,
-              horizontalDistance > verticalDistance * 1.5
+            horizontalDistance > verticalDistance * 1.5
         else { return }
 
         didNavigateThisGesture = true

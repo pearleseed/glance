@@ -12,25 +12,19 @@ nonisolated struct AppLockEngine: Sendable {
         let pid: Int32
         let bundleID: String
         let isRegular: Bool
+    }
 
-        init(pid: Int32, bundleID: String, isRegular: Bool) {
-            self.pid = pid
-            self.bundleID = bundleID
-            self.isRegular = isRegular
-        }
+    enum ChallengePhase: Equatable, Hashable, Sendable {
+        case scanning
+        case systemPrompt
     }
 
     struct Challenge: Equatable, Hashable, Sendable {
-        enum Phase: Equatable, Hashable, Sendable {
-            case scanning
-            case systemPrompt
-        }
-
         let id: UUID
         let app: App
-        let phase: Phase
+        let phase: ChallengePhase
 
-        init(id: UUID = UUID(), app: App, phase: Phase = .scanning) {
+        init(id: UUID = UUID(), app: App, phase: ChallengePhase = .scanning) {
             self.id = id
             self.app = app
             self.phase = phase
@@ -84,7 +78,7 @@ nonisolated struct AppLockEngine: Sendable {
         var filtered: [String: RelockPolicy] = [:]
         for (bundleID, policy) in rawPolicies {
             guard !bundleID.isEmpty,
-                  !AppLockBlacklist.isProtected(bundleID, ownBundleID: ownBundleID)
+                !AppLockBlacklist.isProtected(bundleID, ownBundleID: ownBundleID)
             else { continue }
             filtered[bundleID] = policy
         }
@@ -114,8 +108,9 @@ nonisolated struct AppLockEngine: Sendable {
                 continue
             }
             if case .everyTime = policy,
-               let session = unlockedSessions[bundleID],
-               frontmostRegularApp?.bundleID != bundleID {
+                let session = unlockedSessions[bundleID],
+                frontmostRegularApp?.bundleID != bundleID
+            {
                 unlockedSessions.removeValue(forKey: bundleID)
                 if !session.isHidden {
                     effects.append(.hide(session.app))
@@ -235,7 +230,8 @@ nonisolated struct AppLockEngine: Sendable {
             if frontmost.isRegular {
                 effects.append(contentsOf: activateRegularApp(frontmost, monotonicNow: monotonicNow))
             } else {
-                effects.append(contentsOf: pruneUnlockedSessions(excluding: nil, at: monotonicNow, onRegularSwitch: false))
+                effects.append(
+                    contentsOf: pruneUnlockedSessions(excluding: nil, at: monotonicNow, onRegularSwitch: false))
             }
             return effects
         }
@@ -268,8 +264,8 @@ nonisolated struct AppLockEngine: Sendable {
     /// Marks the active face-scan challenge as passed and creates an unlocked session.
     mutating func passed(challengeID: UUID, monotonicNow: TimeInterval) -> [Effect] {
         guard let challenge = activeChallenge,
-              challenge.id == challengeID,
-              challenge.phase == .scanning
+            challenge.id == challengeID,
+            challenge.phase == .scanning
         else { return [] }
 
         activeChallenge = nil
@@ -290,8 +286,8 @@ nonisolated struct AppLockEngine: Sendable {
     /// Transitions an active `.scanning` challenge into system Touch ID / password authentication.
     mutating func systemPromptRequested(challengeID: UUID) -> [Effect] {
         guard let challenge = activeChallenge,
-              challenge.id == challengeID,
-              challenge.phase == .scanning
+            challenge.id == challengeID,
+            challenge.phase == .scanning
         else { return [] }
 
         let promptChallenge = Challenge(id: challenge.id, app: challenge.app, phase: .systemPrompt)
@@ -306,8 +302,8 @@ nonisolated struct AppLockEngine: Sendable {
     /// Completes the system authentication prompt; on success, emits `.reopen` and grants a one-time reopen ticket.
     mutating func systemPromptFinished(challengeID: UUID, success: Bool, monotonicNow: TimeInterval) -> [Effect] {
         guard let challenge = activeChallenge,
-              challenge.id == challengeID,
-              challenge.phase == .systemPrompt
+            challenge.id == challengeID,
+            challenge.phase == .systemPrompt
         else { return [] }
 
         activeChallenge = nil
@@ -332,9 +328,11 @@ nonisolated struct AppLockEngine: Sendable {
         }
         return clearActiveChallenge(hidingApp: true)
     }
+}
 
-    // MARK: - Helpers
+// MARK: - Helpers
 
+nonisolated extension AppLockEngine {
     private mutating func clearActiveChallenge(hidingApp: Bool = false) -> [Effect] {
         guard let challenge = activeChallenge else { return [] }
         activeChallenge = nil
@@ -352,7 +350,8 @@ nonisolated struct AppLockEngine: Sendable {
         if let challenge = activeChallenge {
             let isSameTarget = challenge.app.pid == app.pid && challenge.app.bundleID == app.bundleID
             if isSameTarget {
-                effects.append(contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
+                effects.append(
+                    contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
                 if challenge.phase == .systemPrompt {
                     // Re-hide the challenged app if the user clicks it in the Dock or Cmd+Tabs while Touch ID is open.
                     frontmostRegularApp = nil
@@ -368,13 +367,16 @@ nonisolated struct AppLockEngine: Sendable {
                 if let policyForApp, !hasValidSessionOrGrant(for: app, policy: policyForApp, at: monotonicNow) {
                     activeChallenge = nil
                 } else {
-                    effects.append(contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
+                    effects.append(
+                        contentsOf: pruneUnlockedSessions(
+                            excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
                     return effects
                 }
             }
         }
 
-        effects.append(contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
+        effects.append(
+            contentsOf: pruneUnlockedSessions(excluding: app.bundleID, at: monotonicNow, onRegularSwitch: true))
 
         guard let policy = policyForApp else {
             return effects
@@ -460,7 +462,7 @@ nonisolated struct AppLockEngine: Sendable {
 
     private func lockPolicy(for app: App) -> RelockPolicy? {
         guard !app.bundleID.isEmpty,
-              !AppLockBlacklist.isProtected(app.bundleID, ownBundleID: ownBundleID)
+            !AppLockBlacklist.isProtected(app.bundleID, ownBundleID: ownBundleID)
         else { return nil }
         return policies[app.bundleID]
     }

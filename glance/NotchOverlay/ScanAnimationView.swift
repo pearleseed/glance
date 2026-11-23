@@ -6,9 +6,9 @@
 //  looping, since each video ends on a meaningful resolved state.
 //
 
-import SwiftUI
 import AVFoundation
 import AppKit
+import SwiftUI
 
 struct ScanAnimationView: NSViewRepresentable {
     let media: ScanMedia
@@ -99,11 +99,7 @@ final class ScanAnimationHostView: NSView {
 
         guard let baseResource = media.videoResourceName else {
             teardownPlayer()
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            playerLayer.isHidden = true
-            stillImageLayer.isHidden = false
-            CATransaction.commit()
+            showStillLayer()
             return
         }
 
@@ -116,18 +112,33 @@ final class ScanAnimationHostView: NSView {
             return
         }
 
-        teardownPlayer()
+        startVideoPlayer(url: url, tint: color.resolvedTintRGB(for: media))
+    }
+
+    private func showStillLayer() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.isHidden = true
         stillImageLayer.isHidden = false
         CATransaction.commit()
+    }
+
+    private func revealPlayerLayer() {
+        // Without disabling implicit actions, toggling `isHidden` cross-fades both
+        // layers over CALayer's default duration instead of swapping instantly.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.isHidden = false
+        stillImageLayer.isHidden = true
+        CATransaction.commit()
+    }
+
+    private func startVideoPlayer(url: URL, tint: AnimationTintRGB?) {
+        teardownPlayer()
+        showStillLayer()
 
         let item = AVPlayerItem(url: url)
-        item.videoComposition = AnimationTint.videoComposition(
-            for: item.asset,
-            rgb: color.resolvedTintRGB(for: media)
-        )
+        item.videoComposition = AnimationTint.videoComposition(for: item.asset, rgb: tint)
         let newPlayer = AVPlayer(playerItem: item)
         // This can play at the lock screen — never make noise.
         newPlayer.isMuted = true
@@ -139,29 +150,19 @@ final class ScanAnimationHostView: NSView {
 
         // Waits for `isReadyForDisplay` rather than a fixed delay, which raced the
         // real decode time and produced a black-frame flash.
-        let reveal: () -> Void = { [weak self] in
-            guard let self else { return }
-            // Without disabling implicit actions, toggling `isHidden` cross-fades both
-            // layers over CALayer's default duration instead of swapping instantly.
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.playerLayer.isHidden = false
-            self.stillImageLayer.isHidden = true
-            CATransaction.commit()
-        }
         readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, change in
             guard change.newValue == true else { return }
             DispatchQueue.main.async {
                 self?.fallbackRevealWorkItem?.cancel()
                 self?.fallbackRevealWorkItem = nil
-                reveal()
+                self?.revealPlayerLayer()
                 self?.readyObservation?.invalidate()
                 self?.readyObservation = nil
             }
         }
         // Safety net only — if isReadyForDisplay never fires for some
         // reason, don't get stuck on the still forever.
-        let fallback = DispatchWorkItem { reveal() }
+        let fallback = DispatchWorkItem { [weak self] in self?.revealPlayerLayer() }
         fallbackRevealWorkItem = fallback
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: fallback)
 

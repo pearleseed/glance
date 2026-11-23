@@ -127,7 +127,8 @@ final class NotchWindowController {
         let local = hostView.convert(windowPoint, from: nil)
         // `rect` is top-down (SwiftUI); normalise the AppKit point to match.
         let topDown = CGPoint(x: local.x, y: hostView.isFlipped ? local.y : hostView.bounds.height - local.y)
-        let isOverPanel = rect.insetBy(dx: -Self.interactiveRectOutset, dy: -Self.interactiveRectOutset).contains(topDown)
+        let isOverPanel = rect.insetBy(dx: -Self.interactiveRectOutset, dy: -Self.interactiveRectOutset).contains(
+            topDown)
         if window.ignoresMouseEvents == isOverPanel {
             window.ignoresMouseEvents = !isOverPanel
         }
@@ -172,10 +173,11 @@ final class NotchWindowController {
         guard let screen = NotchGeometry.preferredScreen() else { return }
         let screenFrame = screen.frame
         let size = window.frame.size
-        window.setFrameOrigin(NSPoint(
-            x: screenFrame.midX - size.width / 2,
-            y: screenFrame.maxY - size.height
-        ))
+        window.setFrameOrigin(
+            NSPoint(
+                x: screenFrame.midX - size.width / 2,
+                y: screenFrame.maxY - size.height
+            ))
     }
 
     @objc private func screenParametersChanged() {

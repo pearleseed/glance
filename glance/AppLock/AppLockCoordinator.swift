@@ -19,14 +19,14 @@ final class AppLockCoordinator {
     private var engine = AppLockEngine()
     private let faceScanner: AppLockFaceScanner
     private let curtainController = AppLockCurtainController()
-    private let observerBox = ObserverBox()
+    private let observerBox = NotificationObserverBox()
     private let reconcileTimerBox = AppLockRepeatingTimer()
 
     private var activeSystemPromptChallengeID: UUID?
     private var activeSystemPromptContext: LAContext?
 
     private static let reconcileInterval: TimeInterval = 2.0
-    private static let log = Logger(subsystem: "com.jonathan.glance", category: "AppLockCoordinator")
+    private static let log = Logger(subsystem: "com.pearleseed.glance", category: "AppLockCoordinator")
 
     init(pipeline: FaceRecognitionPipeline) {
         self.faceScanner = AppLockFaceScanner(pipeline: pipeline)
@@ -88,103 +88,67 @@ final class AppLockCoordinator {
 
     private func registerWorkspaceAndSystemObservers() {
         let workspaceCenter = NSWorkspace.shared.notificationCenter
-        observerBox.add(workspaceCenter, token: workspaceCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] notification in
-            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
-            Task { @MainActor [weak self] in
-                self?.handleAppActivated(pid: pid)
-            }
-        })
+        observeAppNotification(NSWorkspace.didActivateApplicationNotification, on: workspaceCenter) {
+            coordinator, pid in
+            coordinator.handleAppActivated(pid: pid)
+        }
+        observeAppNotification(NSWorkspace.didHideApplicationNotification, on: workspaceCenter) { coordinator, pid in
+            guard let pid else { return }
+            let effects = coordinator.engine.appHidden(pid: pid, monotonicNow: coordinator.monotonicNow())
+            coordinator.execute(effects)
+        }
+        observeAppNotification(NSWorkspace.didTerminateApplicationNotification, on: workspaceCenter) {
+            coordinator, pid in
+            guard let pid else { return }
+            let effects = coordinator.engine.appTerminated(pid: pid)
+            coordinator.execute(effects)
+        }
 
-        observerBox.add(workspaceCenter, token: workspaceCenter.addObserver(
-            forName: NSWorkspace.didHideApplicationNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] notification in
-            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
-            Task { @MainActor [weak self] in
-                guard let self, let pid else { return }
-                let effects = self.engine.appHidden(pid: pid, monotonicNow: self.monotonicNow())
-                self.execute(effects)
-            }
-        })
+        let lockEvents: [(NotificationCenter, Notification.Name)] = [
+            (workspaceCenter, NSWorkspace.willSleepNotification),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked")),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screensaver.didstart"))
+        ]
+        for (center, name) in lockEvents {
+            observeSimpleNotification(name, on: center) { $0.lockAllSessions() }
+        }
 
-        observerBox.add(workspaceCenter, token: workspaceCenter.addObserver(
-            forName: NSWorkspace.didTerminateApplicationNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] notification in
-            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
-            Task { @MainActor [weak self] in
-                guard let self, let pid else { return }
-                let effects = self.engine.appTerminated(pid: pid)
-                self.execute(effects)
-            }
-        })
+        let wakeEvents: [(NotificationCenter, Notification.Name)] = [
+            (workspaceCenter, NSWorkspace.didWakeNotification),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked")),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screensaver.didstop"))
+        ]
+        for (center, name) in wakeEvents {
+            observeSimpleNotification(name, on: center) { $0.reconcileWorkspace() }
+        }
+    }
 
-        observerBox.add(workspaceCenter, token: workspaceCenter.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
+    private func observeAppNotification(
+        _ name: Notification.Name,
+        on center: NotificationCenter,
+        handler: @escaping @MainActor (AppLockCoordinator, pid_t?) -> Void
+    ) {
+        observerBox.observe(center: center, forName: name) { [weak self] notification in
+            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .processIdentifier
             Task { @MainActor [weak self] in
-                self?.lockAllSessions()
+                guard let self else { return }
+                handler(self, pid)
             }
-        })
+        }
+    }
 
-        observerBox.add(workspaceCenter, token: workspaceCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
+    private func observeSimpleNotification(
+        _ name: Notification.Name,
+        on center: NotificationCenter,
+        handler: @escaping @MainActor (AppLockCoordinator) -> Void
+    ) {
+        observerBox.observe(center: center, forName: name) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.reconcileWorkspace()
+                guard let self else { return }
+                handler(self)
             }
-        })
-
-        let distributedCenter = DistributedNotificationCenter.default()
-        observerBox.add(distributedCenter, token: distributedCenter.addObserver(
-            forName: Notification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.lockAllSessions()
-            }
-        })
-
-        observerBox.add(distributedCenter, token: distributedCenter.addObserver(
-            forName: Notification.Name("com.apple.screensaver.didstart"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.lockAllSessions()
-            }
-        })
-
-        observerBox.add(distributedCenter, token: distributedCenter.addObserver(
-            forName: Notification.Name("com.apple.screenIsUnlocked"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.reconcileWorkspace()
-            }
-        })
-
-        observerBox.add(distributedCenter, token: distributedCenter.addObserver(
-            forName: Notification.Name("com.apple.screensaver.didstop"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.reconcileWorkspace()
-            }
-        })
+        }
     }
 
     // MARK: - Workspace Handling
@@ -258,7 +222,8 @@ final class AppLockCoordinator {
     private func execute(_ effects: [AppLockEngine.Effect]) {
         // Cancel any lingering Touch ID modal if engine state cleared or replaced the active prompt.
         if let promptID = activeSystemPromptChallengeID,
-           engine.activeChallenge?.id != promptID || engine.activeChallenge?.phase != .systemPrompt {
+            engine.activeChallenge?.id != promptID || engine.activeChallenge?.phase != .systemPrompt
+        {
             activeSystemPromptContext?.invalidate()
             activeSystemPromptContext = nil
             activeSystemPromptChallengeID = nil
@@ -288,26 +253,27 @@ final class AppLockCoordinator {
         let metadata = resolveAppMetadata(for: challenge.app)
 
         curtainController.present(
-            challengeID: challenge.id,
-            targetPID: challenge.app.pid,
-            appName: metadata.name,
-            appIcon: metadata.icon,
-            onRetry: { [weak self] in
-                self?.retryFaceScan(for: challenge)
-            },
-            onUseSystemAuth: { [weak self] in
-                self?.requestSystemPrompt(challengeID: challenge.id)
-            },
-            onMissionControlDetected: { [weak self] in
-                guard let self else { return }
-                Self.log.info("Mission Control detected during active App Lock curtain — hiding challenged app.")
-                let effects = self.engine.cancel(challengeID: challenge.id)
-                self.execute(effects)
-            }
-        )
+            CurtainPresentation(
+                challengeID: challenge.id,
+                targetPID: challenge.app.pid,
+                appName: metadata.name,
+                appIcon: metadata.icon,
+                onRetry: { [weak self] in
+                    self?.retryFaceScan(for: challenge)
+                },
+                onUseSystemAuth: { [weak self] in
+                    self?.requestSystemPrompt(challengeID: challenge.id)
+                },
+                onMissionControlDetected: { [weak self] in
+                    guard let self else { return }
+                    Self.log.info("Mission Control detected during active App Lock curtain — hiding challenged app.")
+                    let effects = self.engine.cancel(challengeID: challenge.id)
+                    self.execute(effects)
+                }
+            ))
 
         guard engine.activeChallenge?.id == challenge.id,
-              engine.activeChallenge?.phase == .scanning
+            engine.activeChallenge?.phase == .scanning
         else { return }
 
         startFaceScan(for: challenge)
@@ -315,7 +281,7 @@ final class AppLockCoordinator {
 
     private func retryFaceScan(for challenge: AppLockEngine.Challenge) {
         guard engine.activeChallenge?.id == challenge.id,
-              engine.activeChallenge?.phase == .scanning
+            engine.activeChallenge?.phase == .scanning
         else { return }
         startFaceScan(for: challenge)
     }
@@ -385,7 +351,9 @@ final class AppLockCoordinator {
     private func resolveAppMetadata(for app: AppLockEngine.App) -> (name: String, icon: NSImage) {
         let running = NSRunningApplication(processIdentifier: app.pid)
         let lowerBundleID = app.bundleID.lowercased()
-        if let entry = GlanceSettings.shared.lockedApps.first(where: { $0.bundleIdentifier.lowercased() == lowerBundleID }) {
+        if let entry = GlanceSettings.shared.lockedApps.first(where: {
+            $0.bundleIdentifier.lowercased() == lowerBundleID
+        }) {
             let name = running?.localizedName ?? entry.name
             let icon = running?.icon ?? entry.resolvedIcon()
             return (name, icon)
@@ -393,20 +361,5 @@ final class AppLockCoordinator {
         let name = running?.localizedName ?? app.bundleID
         let icon = running?.icon ?? NSWorkspace.shared.icon(for: .applicationBundle)
         return (name, icon)
-    }
-
-    /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister safely under Swift 6.
-    nonisolated private final class ObserverBox: @unchecked Sendable {
-        private var entries: [(center: NotificationCenter, token: NSObjectProtocol)] = []
-
-        func add(_ center: NotificationCenter, token: NSObjectProtocol) {
-            entries.append((center, token))
-        }
-
-        deinit {
-            for entry in entries {
-                entry.center.removeObserver(entry.token)
-            }
-        }
     }
 }

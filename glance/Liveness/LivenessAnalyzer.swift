@@ -73,7 +73,8 @@ final class LivenessAnalyzer {
         syncEvaluatorConfig()
 
         let alreadyConfirmedInHeavy = lastSnapshot.mode == .heavy && lastSnapshot.decision.isConfirmed
-        let needsConfirmCues = evaluator.mode == .heavy && (keepsComputingConfirmCuesAfterConfirmation || !alreadyConfirmedInHeavy)
+        let needsConfirmCues =
+            evaluator.mode == .heavy && (keepsComputingConfirmCuesAfterConfirmation || !alreadyConfirmedInHeavy)
 
         let geometry: GeometryLivenessResult
         let readings: [LivenessCue: CueReading]

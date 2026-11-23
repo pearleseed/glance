@@ -42,8 +42,8 @@ nonisolated struct LockedApp: Codable, Identifiable, Equatable, Hashable, Sendab
     static func fromBundle(at url: URL) -> LockedApp? {
         let resolvedURL = url.resolvingSymlinksInPath()
         guard let bundle = Bundle(url: resolvedURL) ?? Bundle(url: url),
-              let bundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
-              canLock(bundleIdentifier: bundleID)
+            let bundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+            canLock(bundleIdentifier: bundleID)
         else { return nil }
 
         let displayName = displayName(for: bundle, url: url)
@@ -75,7 +75,9 @@ extension LockedApp {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
-        if let runningIcon = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first?.icon {
+        if let runningIcon = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first?
+            .icon
+        {
             return runningIcon
         }
         return NSWorkspace.shared.icon(for: .applicationBundle)

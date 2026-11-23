@@ -6,8 +6,8 @@
 //  compiles into `tools/liveness_selftest.swift`. Higher `planarResidualScore` = more like a live face.
 //
 
-import Foundation
 import CoreGraphics
+import Foundation
 
 struct GeometryTuning {
     /// Excess (`probeResidual / fitResidual`) at which the planar signal starts ramping off 0; ~1 means a plane.
@@ -57,16 +57,22 @@ struct GeometryLivenessResult: Equatable {
 /// Regions that sit on roughly one shallow surface, with enough spatial
 /// spread to constrain an 8-DOF homography. The nose is held out.
 nonisolated private let geometryFitRegions: Set<LandmarkRegion> = [
-    .leftEye, .rightEye, .leftEyebrow, .rightEyebrow, .outerLips,
+    .leftEye, .rightEye, .leftEyebrow, .rightEyebrow, .outerLips
 ]
 
 /// Protruding landmarks geometrically *inside* the fit hull, so leftover
 /// error is depth, not extrapolation. `faceContour` is excluded on purpose.
 nonisolated private let geometryProbeRegions: Set<LandmarkRegion> = [
-    .nose, .noseCrest, .medianLine,
+    .nose, .noseCrest, .medianLine
 ]
 
 nonisolated enum GeometryLiveness {
+    private struct FramePair {
+        let from: Int
+        let to: Int
+        let weight: CGFloat
+    }
+
     static func evaluate(_ window: [LivenessFrame], tuning: GeometryTuning = .default) -> GeometryLivenessResult {
         let lastLandmarks = window.last?.landmarks.count ?? 0
         var diagnostics = diagnosticRatios(from: window.last)
@@ -92,50 +98,31 @@ nonisolated enum GeometryLiveness {
         var probeResiduals: [CGFloat] = []
         var weights: [CGFloat] = []
         var rejected = 0
-        var skippedForMotion = 0
 
-        for (i, j, weight) in pairIndices(count: window.count) {
-            guard let sample = pairGeometry(from: window[i], to: window[j]) else {
+        for pair in pairIndices(count: window.count) {
+            guard let sample = pairGeometry(from: window[pair.from], to: window[pair.to]) else {
                 rejected += 1
                 continue
             }
-            if sample.motion < tuning.motionGate {
-                skippedForMotion += 1
-                continue
-            }
+            guard sample.motion >= tuning.motionGate else { continue }
             excesses.append(sample.excess)
             coherences.append(sample.coherence)
             motions.append(sample.motion)
             fitResiduals.append(sample.fitResidual)
             probeResiduals.append(sample.probeResidual)
-            weights.append(weight)
+            weights.append(pair.weight)
         }
 
         let pairsAnalyzed = excesses.count
-        let medianFit = fitResiduals.isEmpty ? nil : LandmarkGeometry.medianValue(fitResiduals)
-        let medianProbe = probeResiduals.isEmpty ? nil : LandmarkGeometry.medianValue(probeResiduals)
         let excess = weightedMedian(excesses, weights: weights)
         let coherence = weightedMedian(coherences, weights: weights)
-        let motion = motions.isEmpty ? nil : (motions.reduce(0, +) / CGFloat(motions.count))
-
-        // Abstention is (level 0, confidence 0); level is never read when confidence is 0.
-        var planarScore: Float = 0
-        var planarConf: Float = 0
-        if yawGateOK, let excess, let coherence, pairsAnalyzed >= 2 {
-            // Unstructured leftover (landmark jitter) is not 3D evidence.
-            let coherenceFactor = Float(clamp((coherence - tuning.coherenceFloor) / max(1 - tuning.coherenceFloor, 0.01), 0, 1))
-            let excessScore = Float(clamp((excess - tuning.excessFloor) / max(tuning.excessCeiling - tuning.excessFloor, 0.01), 0, 1))
-            planarScore = excessScore * (0.35 + 0.65 * coherenceFactor)
-            planarConf = Float(clamp(Double(pairsAnalyzed) / 6.0, 0, 1)) * (0.5 + 0.5 * coherenceFactor)
-        } else if !yawGateOK {
-            // Not enough head rotation to tell flat from 3D — see `minYawRangeDegrees`.
-            planarScore = 0
-            planarConf = 0
-        } else if skippedForMotion > 0, pairsAnalyzed == 0 {
-            // Motion never cleared the gate — abstain rather than call it a photo.
-            planarScore = 0
-            planarConf = 0
-        }
+        let (planarScore, planarConf) = computePlanarScore(
+            yawGateOK: yawGateOK,
+            excess: excess,
+            coherence: coherence,
+            pairsAnalyzed: pairsAnalyzed,
+            tuning: tuning
+        )
 
         return GeometryLivenessResult(
             planarResidualScore: planarScore,
@@ -143,13 +130,36 @@ nonisolated enum GeometryLiveness {
             validLandmarkCount: lastLandmarks,
             pairsAnalyzed: pairsAnalyzed,
             rejectedPairCount: rejected,
-            medianFitResidual: medianFit,
-            medianProbeResidual: medianProbe,
+            medianFitResidual: fitResiduals.isEmpty ? nil : LandmarkGeometry.medianValue(fitResiduals),
+            medianProbeResidual: probeResiduals.isEmpty ? nil : LandmarkGeometry.medianValue(probeResiduals),
             excessRatio: excess,
             coherence: coherence,
-            motionMagnitude: motion,
+            motionMagnitude: motions.isEmpty ? nil : (motions.reduce(0, +) / CGFloat(motions.count)),
             diagnosticRatios: diagnostics
         )
+    }
+
+    private static func computePlanarScore(
+        yawGateOK: Bool,
+        excess: CGFloat?,
+        coherence: CGFloat?,
+        pairsAnalyzed: Int,
+        tuning: GeometryTuning
+    ) -> (score: Float, confidence: Float) {
+        // Abstention is (level 0, confidence 0); level is never read when confidence is 0.
+        guard yawGateOK, let excess, let coherence, pairsAnalyzed >= 2 else {
+            return (0, 0)
+        }
+        // Unstructured leftover (landmark jitter) is not 3D evidence.
+        let coherenceFactor = Float(
+            clamp((coherence - tuning.coherenceFloor) / max(1 - tuning.coherenceFloor, 0.01), 0, 1)
+        )
+        let excessScore = Float(
+            clamp((excess - tuning.excessFloor) / max(tuning.excessCeiling - tuning.excessFloor, 0.01), 0, 1)
+        )
+        let score = excessScore * (0.35 + 0.65 * coherenceFactor)
+        let confidence = Float(clamp(Double(pairsAnalyzed) / 6.0, 0, 1)) * (0.5 + 0.5 * coherenceFactor)
+        return (score, confidence)
     }
 
     /// Yaw range (degrees) across frames that report one; `nil` if too few do.
@@ -179,7 +189,9 @@ nonisolated enum GeometryLiveness {
         guard fitSrc.count >= 6, probeSrc.count >= 2 else { return nil }
         guard let homography = LandmarkGeometry.solveRobustHomography(from: fitSrc, to: fitDst) else { return nil }
 
-        let eyeMags = zip(eyeSrc, eyeDst).map { hypot($1.x - homography.apply($0).x, $1.y - homography.apply($0).y) / iod }
+        let eyeMags = zip(eyeSrc, eyeDst).map {
+            hypot($1.x - homography.apply($0).x, $1.y - homography.apply($0).y) / iod
+        }
         let probeVecs: [(CGFloat, CGFloat)] = zip(probeSrc, probeDst).map { src, dst in
             let predicted = homography.apply(src)
             return ((dst.x - predicted.x) / iod, (dst.y - predicted.y) / iod)
@@ -190,7 +202,9 @@ nonisolated enum GeometryLiveness {
         if eyeMags.count >= 2 {
             noiseMags = eyeMags
         } else {
-            noiseMags = zip(fitSrc, fitDst).map { hypot($1.x - homography.apply($0).x, $1.y - homography.apply($0).y) / iod }
+            noiseMags = zip(fitSrc, fitDst).map {
+                hypot($1.x - homography.apply($0).x, $1.y - homography.apply($0).y) / iod
+            }
         }
         let fitResidual = LandmarkGeometry.medianValue(noiseMags)
         let probeResidual = LandmarkGeometry.medianValue(probeMags)
@@ -202,7 +216,8 @@ nonisolated enum GeometryLiveness {
         let meanMag = probeMags.reduce(0, +) / CGFloat(probeMags.count)
         let coherence = meanMag > 1e-8 ? hypot(meanX, meanY) / meanMag : 0
 
-        let motion = zip(fitSrc, fitDst).map { hypot($1.x - $0.x, $1.y - $0.y) }.reduce(0, +)
+        let motion =
+            zip(fitSrc, fitDst).map { hypot($1.x - $0.x, $1.y - $0.y) }.reduce(0, +)
             / (CGFloat(fitSrc.count) * iod)
 
         return PairSample(
@@ -223,7 +238,8 @@ nonisolated enum GeometryLiveness {
         var result: [LandmarkRegion: (source: [CGPoint], destination: [CGPoint])] = [:]
         for region in LandmarkRegion.allCases {
             guard let aPoints = aByRegion[region], let bPoints = bByRegion[region],
-                  aPoints.count == bPoints.count, !aPoints.isEmpty else { continue }
+                aPoints.count == bPoints.count, !aPoints.isEmpty
+            else { continue }
             let aSorted = aPoints.sorted { $0.indexInRegion < $1.indexInRegion }
             let bSorted = bPoints.sorted { $0.indexInRegion < $1.indexInRegion }
             result[region] = (aSorted.map(\.point), bSorted.map(\.point))
@@ -245,20 +261,20 @@ nonisolated enum GeometryLiveness {
         return (source, destination)
     }
 
-    private static func pairIndices(count: Int) -> [(Int, Int, CGFloat)] {
+    private static func pairIndices(count: Int) -> [FramePair] {
         guard count >= 2 else { return [] }
-        var pairs: [(Int, Int, CGFloat)] = []
+        var pairs: [FramePair] = []
         for i in 0..<(count - 1) {
-            pairs.append((i, i + 1, 1))
+            pairs.append(FramePair(from: i, to: i + 1, weight: 1))
         }
         let half = max(count / 2, 2)
         if count > 4 {
             for i in 0..<(count - half) {
-                pairs.append((i, i + half, 2))
+                pairs.append(FramePair(from: i, to: i + half, weight: 2))
             }
         }
         if count > 2 {
-            pairs.append((0, count - 1, 3))
+            pairs.append(FramePair(from: 0, to: count - 1, weight: 3))
         }
         return pairs
     }
@@ -284,7 +300,8 @@ nonisolated enum GeometryLiveness {
             ratios["eye / faceW"] = iod / faceWidth
         }
         if let left = centroid(grouped[.leftEye]), let right = centroid(grouped[.rightEye]),
-           let nose = centroid(grouped[.nose]), faceHeight > 0 {
+            let nose = centroid(grouped[.nose]), faceHeight > 0
+        {
             let eyeMid = CGPoint(x: (left.x + right.x) / 2, y: (left.y + right.y) / 2)
             ratios["nose-eye / faceH"] = hypot(nose.x - eyeMid.x, nose.y - eyeMid.y) / faceHeight
             if let lips = grouped[.outerLips], !lips.isEmpty {

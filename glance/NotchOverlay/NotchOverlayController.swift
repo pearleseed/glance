@@ -10,8 +10,8 @@
 //
 
 import AppKit
-import SwiftUI
 import Observation
+import SwiftUI
 
 @Observable
 @MainActor
@@ -122,7 +122,7 @@ final class NotchOverlayController {
         content = .scan(.idle)
         isPillDocked = false
         windowController.show()
-        hasPrimedWindow = true // already shown+rendered while closed, same effect as primeWindowIfNeeded
+        hasPrimedWindow = true  // already shown+rendered while closed, same effect as primeWindowIfNeeded
         updateInteractivity()
 
         guard geometry.style == .pill else {
@@ -152,8 +152,10 @@ final class NotchOverlayController {
         // turns it into a full slide-off-screen exit rather than a shrink to a resting pill.
         isPillDocked = false
         guard phase != .success, phase != .collapsing else { return }
-        resolveTask?.cancel(); resolveTask = nil
-        scanTimeoutTask?.cancel(); scanTimeoutTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
         // Re-measured here, not just trusted from `arm()` — `arm()` typically
         // fires right around wake/unlock, when AppKit may not have finished
         // laying out the menu bar yet, so `auxiliaryTopLeftArea`/`RightArea`
@@ -181,7 +183,8 @@ final class NotchOverlayController {
     /// Shows the idle still; auto-collapses silently (no failure animation) after
     /// `scanTimeoutDuration` if nothing resolves it.
     func beginScanning() {
-        resolveTask?.cancel(); resolveTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
         scanTimeoutTask?.cancel()
         geometry = windowController.currentGeometry
         activeUnlockStyle = GlanceSettings.shared.effectiveUnlockAnimationStyle
@@ -201,7 +204,7 @@ final class NotchOverlayController {
     /// On the very first show, `present()`/`presentOnboarding()` would otherwise render
     /// already-expanded with no prior "closed" frame for SwiftUI to animate away from.
     /// This runs one real closed-state show+render pass first, only on that first call.
-    private func primeWindowIfNeeded(_ completion: @escaping () -> Void) {
+    private func primeWindowIfNeeded(_ completion: @escaping @MainActor () -> Void) {
         guard !hasPrimedWindow else {
             completion()
             return
@@ -211,7 +214,7 @@ final class NotchOverlayController {
         phase = .closed
         windowController.show()
         windowController.displaySynchronously()
-        DispatchQueue.main.async(execute: completion)
+        Task { completion() }
     }
 
     // MARK: - One-shot mode (onboarding, Face Lab preview)
@@ -224,8 +227,10 @@ final class NotchOverlayController {
     func present(styleOverride: UnlockAnimationStyle? = nil, onRetry: (() -> Void)? = nil) {
         isArmed = false
         onActivate = onRetry
-        resolveTask?.cancel(); resolveTask = nil
-        scanTimeoutTask?.cancel(); scanTimeoutTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
         geometry = windowController.currentGeometry
         activeUnlockStyle = styleOverride ?? GlanceSettings.shared.effectiveUnlockAnimationStyle
         primeWindowIfNeeded { [weak self] in
@@ -244,8 +249,10 @@ final class NotchOverlayController {
     func presentOnboarding(_ controller: OnboardingController) {
         isArmed = false
         onActivate = nil
-        resolveTask?.cancel(); resolveTask = nil
-        scanTimeoutTask?.cancel(); scanTimeoutTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
         geometry = windowController.currentGeometry
         primeWindowIfNeeded { [weak self] in
             guard let self else { return }
@@ -311,7 +318,8 @@ final class NotchOverlayController {
                 if phase == .failure { Task { await collapse() } }
                 return
             }
-            resolveTask?.cancel(); resolveTask = nil
+            resolveTask?.cancel()
+            resolveTask = nil
             if !isArmed {
                 // Captures its own style here; the armed path doesn't need to since
                 // `onActivate()` routes through `beginScanning()`, which captures.
@@ -355,8 +363,10 @@ final class NotchOverlayController {
     /// success/collapsing is in flight — interrupting that made the window vanish abruptly.
     func dismissImmediately() {
         guard phase != .success, phase != .collapsing else { return }
-        resolveTask?.cancel(); resolveTask = nil
-        scanTimeoutTask?.cancel(); scanTimeoutTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
         phase = .closed
         content = .scan(.idle)
         isPillDocked = false

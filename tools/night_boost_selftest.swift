@@ -11,6 +11,7 @@
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/night_boost_selftest \
+//        glance/Core/NotificationObserverBox.swift \
 //        glance/NightBoost/SceneLuminance.swift \
 //        glance/NightBoost/LowLightEnhancer.swift \
 //        glance/NightBoost/DisplayBrightnessControl.swift \

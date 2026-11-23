@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+
 private struct TabFramePreferenceKey: PreferenceKey {
     static var defaultValue: [SettingsTab: CGRect] = [:]
     static func reduce(value: inout [SettingsTab: CGRect], nextValue: () -> [SettingsTab: CGRect]) {
@@ -85,9 +86,12 @@ struct SettingsTabBar: View {
                 }
             }
             .foregroundStyle(SettingsMetrics.textPrimary)
-            .padding(.horizontal, isSelected
-                ? SettingsMetrics.selectedTabItemHorizontalPadding
-                : SettingsMetrics.tabItemHorizontalPadding)
+            .padding(
+                .horizontal,
+                isSelected
+                    ? SettingsMetrics.selectedTabItemHorizontalPadding
+                    : SettingsMetrics.tabItemHorizontalPadding
+            )
             .frame(height: SettingsMetrics.tabItemHeight)
             .contentShape(Capsule())
         }
@@ -145,10 +149,10 @@ private struct TabLabelRevealModifier: ViewModifier {
     }
 }
 
-private extension AnyTransition {
+extension AnyTransition {
     /// One modifier transition (not `.asymmetric`) so insertion runs
     /// active→identity and removal runs identity→active automatically.
-    static var tabLabelReveal: AnyTransition {
+    fileprivate static var tabLabelReveal: AnyTransition {
         .modifier(
             active: TabLabelRevealModifier(progress: 0),
             identity: TabLabelRevealModifier(progress: 1)

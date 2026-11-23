@@ -66,6 +66,17 @@ private final class CurtainPanel: NSPanel {
 }
 
 @MainActor
+struct CurtainPresentation {
+    let challengeID: UUID
+    let targetPID: pid_t
+    let appName: String
+    let appIcon: NSImage
+    let onRetry: () -> Void
+    let onUseSystemAuth: () -> Void
+    let onMissionControlDetected: () -> Void
+}
+
+@MainActor
 final class AppLockCurtainController {
     private struct TargetWindow {
         let id: CGWindowID
@@ -85,34 +96,26 @@ final class AppLockCurtainController {
 
     private let syncInterval: TimeInterval = 0.05
 
-    func present(
-        challengeID: UUID,
-        targetPID: pid_t,
-        appName: String,
-        appIcon: NSImage,
-        onRetry: @escaping () -> Void,
-        onUseSystemAuth: @escaping () -> Void,
-        onMissionControlDetected: @escaping () -> Void
-    ) {
+    func present(_ request: CurtainPresentation) {
         dismiss()
 
         let viewModel = AppLockCurtainViewModel(
-            appName: appName,
-            appIcon: appIcon,
+            appName: request.appName,
+            appIcon: request.appIcon,
             statusMessage: "Looking for your face…",
             isScanning: true,
             canRetry: false,
-            onRetry: onRetry,
-            onUseSystemAuth: onUseSystemAuth
+            onRetry: request.onRetry,
+            onUseSystemAuth: request.onUseSystemAuth
         )
 
-        activeChallengeID = challengeID
-        activeTargetPID = targetPID
+        activeChallengeID = request.challengeID
+        activeTargetPID = request.targetPID
         activeViewModel = viewModel
-        self.onMissionControlDetected = onMissionControlDetected
+        onMissionControlDetected = request.onMissionControlDetected
 
         refreshWindows()
-        if activeChallengeID == challengeID {
+        if activeChallengeID == request.challengeID {
             startSyncTimer()
         }
     }
@@ -166,11 +169,14 @@ final class AppLockCurtainController {
 
     private func refreshWindows() {
         guard activeChallengeID != nil,
-              let targetPID = activeTargetPID,
-              let viewModel = activeViewModel
+            let targetPID = activeTargetPID,
+            let viewModel = activeViewModel
         else { return }
 
-        guard let rawList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        guard
+            let rawList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]]
+        else {
             return
         }
 
@@ -190,61 +196,74 @@ final class AppLockCurtainController {
         dismissFallbackPanel()
 
         let primaryWindowID = Self.selectPrimaryWindowID(from: targetWindows)
-        let activeIDs = Set(targetWindows.map(\.id))
+        pruneStalePanels(keeping: Set(targetWindows.map(\.id)))
+        let zOrderIndexByWindowNumber = Self.zOrderIndexMap(from: rawList)
 
+        for target in targetWindows {
+            syncPanel(
+                for: target,
+                viewModel: viewModel,
+                isPrimary: target.id == primaryWindowID,
+                zOrderIndexByWindowNumber: zOrderIndexByWindowNumber
+            )
+        }
+    }
+
+    private func pruneStalePanels(keeping activeIDs: Set<CGWindowID>) {
         for (windowID, panel) in panelsByWindowID where !activeIDs.contains(windowID) {
             panel.orderOut(nil)
             panel.close()
             panelsByWindowID.removeValue(forKey: windowID)
         }
+    }
 
-        var zOrderIndexByWindowNumber: [Int: Int] = [:]
-        zOrderIndexByWindowNumber.reserveCapacity(rawList.count)
+    private static func zOrderIndexMap(from rawList: [[String: Any]]) -> [Int: Int] {
+        var map: [Int: Int] = [:]
+        map.reserveCapacity(rawList.count)
         for (index, entry) in rawList.enumerated() {
             if let num = entry[kCGWindowNumber as String] as? Int {
-                zOrderIndexByWindowNumber[num] = index
+                map[num] = index
             }
         }
+        return map
+    }
 
-        for target in targetWindows {
-            let isPrimary = (target.id == primaryWindowID)
-            let panel: CurtainPanel
-            if let existing = panelsByWindowID[target.id] {
-                panel = existing
-                panel.update(viewModel: viewModel, isPrimary: isPrimary, isFullscreen: target.isFullscreen)
-                if panel.frame != target.frame {
-                    panel.setFrame(target.frame, display: true)
-                }
-            } else {
-                panel = CurtainPanel(
-                    contentRect: target.frame,
-                    viewModel: viewModel,
-                    isPrimary: isPrimary,
-                    isFullscreen: target.isFullscreen
-                )
-                panelsByWindowID[target.id] = panel
+    private func syncPanel(
+        for target: TargetWindow,
+        viewModel: AppLockCurtainViewModel,
+        isPrimary: Bool,
+        zOrderIndexByWindowNumber: [Int: Int]
+    ) {
+        let panel: CurtainPanel
+        if let existing = panelsByWindowID[target.id] {
+            panel = existing
+            panel.update(viewModel: viewModel, isPrimary: isPrimary, isFullscreen: target.isFullscreen)
+            if panel.frame != target.frame {
+                panel.setFrame(target.frame, display: true)
             }
+        } else {
+            panel = CurtainPanel(
+                contentRect: target.frame,
+                viewModel: viewModel,
+                isPrimary: isPrimary,
+                isFullscreen: target.isFullscreen
+            )
+            panelsByWindowID[target.id] = panel
+        }
 
-            let desiredLevel = NSWindow.Level(rawValue: target.layer)
-            if panel.level != desiredLevel {
-                panel.level = desiredLevel
-            }
+        let desiredLevel = NSWindow.Level(rawValue: target.layer)
+        if panel.level != desiredLevel {
+            panel.level = desiredLevel
+        }
 
-            let targetNum = Int(target.id)
-            let panelNum = panel.windowNumber
-            let isDirectlyAbove: Bool
-            if panel.isVisible,
-               let panelIdx = zOrderIndexByWindowNumber[panelNum],
-               let targetIdx = zOrderIndexByWindowNumber[targetNum],
-               panelIdx == targetIdx - 1 {
-                isDirectlyAbove = true
-            } else {
-                isDirectlyAbove = false
-            }
-
-            if !isDirectlyAbove {
-                panel.order(.above, relativeTo: targetNum)
-            }
+        let targetNum = Int(target.id)
+        let isDirectlyAbove =
+            panel.isVisible
+            && zOrderIndexByWindowNumber[panel.windowNumber]
+                .flatMap { panelIdx in zOrderIndexByWindowNumber[targetNum].map { panelIdx == $0 - 1 } }
+                ?? false
+        if !isDirectlyAbove {
+            panel.order(.above, relativeTo: targetNum)
         }
     }
 
@@ -316,9 +335,9 @@ final class AppLockCurtainController {
         var results: [TargetWindow] = []
         for entry in rawList {
             guard let ownerPID = entry[kCGWindowOwnerPID as String] as? Int32,
-                  ownerPID == pid,
-                  let windowNumber = entry[kCGWindowNumber as String] as? Int,
-                  windowNumber > 0
+                ownerPID == pid,
+                let windowNumber = entry[kCGWindowNumber as String] as? Int,
+                windowNumber > 0
             else { continue }
 
             let layer = entry[kCGWindowLayer as String] as? Int ?? normalLayer
@@ -328,9 +347,9 @@ final class AppLockCurtainController {
             guard alpha > 0.01 else { continue }
 
             guard let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let cgBounds = CGRect(dictionaryRepresentation: boundsDict),
-                  cgBounds.width >= 40,
-                  cgBounds.height >= 40
+                let cgBounds = CGRect(dictionaryRepresentation: boundsDict),
+                cgBounds.width >= 40,
+                cgBounds.height >= 40
             else { continue }
 
             let appKitFrame = NSRect(
@@ -370,7 +389,8 @@ final class AppLockCurtainController {
 
     /// Detects Dock's Mission Control / App Exposé backdrop window without requiring Screen Recording permission.
     private static func isMissionControlActive(in rawList: [[String: Any]]) -> Bool {
-        let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?.processIdentifier
+        let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?
+            .processIdentifier
         let dockLayer = Int(CGWindowLevelForKey(.dockWindow))
         let normalLayer = Int(CGWindowLevelForKey(.normalWindow))
         let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
@@ -386,7 +406,8 @@ final class AppLockCurtainController {
             guard alpha > 0.01 else { continue }
 
             if let windowName = entry[kCGWindowName as String] as? String,
-               windowName.localizedCaseInsensitiveContains("Mission Control") {
+                windowName.localizedCaseInsensitiveContains("Mission Control")
+            {
                 return true
             }
 
@@ -394,7 +415,7 @@ final class AppLockCurtainController {
             guard layer >= normalLayer && layer < mainMenuLayer && layer != dockLayer else { continue }
 
             guard let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let cgBounds = CGRect(dictionaryRepresentation: boundsDict)
+                let cgBounds = CGRect(dictionaryRepresentation: boundsDict)
             else { continue }
 
             let coversScreen = screenSizes.contains { size in

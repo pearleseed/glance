@@ -26,15 +26,17 @@ nonisolated enum SceneLuminance: Sendable {
         var pixels = [UInt8](repeating: 0, count: pixelCount * 4)
 
         let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress,
-                width: dimension,
-                height: dimension,
-                bitsPerComponent: 8,
-                bytesPerRow: dimension * 4,
-                space: srgbColorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
+            guard
+                let context = CGContext(
+                    data: buffer.baseAddress,
+                    width: dimension,
+                    height: dimension,
+                    bitsPerComponent: 8,
+                    bytesPerRow: dimension * 4,
+                    space: srgbColorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                )
+            else { return false }
 
             context.interpolationQuality = .low
             context.draw(image, in: CGRect(x: 0, y: 0, width: dimension, height: dimension))

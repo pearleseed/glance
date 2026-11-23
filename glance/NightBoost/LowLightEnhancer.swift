@@ -19,10 +19,10 @@ nonisolated enum LowLightEnhancer: Sendable {
     /// scaling smoothly with darkness without mutating `image`.
     static func enhance(_ image: CGImage, meanLuminance: Double) -> CGImage {
         guard image.width > 0,
-              image.height > 0,
-              meanLuminance.isFinite,
-              meanLuminance < SceneLuminance.enhanceThreshold,
-              let srgbColorSpace
+            image.height > 0,
+            meanLuminance.isFinite,
+            meanLuminance < SceneLuminance.enhanceThreshold,
+            let srgbColorSpace
         else {
             return image
         }

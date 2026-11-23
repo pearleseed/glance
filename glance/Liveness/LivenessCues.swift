@@ -55,7 +55,8 @@ enum LivenessCue: String, CaseIterable, Hashable, Identifiable {
     /// One-line explanation of what firing actually means, for Face Lab.
     nonisolated var explanation: String {
         switch self {
-        case .glossGlare: return "Large flat specular highlight — glass/screen glare rather than skin's small scattered shine."
+        case .glossGlare:
+            return "Large flat specular highlight — glass/screen glare rather than skin's small scattered shine."
         case .deviceDetected: return "A device-shaped rectangle overlaps the face — a phone or tablet held up."
         case .flatVs3D: return "Held-out nose points miss the plane fit — the face has real depth."
         case .depthPose: return "Nose offset tracks head yaw — the nose sits off the eye plane, so this isn't flat."
@@ -152,8 +153,14 @@ enum LivenessDecision: Equatable {
     case confirmed(by: LivenessCue?)
     case denied(by: LivenessCue)
 
-    var isConfirmed: Bool { if case .confirmed = self { return true }; return false }
-    var isDenied: Bool { if case .denied = self { return true }; return false }
+    var isConfirmed: Bool {
+        if case .confirmed = self { return true }
+        return false
+    }
+    var isDenied: Bool {
+        if case .denied = self { return true }
+        return false
+    }
 
     /// User-facing explanation for a denial, matching the tone of the
     /// coordinator's other outcome strings.
@@ -161,7 +168,8 @@ enum LivenessDecision: Equatable {
         guard case .denied(let cue) = self else { return nil }
         switch cue {
         case .glossGlare: return "Screen glare detected — this looks like a photo on a display."
-        case .deviceDetected: return "A device-shaped rectangle was detected around the face — this looks like a photo or screen."
+        case .deviceDetected:
+            return "A device-shaped rectangle was detected around the face — this looks like a photo or screen."
         default: return "Liveness check failed."
         }
     }
@@ -303,7 +311,7 @@ nonisolated enum LivenessCues {
     nonisolated static func denyReadings(window: [LivenessFrame]) -> [LivenessCue: CueReading] {
         [
             .glossGlare: glossGlare(window.last),
-            .deviceDetected: deviceDetected(window.last),
+            .deviceDetected: deviceDetected(window.last)
         ]
     }
 

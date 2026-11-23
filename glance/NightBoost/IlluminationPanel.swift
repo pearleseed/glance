@@ -111,8 +111,8 @@ private final class WarmIlluminationPanel: NSPanel {
 }
 
 private final class WarmIlluminationView: NSView {
-    private static let warmGradient = NSGradient(colorsAndLocations:
-        (NSColor(srgbRed: 1.0, green: 0.94, blue: 0.83, alpha: 0.88), 0.0),
+    private static let warmGradient = NSGradient(
+        colorsAndLocations: (NSColor(srgbRed: 1.0, green: 0.94, blue: 0.83, alpha: 0.88), 0.0),
         (NSColor(srgbRed: 1.0, green: 0.92, blue: 0.79, alpha: 0.72), 0.45),
         (NSColor(srgbRed: 1.0, green: 0.90, blue: 0.75, alpha: 0.28), 0.80),
         (NSColor(srgbRed: 1.0, green: 0.89, blue: 0.72, alpha: 0.0), 1.0)

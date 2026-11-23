@@ -146,14 +146,14 @@ private enum ContinuousCorner {
         // where curvature begins) → 3 curves (bottom-right) → line across the bottom →
         // 3 curves (bottom-left) → line up the left edge → degenerate top-corner curves → close.
         guard elements.count >= 9,
-              case .line(let p1) = elements[1],
-              case .curve(let p2, let c2a, let c2b) = elements[2],
-              case .curve(let p3, let c3a, let c3b) = elements[3],
-              case .curve(let p4, let c4a, let c4b) = elements[4],
-              case .line(let l5) = elements[5],
-              case .curve(let p6, let c6a, let c6b) = elements[6],
-              case .curve(let p7, let c7a, let c7b) = elements[7],
-              case .curve(let p8, let c8a, let c8b) = elements[8]
+            case .line(let p1) = elements[1],
+            case .curve(let p2, let c2a, let c2b) = elements[2],
+            case .curve(let p3, let c3a, let c3b) = elements[3],
+            case .curve(let p4, let c4a, let c4b) = elements[4],
+            case .line(let l5) = elements[5],
+            case .curve(let p6, let c6a, let c6b) = elements[6],
+            case .curve(let p7, let c7a, let c7b) = elements[7],
+            case .curve(let p8, let c8a, let c8b) = elements[8]
         else { return nil }
 
         // The reference traces right→left; our path needs left→right, so everything
@@ -164,13 +164,13 @@ private enum ContinuousCorner {
             left: [
                 Segment(control1: c8b, control2: c8a, to: p7),
                 Segment(control1: c7b, control2: c7a, to: p6),
-                Segment(control1: c6b, control2: c6a, to: l5),
+                Segment(control1: c6b, control2: c6a, to: l5)
             ],
             bottomEdgeRightReach: p4,
             right: [
                 Segment(control1: c4b, control2: c4a, to: p3),
                 Segment(control1: c3b, control2: c3a, to: p2),
-                Segment(control1: c2b, control2: c2a, to: p1),
+                Segment(control1: c2b, control2: c2a, to: p1)
             ]
         )
     }

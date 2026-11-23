@@ -98,8 +98,12 @@ struct PasswordSettingsPage: View {
                 SettingsCaption(text: sessionError)
                     .multilineTextAlignment(.center)
             } else if missingSessionKey {
-                SettingsCaption(text: "The session key is missing, so stored encrypted data can no longer be unlocked. Hold below to reset stored data and start fresh.")
-                    .multilineTextAlignment(.center)
+                SettingsCaption(
+                    text:
+                        "The session key is missing, so stored encrypted data can no longer be unlocked. "
+                        + "Hold below to reset stored data and start fresh."
+                )
+                .multilineTextAlignment(.center)
             }
 
             if sessionError != nil || missingSessionKey {
@@ -141,19 +145,22 @@ struct PasswordSettingsPage: View {
 
                 SettingsRowContent(
                     title: "Unlock session at login",
-                    info: "Automatically unlocks Glance when you log in so you don't need Touch ID on every launch. Tradeoff: stores a copy of the session key in your Keychain without a Touch ID prompt."
+                    info:
+                        "Automatically unlocks Glance when you log in so you don't need Touch ID on every launch. "
+                        + "Tradeoff: stores a copy of the session key in your Keychain without a Touch ID prompt."
                 ) {
-                    GlanceToggle(isOn: Binding(
-                        get: { pocController.unlocksAtLogin },
-                        set: { newValue in
-                            do {
-                                try pocController.setUnlockAtLogin(newValue)
-                                statusMessage = nil
-                            } catch {
-                                statusMessage = "Couldn't update login unlock: \(error.localizedDescription)"
+                    GlanceToggle(
+                        isOn: Binding(
+                            get: { pocController.unlocksAtLogin },
+                            set: { newValue in
+                                do {
+                                    try pocController.setUnlockAtLogin(newValue)
+                                    statusMessage = nil
+                                } catch {
+                                    statusMessage = "Couldn't update login unlock: \(error.localizedDescription)"
+                                }
                             }
-                        }
-                    ))
+                        ))
                 }
 
                 SettingsGroupDivider()

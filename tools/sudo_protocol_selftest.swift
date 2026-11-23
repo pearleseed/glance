@@ -7,6 +7,7 @@
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/sudo_protocol_selftest \
+//        glance/SudoAuth/SudoAuthProtocol.swift \
 //        glance/SudoAuth/SudoAuthServer.swift \
 //        tools/sudo_protocol_selftest.swift \
 //      && /tmp/sudo_protocol_selftest

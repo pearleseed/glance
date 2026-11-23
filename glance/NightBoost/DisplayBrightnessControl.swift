@@ -17,17 +17,20 @@ protocol DisplayBrightnessControlling: AnyObject {
 
 @MainActor
 final class DisplayBrightnessControl: DisplayBrightnessControlling {
-    private typealias F_DisplayServicesGetBrightness = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
-    private typealias F_DisplayServicesSetBrightness = @convention(c) (CGDirectDisplayID, Float) -> Int32
+    private typealias DisplayServicesGetBrightnessFn =
+        @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+    private typealias DisplayServicesSetBrightnessFn = @convention(c) (CGDirectDisplayID, Float) -> Int32
 
-    private let getBrightnessFn: F_DisplayServicesGetBrightness?
-    private let setBrightnessFn: F_DisplayServicesSetBrightness?
+    private let getBrightnessFn: DisplayServicesGetBrightnessFn?
+    private let setBrightnessFn: DisplayServicesSetBrightnessFn?
 
     init() {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
-            RTLD_LAZY
-        ) else {
+        guard
+            let handle = dlopen(
+                "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
+                RTLD_LAZY
+            )
+        else {
             getBrightnessFn = nil
             setBrightnessFn = nil
             return
@@ -35,8 +38,8 @@ final class DisplayBrightnessControl: DisplayBrightnessControlling {
 
         let getSym = dlsym(handle, "DisplayServicesGetBrightness")
         let setSym = dlsym(handle, "DisplayServicesSetBrightness")
-        getBrightnessFn = getSym.map { unsafeBitCast($0, to: F_DisplayServicesGetBrightness.self) }
-        setBrightnessFn = setSym.map { unsafeBitCast($0, to: F_DisplayServicesSetBrightness.self) }
+        getBrightnessFn = getSym.map { unsafeBitCast($0, to: DisplayServicesGetBrightnessFn.self) }
+        setBrightnessFn = setSym.map { unsafeBitCast($0, to: DisplayServicesSetBrightnessFn.self) }
     }
 
     func getBrightness(for displayID: CGDirectDisplayID) -> Float? {

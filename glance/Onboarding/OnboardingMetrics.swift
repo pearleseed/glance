@@ -90,12 +90,12 @@ enum OnboardingMetrics {
         case .notch:
             return [
                 notchIntroHeight, notchPermissionsHeight, notchSecurityNoticeHeight, notchPreSetupHeight,
-                notchSelectCameraHeight, notchEnrollHeight, notchNameHeight, notchPasswordHeight, notchCompleteHeight,
+                notchSelectCameraHeight, notchEnrollHeight, notchNameHeight, notchPasswordHeight, notchCompleteHeight
             ].max() ?? notchEnrollHeight
         case .pill:
             return [
                 pillIntroHeight, pillPermissionsHeight, pillSecurityNoticeHeight, pillPreSetupHeight,
-                pillSelectCameraHeight, pillEnrollHeight, pillNameHeight, pillPasswordHeight, pillCompleteHeight,
+                pillSelectCameraHeight, pillEnrollHeight, pillNameHeight, pillPasswordHeight, pillCompleteHeight
             ].max() ?? pillEnrollHeight
         }
     }
@@ -223,7 +223,7 @@ enum OnboardingMetrics {
     static let sweepLoopGap: Double = 1
     /// Caps the stacked streak opacities so the camera preview stays
     /// visually dominant even when several ribbons overlap.
-    static let sweepMasterOpacity: Double = 0.6
+    static let sweepOverallOpacity: Double = 0.6
     static let sweepFadeIn: Double = 0.5
     static let sweepFadeOut: Double = 0.35
     static let sweepDirectionCrossfade: Double = 0.25

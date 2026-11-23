@@ -80,19 +80,20 @@ struct GeneralSettingsPage: View {
         VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
             SettingsGroup {
                 SettingsRowContent(title: "Launch at login") {
-                    GlanceToggle(isOn: Binding(
-                        get: { launchAtLoginEnabled },
-                        set: { newValue in
-                            launchAtLoginEnabled = newValue
-                            do {
-                                try LaunchAtLogin.setEnabled(newValue)
-                                launchAtLoginError = nil
-                            } catch {
-                                launchAtLoginEnabled = !newValue
-                                launchAtLoginError = error.localizedDescription
+                    GlanceToggle(
+                        isOn: Binding(
+                            get: { launchAtLoginEnabled },
+                            set: { newValue in
+                                launchAtLoginEnabled = newValue
+                                do {
+                                    try LaunchAtLogin.setEnabled(newValue)
+                                    launchAtLoginError = nil
+                                } catch {
+                                    launchAtLoginEnabled = !newValue
+                                    launchAtLoginError = error.localizedDescription
+                                }
                             }
-                        }
-                    ))
+                        ))
                 }
                 SettingsGroupDivider()
                 SettingsRowContent(title: "Show in menu bar") {
@@ -114,7 +115,8 @@ struct GeneralSettingsPage: View {
                 SettingsGroupDivider()
                 displayPicker()
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) {
+                _ in
                 screens = NSScreen.screens
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -122,7 +124,9 @@ struct GeneralSettingsPage: View {
             }
             .onChange(of: settings.unlockTriggers) { oldValue, newValue in
                 // Only prompt on the transition into selecting "On space".
-                SpaceKeyMonitor.log.info("unlockTriggers changed: old=\(String(describing: oldValue), privacy: .public) new=\(String(describing: newValue), privacy: .public) state=\(String(describing: inputMonitoring), privacy: .public)")
+                SpaceKeyMonitor.log.info(
+                    "unlockTriggers changed: old=\(String(describing: oldValue), privacy: .public) new=\(String(describing: newValue), privacy: .public) state=\(String(describing: inputMonitoring), privacy: .public)"
+                )
                 if newValue.contains(.onSpace), !oldValue.contains(.onSpace), inputMonitoring != .granted {
                     SpaceKeyMonitor.requestInputMonitoringAccess()
                     // tccd flips notDetermined -> denied just after the call
@@ -133,13 +137,21 @@ struct GeneralSettingsPage: View {
                 }
             }
             if coordinator.isToggleShortcutUnavailable {
-                SettingsCaption(text: "That toggle shortcut is already used by another app or the system — choose a different combination.")
+                SettingsCaption(
+                    text:
+                        "That toggle shortcut is already used by another app or the system — "
+                        + "choose a different combination."
+                )
             }
             if let launchAtLoginError {
                 SettingsCaption(text: launchAtLoginError)
             }
             if hasInheritedXcodePermission {
-                SettingsCaption(text: "Running from Xcode — permission checks resolve against Xcode’s grants, not glance’s, so this reading is meaningless. Launch glance.app on its own to see the real state.")
+                SettingsCaption(
+                    text:
+                        "Running from Xcode — permission checks resolve against Xcode’s grants, not glance’s, "
+                        + "so this reading is meaningless. Launch glance.app on its own to see the real state."
+                )
             } else if needsInputMonitoring {
                 inputMonitoringNotice()
             }
@@ -180,7 +192,9 @@ struct GeneralSettingsPage: View {
                     SettingsGroupDivider()
                     SettingsRowContent(
                         title: "Night Boost",
-                        subtitle: "Softly illuminates the top of the screen and boosts low-light frames during dark-room Face Unlock.",
+                        subtitle:
+                            "Softly illuminates the top of the screen and boosts low-light frames "
+                            + "during dark-room Face Unlock.",
                         subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
                     ) {
                         GlanceToggle(isOn: $settings.nightBoostEnabled)
@@ -190,8 +204,13 @@ struct GeneralSettingsPage: View {
                         title: "Face detection duration",
                         valueLabel: "\(settings.faceDetectionSeconds)s",
                         index: Binding(
-                            get: { Double(settings.faceDetectionSeconds - GlanceSettings.faceDetectionRange.lowerBound) },
-                            set: { settings.faceDetectionSeconds = GlanceSettings.faceDetectionRange.lowerBound + Int($0.rounded()) }
+                            get: {
+                                Double(settings.faceDetectionSeconds - GlanceSettings.faceDetectionRange.lowerBound)
+                            },
+                            set: {
+                                settings.faceDetectionSeconds =
+                                    GlanceSettings.faceDetectionRange.lowerBound + Int($0.rounded())
+                            }
                         ),
                         stopCount: GlanceSettings.faceDetectionRange.count
                     )
@@ -226,7 +245,11 @@ struct GeneralSettingsPage: View {
                     SettingsGroupDivider()
                     notchSizeSliderRow(title: "Height", value: $settings.notchHeightAdjustment)
                 }
-                SettingsCaption(text: "Fine-tune the notch silhouette if it doesn’t quite match your display’s camera housing. Applies only to displays with a physical notch.")
+                SettingsCaption(
+                    text:
+                        "Fine-tune the notch silhouette if it doesn’t quite match your display’s camera housing. "
+                        + "Applies only to displays with a physical notch."
+                )
             }
             .onChange(of: settings.notchWidthAdjustment) { _, _ in
                 NotchOverlayController.shared.refreshGeometry()
@@ -268,7 +291,12 @@ struct GeneralSettingsPage: View {
     /// Shown while "On space" is selected but Input Monitoring isn't granted.
     private func inputMonitoringNotice() -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            SettingsCaption(text: "“On space” reads the keyboard directly to see the space key on the lock screen, which needs Accessibility — the same permission glance uses to type your password. Switch glance on under Privacy & Security → Accessibility, then quit and reopen glance.")
+            SettingsCaption(
+                text:
+                    "“On space” reads the keyboard directly to see the space key on the lock screen, "
+                    + "which needs Accessibility — the same permission glance uses to type your password. "
+                    + "Switch glance on under Privacy & Security → Accessibility, then quit and reopen glance."
+            )
             Button("Open Accessibility settings") {
                 // Covers the rare install with no Accessibility grant at all.
                 SpaceKeyMonitor.requestInputMonitoringAccess()
@@ -295,7 +323,7 @@ struct GeneralSettingsPage: View {
                     settings.preferredDisplayID = nil
                     settings.preferredDisplayName = nil
                 }
-                ForEach(screens.compactMap(NamedScreen.init), id: \.id) { screen in
+                ForEach(screens.compactMap { NamedScreen($0) }, id: \.id) { screen in
                     Button(screen.name) {
                         settings.preferredDisplayID = screen.id
                         settings.preferredDisplayName = screen.name

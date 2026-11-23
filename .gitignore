@@ -1,22 +1,59 @@
 # Xcode build products / derived data
 build/
 DerivedData/
-*.xcuserstate
+.build/
+*.xcarchive
+*.dSYM/
+*.dSYM.zip
+*.hmap
+*.ipa
+*.dmg
+*.pkg
+*.moved-aside
 
-# Xcode per-user state (schemes, breakpoints)
+# Xcode per-user state (schemes, breakpoints, layouts)
 xcuserdata/
+*.xcuserstate
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+*.xcscmblueprint
 
-# Compiled Core ML models are derived from the committed .mlpackage source
+# Signing certificates, profiles & local env
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+.env
+.env.*
+
+# Compiled Core ML models (derived from committed .mlpackage source)
 *.mlmodelc
 
-# Python virtualenv used by tools/convert_arcface.py
+# Compiled PAM module artifacts (built by sudo-support/install.sh)
+sudo-support/*.so
+sudo-support/*.o
+*.o
+
+# Python virtualenv & cache (tools/convert_arcface.py)
 .venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
 
+# macOS & editor files
 .DS_Store
+._*
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Local release notes
+# Local release notes, git worktrees & internal planning docs
 RELEASING.md
-
-# Local git worktrees
 .worktrees/
+docs/superpowers/
+docs/upgrade-plan/

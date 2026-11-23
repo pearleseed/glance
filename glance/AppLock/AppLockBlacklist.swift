@@ -6,14 +6,14 @@
 import Foundation
 
 /// Prevents Glance from locking itself or critical macOS recovery tools, and flags apps that deserve a caution banner.
-nonisolated enum AppLockBlacklist: Sendable {
+nonisolated enum AppLockBlacklist: Sendable {  // swiftlint:disable:this inclusive_language
     /// System and recovery applications that are hard-blocked from App Lock.
     static let protectedBundleIDs: Set<String> = [
         "com.apple.finder",
         "com.apple.SystemSettings",
         "com.apple.systempreferences",
         "com.apple.Terminal",
-        "com.apple.ActivityMonitor",
+        "com.apple.ActivityMonitor"
     ]
 
     /// Third-party terminals and IDEs that are allowed to be locked but show a recovery caution note in Settings.
@@ -22,7 +22,7 @@ nonisolated enum AppLockBlacklist: Sendable {
         "com.mitchellh.ghostty",
         "dev.warp.Warp-Stable",
         "com.apple.dt.Xcode",
-        "com.microsoft.VSCode",
+        "com.microsoft.VSCode"
     ]
 
     private static let protectedLowercased = Set(protectedBundleIDs.map { $0.lowercased() })

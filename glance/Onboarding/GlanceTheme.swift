@@ -23,9 +23,9 @@ enum GlanceTheme {
     }
     /// Accent-derived shades for the enrollment sweep, shifted so layered streaks read
     /// as one body of light rather than several flat shapes.
-    static let accentPale   = Color(red: 0xCF / 255, green: 0xE7 / 255, blue: 0xFF / 255)
+    static let accentPale = Color(red: 0xCF / 255, green: 0xE7 / 255, blue: 0xFF / 255)
     static let accentBright = Color(red: 0x7F / 255, green: 0xC2 / 255, blue: 0xFF / 255)
-    static let accentDeep   = Color(red: 0x1F / 255, green: 0x6B / 255, blue: 0xD1 / 255)
+    static let accentDeep = Color(red: 0x1F / 255, green: 0x6B / 255, blue: 0xD1 / 255)
     static let surface = Color(red: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255)
     static let surfaceRaised = Color(red: 0x32 / 255, green: 0x32 / 255, blue: 0x32 / 255)
     static let panel = Color.black

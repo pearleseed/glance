@@ -14,18 +14,18 @@
 //      swiftc -O -o /tmp/security_selftest \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Liveness/DeviceBezelDetector.swift \
-//        glance/CameraFrame.swift \
-//        glance/FaceDetector.swift \
-//        glance/FaceAligner.swift \
-//        glance/FaceEmbedder.swift \
-//        glance/ArcFaceEmbedder.swift \
-//        glance/FaceRecognitionPipeline.swift \
-//        glance/FaceEnrollmentStore.swift \
-//        glance/SecureFaceStore.swift \
-//        glance/SecureCredentialManager.swift \
-//        glance/KeychainManager.swift \
-//        glance/LockMonitor.swift \
-//        glance/KeystrokeInjector.swift \
+//        glance/Camera/CameraFrame.swift \
+//        glance/Recognition/FaceDetector.swift \
+//        glance/Recognition/FaceAligner.swift \
+//        glance/Recognition/FaceEmbedder.swift \
+//        glance/Recognition/ArcFaceEmbedder.swift \
+//        glance/Recognition/FaceRecognitionPipeline.swift \
+//        glance/Recognition/FaceEnrollmentStore.swift \
+//        glance/Security/SecureFaceStore.swift \
+//        glance/Security/SecureCredentialManager.swift \
+//        glance/Security/KeychainManager.swift \
+//        glance/Unlock/LockMonitor.swift \
+//        glance/Unlock/KeystrokeInjector.swift \
 //        tools/security_selftest.swift \
 //      && /tmp/security_selftest
 //

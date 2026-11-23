@@ -9,92 +9,6 @@
 import Foundation
 import Observation
 
-/// How long the Touch-ID-unlocked session may sit idle before it re-locks.
-enum AutoLockInterval: Int, CaseIterable, Identifiable {
-    case sevenDays = 7
-    case fourteenDays = 14
-    case thirtyDays = 30
-    case never = 0
-
-    var id: Int { rawValue }
-
-    var title: String {
-        switch self {
-        case .never: return "Never"
-        case .sevenDays: return "7 days"
-        case .fourteenDays: return "14 days"
-        case .thirtyDays: return "30 days"
-        }
-    }
-
-    /// `nil` means the session stays open until the app exits or the user
-    /// explicitly locks it; the session key itself is never persisted in memory.
-    var duration: TimeInterval? {
-        self == .never ? nil : TimeInterval(rawValue) * 24 * 60 * 60
-    }
-
-    /// Position in `allCases`, used to drive the discrete 4-stop slider.
-    var sliderIndex: Double {
-        Double(Self.allCases.firstIndex(of: self) ?? 0)
-    }
-
-    static func from(sliderIndex: Double) -> AutoLockInterval {
-        let clamped = Int(sliderIndex.rounded())
-        return allCases.indices.contains(clamped) ? allCases[clamped] : .thirtyDays
-    }
-}
-
-/// Unlock success/failure animation style shown in the notch overlay.
-enum UnlockAnimationStyle: String, CaseIterable, Identifiable {
-    case none
-    case minimal
-    case original
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .none: return "None"
-        case .minimal: return "Minimal"
-        case .original: return "Original"
-        }
-    }
-
-    /// The styles the picker offers; `.none` is still a valid stored value but is now produced by the "Show animation" toggle, not a tile.
-    static let selectableCases: [UnlockAnimationStyle] = [.minimal, .original]
-}
-
-/// What can prompt Face Unlock. Multi-select; at least one is always kept
-/// selected, since a Mac with none armed would never show the notch.
-enum UnlockTrigger: String, CaseIterable, Identifiable {
-    /// The display turned back on (see `LockEventKind.wake`).
-    case onWake
-    /// The screen just became locked, no wake involved.
-    case onLock
-    /// Pressing space on the lock screen starts a scan. The lock screen's
-    /// Secure Event Input blocks normal event taps, so this is detected via
-    /// IOKit HID instead (see `SpaceKeyMonitor`), requiring Input Monitoring.
-    case onSpace
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .onWake: return "On wake"
-        case .onLock: return "On lock"
-        case .onSpace: return "On space"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .onWake: return "moon.fill"
-        case .onLock: return "lock.laptopcomputer"
-        case .onSpace: return "space"
-        }
-    }
-}
-
 @Observable
 @MainActor
 final class GlanceSettings {
@@ -152,7 +66,9 @@ final class GlanceSettings {
         didSet { defaults.set(isFaceUnlockEnabledBuiltInOnly, forKey: Key.isFaceUnlockEnabledBuiltInOnly) }
     }
     var isFaceUnlockEnabledBuiltInAndExternal: Bool {
-        didSet { defaults.set(isFaceUnlockEnabledBuiltInAndExternal, forKey: Key.isFaceUnlockEnabledBuiltInAndExternal) }
+        didSet {
+            defaults.set(isFaceUnlockEnabledBuiltInAndExternal, forKey: Key.isFaceUnlockEnabledBuiltInAndExternal)
+        }
     }
     var isFaceUnlockEnabledExternalOnly: Bool {
         didSet { defaults.set(isFaceUnlockEnabledExternalOnly, forKey: Key.isFaceUnlockEnabledExternalOnly) }
@@ -172,7 +88,8 @@ final class GlanceSettings {
     var faceUnlockToggleShortcut: HotKeyShortcut? {
         didSet {
             if let faceUnlockToggleShortcut,
-               let data = try? JSONEncoder().encode(faceUnlockToggleShortcut) {
+                let data = try? JSONEncoder().encode(faceUnlockToggleShortcut)
+            {
                 defaults.set(data, forKey: Key.faceUnlockToggleShortcut)
             } else {
                 defaults.set(Data(), forKey: Key.faceUnlockToggleShortcut)
@@ -243,8 +160,9 @@ final class GlanceSettings {
             // Only reassign when clamping actually changes the value —
             // unconditional reassignment would recurse infinitely, since the
             // slider only ever produces already-in-range values.
-            let clamped = min(max(faceDetectionSeconds, Self.faceDetectionRange.lowerBound),
-                               Self.faceDetectionRange.upperBound)
+            let clamped = min(
+                max(faceDetectionSeconds, Self.faceDetectionRange.lowerBound),
+                Self.faceDetectionRange.upperBound)
             guard clamped == faceDetectionSeconds else {
                 faceDetectionSeconds = clamped
                 return
@@ -388,37 +306,82 @@ final class GlanceSettings {
     }
 
     private init() {
-        // Enabled by default — onboarding already enrolled a face and set a
-        // password specifically to use Face Unlock.
-        isFaceUnlockEnabled = defaults.object(forKey: Key.isFaceUnlockEnabled) as? Bool ?? true
-        isFaceUnlockEnabledBuiltInOnly = defaults.object(forKey: Key.isFaceUnlockEnabledBuiltInOnly) as? Bool ?? true
-        isFaceUnlockEnabledBuiltInAndExternal = defaults.object(forKey: Key.isFaceUnlockEnabledBuiltInAndExternal) as? Bool ?? true
-        isFaceUnlockEnabledExternalOnly = defaults.object(forKey: Key.isFaceUnlockEnabledExternalOnly) as? Bool ?? true
-        if let shortcutData = defaults.data(forKey: Key.faceUnlockToggleShortcut) {
-            if shortcutData.isEmpty {
-                faceUnlockToggleShortcut = nil
-            } else {
-                faceUnlockToggleShortcut = (try? JSONDecoder().decode(HotKeyShortcut.self, from: shortcutData))
-                    ?? .defaultToggleFaceUnlock
-            }
-        } else {
-            faceUnlockToggleShortcut = .defaultToggleFaceUnlock
-        }
+        // Enabled by default — onboarding already enrolled a face and set a password specifically to use Face Unlock.
+        isFaceUnlockEnabled = defaults.bool(forKey: Key.isFaceUnlockEnabled, default: true)
+        isFaceUnlockEnabledBuiltInOnly = defaults.bool(forKey: Key.isFaceUnlockEnabledBuiltInOnly, default: true)
+        isFaceUnlockEnabledBuiltInAndExternal = defaults.bool(
+            forKey: Key.isFaceUnlockEnabledBuiltInAndExternal, default: true)
+        isFaceUnlockEnabledExternalOnly = defaults.bool(forKey: Key.isFaceUnlockEnabledExternalOnly, default: true)
+        faceUnlockToggleShortcut = Self.decodeToggleShortcut(from: defaults)
+
         // Matches `MatchConfidenceLevel.standard` — see RecognitionSettingsPage.swift.
         matchThreshold = defaults.object(forKey: Key.matchThreshold) as? Float ?? 0.66
-        livenessChecksEnabled = defaults.object(forKey: Key.livenessChecksEnabled) as? Bool ?? true
-        // Light by default — Heavy requires a blink/pose/depth signal a
-        // still, non-blinking user may never produce, while Light still
-        // catches the main attack (a photo on a phone screen).
-        livenessMode = defaults.string(forKey: Key.livenessMode)
-            .flatMap(LivenessMode.init(rawValue:)) ?? .light
-        strictCloseRangeOnly = defaults.object(forKey: Key.strictCloseRangeOnly) as? Bool ?? false
+        livenessChecksEnabled = defaults.bool(forKey: Key.livenessChecksEnabled, default: true)
+        livenessMode = defaults.string(forKey: Key.livenessMode).flatMap(LivenessMode.init(rawValue:)) ?? .light
+        strictCloseRangeOnly = defaults.bool(forKey: Key.strictCloseRangeOnly, default: false)
 
-        // Resolve the stored style first, `.none` included, then split it
-        // into the pick + the on/off flag the UI now works in.
+        let (style, showAnimation) = Self.resolveAnimationSettings(from: defaults)
+        unlockAnimationStyle = style
+        showUnlockAnimation = showAnimation
+        unlockAnimationColor =
+            defaults.string(forKey: Key.unlockAnimationColor)
+            .flatMap(UnlockAnimationColor.init(rawValue:)) ?? .blue
+        notchWidthAdjustment =
+            (defaults.object(forKey: Key.notchWidthAdjustment) as? Int)
+            .map(Self.clampNotchAdjustment) ?? 0
+        notchHeightAdjustment =
+            (defaults.object(forKey: Key.notchHeightAdjustment) as? Int)
+            .map(Self.clampNotchAdjustment) ?? 0
+
+        unlockTriggers = Self.decodeUnlockTriggers(from: defaults)
+        retryOnHover = defaults.bool(forKey: Key.retryOnHover, default: true)
+        faceDetectionSeconds =
+            (defaults.object(forKey: Key.faceDetectionSeconds) as? Int)
+            .map { min(max($0, Self.faceDetectionRange.lowerBound), Self.faceDetectionRange.upperBound) } ?? 5
+        autoRetryOnce = defaults.bool(forKey: Key.autoRetryOnce, default: false)
+        hapticFeedbackEnabled = defaults.bool(forKey: Key.hapticFeedbackEnabled, default: true)
+        nightBoostEnabled = defaults.bool(forKey: Key.nightBoostEnabled, default: false)
+        showsInMenuBar = defaults.bool(forKey: Key.showsInMenuBar, default: true)
+        preferredDisplayID = defaults.string(forKey: Key.preferredDisplayID)
+        preferredDisplayName = defaults.string(forKey: Key.preferredDisplayName)
+
+        autoLockInterval =
+            (defaults.object(forKey: Key.autoLockIntervalDays) as? Int)
+            .flatMap(AutoLockInterval.init(rawValue:)) ?? .thirtyDays
+        defaultCameraID = defaults.string(forKey: Key.defaultCameraID)
+        builtInDisplayCameraID = defaults.string(forKey: Key.builtInDisplayCameraID)
+        externalDisplayCameraID = defaults.string(forKey: Key.externalDisplayCameraID)
+
+        hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding, default: false)
+        onboardingResumeStep = defaults.string(forKey: Key.onboardingResumeStep)
+            .flatMap(OnboardingStep.init(rawValue:))
+        hasAcknowledgedSecurityNotice = defaults.bool(forKey: Key.hasAcknowledgedSecurityNotice, default: false)
+        isAppLockEnabled = defaults.bool(forKey: Key.isAppLockEnabled, default: false)
+        lockedApps = Self.decodeLockedApps(from: defaults)
+        defaultAppRelockPolicy = Self.decodeRelockPolicy(from: defaults)
+        sudoFaceAuthEnabled = defaults.bool(forKey: Key.sudoFaceAuthEnabled, default: false)
+
+        // Push into the nonisolated mirror immediately, or FaceRecognitionPipeline
+        // would keep its own default until the toggle is first switched.
+        FaceRecognitionPipeline.strictCloseRangeOnly = strictCloseRangeOnly
+    }
+}
+
+extension GlanceSettings {
+    fileprivate static func decodeToggleShortcut(from defaults: UserDefaults) -> HotKeyShortcut? {
+        guard let shortcutData = defaults.data(forKey: Key.faceUnlockToggleShortcut) else {
+            return .defaultToggleFaceUnlock
+        }
+        guard !shortcutData.isEmpty else { return nil }
+        return (try? JSONDecoder().decode(HotKeyShortcut.self, from: shortcutData))
+            ?? .defaultToggleFaceUnlock
+    }
+
+    fileprivate static func resolveAnimationSettings(from defaults: UserDefaults) -> (UnlockAnimationStyle, Bool) {
         let storedStyle: UnlockAnimationStyle
         if let raw = defaults.string(forKey: Key.unlockAnimationStyle),
-           let style = UnlockAnimationStyle(rawValue: raw) {
+            let style = UnlockAnimationStyle(rawValue: raw)
+        {
             storedStyle = style
         } else if let legacy = defaults.object(forKey: Key.playUnlockAnimation) as? Bool {
             // Migrate the oldest on/off toggle: off → none, on → original.
@@ -426,73 +389,42 @@ final class GlanceSettings {
         } else {
             storedStyle = .original
         }
-        // A stored `.none` becomes "off, remembering .original" so
-        // switching back on has something to restore.
-        unlockAnimationStyle = storedStyle == .none ? .original : storedStyle
-        showUnlockAnimation = defaults.object(forKey: Key.showUnlockAnimation) as? Bool
-            ?? (storedStyle != .none)
-        unlockAnimationColor = defaults.string(forKey: Key.unlockAnimationColor)
-            .flatMap(UnlockAnimationColor.init(rawValue:)) ?? .blue
-        notchWidthAdjustment = (defaults.object(forKey: Key.notchWidthAdjustment) as? Int)
-            .map(Self.clampNotchAdjustment) ?? 0
-        notchHeightAdjustment = (defaults.object(forKey: Key.notchHeightAdjustment) as? Int)
-            .map(Self.clampNotchAdjustment) ?? 0
+        // A stored `.none` becomes "off, remembering .original" so switching back on has something to restore.
+        let style = storedStyle == .none ? .original : storedStyle
+        let show = defaults.bool(forKey: Key.showUnlockAnimation, default: storedStyle != .none)
+        return (style, show)
+    }
 
-        // On wake/lock by default, not on space — `.onSpace` needs Input
-        // Monitoring, which a fresh install shouldn't request unprompted.
-        let storedTriggers = (defaults.array(forKey: Key.unlockTriggers) as? [String])?
-            .compactMap { raw -> UnlockTrigger? in
-                // "onActivity" was merged into "onWake"; keep old installs working.
-                if raw == "onActivity" { return .onWake }
-                return UnlockTrigger(rawValue: raw)
-            }
-        unlockTriggers = storedTriggers.map(Set.init).flatMap { $0.isEmpty ? nil : $0 }
-            ?? [.onWake, .onLock]
-        retryOnHover = defaults.object(forKey: Key.retryOnHover) as? Bool ?? true
-        faceDetectionSeconds = (defaults.object(forKey: Key.faceDetectionSeconds) as? Int)
-            .map { min(max($0, Self.faceDetectionRange.lowerBound), Self.faceDetectionRange.upperBound) }
-            ?? 5
-        autoRetryOnce = defaults.object(forKey: Key.autoRetryOnce) as? Bool ?? false
-        hapticFeedbackEnabled = defaults.object(forKey: Key.hapticFeedbackEnabled) as? Bool ?? true
-        nightBoostEnabled = defaults.object(forKey: Key.nightBoostEnabled) as? Bool ?? false
-        // Keep the icon available for existing and new installs unless the
-        // user explicitly opts into the background-only mode.
-        showsInMenuBar = defaults.object(forKey: Key.showsInMenuBar) as? Bool ?? true
-        preferredDisplayID = defaults.string(forKey: Key.preferredDisplayID)
-        preferredDisplayName = defaults.string(forKey: Key.preferredDisplayName)
-
-        // Defaults to 30 days
-        autoLockInterval = (defaults.object(forKey: Key.autoLockIntervalDays) as? Int)
-            .flatMap(AutoLockInterval.init(rawValue:)) ?? .thirtyDays
-        defaultCameraID = defaults.string(forKey: Key.defaultCameraID)
-        builtInDisplayCameraID = defaults.string(forKey: Key.builtInDisplayCameraID)
-        externalDisplayCameraID = defaults.string(forKey: Key.externalDisplayCameraID)
-
-        hasCompletedOnboarding = defaults.object(forKey: Key.hasCompletedOnboarding) as? Bool ?? false
-        onboardingResumeStep = defaults.string(forKey: Key.onboardingResumeStep)
-            .flatMap(OnboardingStep.init(rawValue:))
-        hasAcknowledgedSecurityNotice = defaults.object(forKey: Key.hasAcknowledgedSecurityNotice) as? Bool ?? false
-        isAppLockEnabled = defaults.object(forKey: Key.isAppLockEnabled) as? Bool ?? false
-        if let lockedAppsData = defaults.data(forKey: Key.lockedApps),
-           let decodedApps = try? JSONDecoder().decode([LockedApp].self, from: lockedAppsData) {
-            var seenLowerIDs = Set<String>()
-            lockedApps = decodedApps.filter { entry in
-                guard LockedApp.canLock(bundleIdentifier: entry.bundleIdentifier) else { return false }
-                return seenLowerIDs.insert(entry.bundleIdentifier.lowercased()).inserted
-            }
-        } else {
-            lockedApps = []
+    fileprivate static func decodeUnlockTriggers(from defaults: UserDefaults) -> Set<UnlockTrigger> {
+        let stored = (defaults.array(forKey: Key.unlockTriggers) as? [String])?.compactMap { raw -> UnlockTrigger? in
+            // "onActivity" was merged into "onWake"; keep old installs working.
+            if raw == "onActivity" { return .onWake }
+            return UnlockTrigger(rawValue: raw)
         }
-        if let policyData = defaults.data(forKey: Key.defaultAppRelockPolicy),
-           let decodedPolicy = try? JSONDecoder().decode(RelockPolicy.self, from: policyData) {
-            defaultAppRelockPolicy = decodedPolicy
-        } else {
-            defaultAppRelockPolicy = .everyTime
-        }
-        sudoFaceAuthEnabled = defaults.object(forKey: Key.sudoFaceAuthEnabled) as? Bool ?? false
+        return stored.map(Set.init).flatMap { $0.isEmpty ? nil : $0 } ?? [.onWake, .onLock]
+    }
 
-        // Push into the nonisolated mirror immediately, or FaceRecognitionPipeline
-        // would keep its own default until the toggle is first switched.
-        FaceRecognitionPipeline.strictCloseRangeOnly = strictCloseRangeOnly
+    fileprivate static func decodeLockedApps(from defaults: UserDefaults) -> [LockedApp] {
+        guard let data = defaults.data(forKey: Key.lockedApps),
+            let decoded = try? JSONDecoder().decode([LockedApp].self, from: data)
+        else { return [] }
+        var seenLowerIDs = Set<String>()
+        return decoded.filter { entry in
+            guard LockedApp.canLock(bundleIdentifier: entry.bundleIdentifier) else { return false }
+            return seenLowerIDs.insert(entry.bundleIdentifier.lowercased()).inserted
+        }
+    }
+
+    fileprivate static func decodeRelockPolicy(from defaults: UserDefaults) -> RelockPolicy {
+        guard let data = defaults.data(forKey: Key.defaultAppRelockPolicy),
+            let decoded = try? JSONDecoder().decode(RelockPolicy.self, from: data)
+        else { return .everyTime }
+        return decoded
+    }
+}
+
+extension UserDefaults {
+    fileprivate func bool(forKey key: String, default defaultValue: Bool) -> Bool {
+        object(forKey: key) as? Bool ?? defaultValue
     }
 }

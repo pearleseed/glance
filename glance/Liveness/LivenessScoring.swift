@@ -7,8 +7,8 @@
 //  compiles standalone for `tools/liveness_selftest.swift`.
 //
 
-import Foundation
 import CoreGraphics
+import Foundation
 
 /// One frame's worth of liveness-relevant measurements — already normalized, no Vision needed.
 /// Populated by `LivenessFeatureExtractor.extract(from:)` from a real camera frame, or built
@@ -70,7 +70,9 @@ nonisolated enum LivenessScoring {
     /// predicted displacement is below Vision's landmark noise floor.
     static func poseDepthConsistency(_ window: [LivenessFrame]) -> CueReading {
         let pairs = window.compactMap { frame -> (CGFloat, CGFloat)? in
-            guard let offset = frame.noseOffsetRatio, let yaw = frame.yaw, frame.hasReliableLandmarks else { return nil }
+            guard let offset = frame.noseOffsetRatio, let yaw = frame.yaw, frame.hasReliableLandmarks else {
+                return nil
+            }
             return (offset, CGFloat(tan(yaw)))
         }
         guard pairs.count >= 4 else { return .none }
@@ -85,7 +87,7 @@ nonisolated enum LivenessScoring {
 
         let offsets = pairs.map(\.0)
         guard let minOffset = offsets.min(), let maxOffset = offsets.max(),
-              (maxOffset - minOffset) >= 0.01
+            (maxOffset - minOffset) >= 0.01
         else { return .none }
         guard let correlation = pearsonCorrelation(offsets, yaws) else { return .none }
         let level = Float(clamp((correlation + 1) / 2, 0, 1))
@@ -100,9 +102,12 @@ nonisolated enum LivenessScoring {
         let n = CGFloat(xs.count)
         let meanX = xs.reduce(0, +) / n
         let meanY = ys.reduce(0, +) / n
-        var covariance: CGFloat = 0, varX: CGFloat = 0, varY: CGFloat = 0
+        var covariance: CGFloat = 0
+        var varX: CGFloat = 0
+        var varY: CGFloat = 0
         for i in 0..<xs.count {
-            let dx = xs[i] - meanX, dy = ys[i] - meanY
+            let dx = xs[i] - meanX
+            let dy = ys[i] - meanY
             covariance += dx * dy
             varX += dx * dx
             varY += dy * dy
@@ -119,8 +124,8 @@ nonisolated enum LivenessScoring {
     /// blink; recovery is checked within a radius since a blink can span several frames at ~20fps.
     static func blinkDynamics(_ window: [LivenessFrame]) -> CueReading {
         let ears = window.compactMap { frame -> CGFloat? in
-            guard let l = frame.leftEyeAspectRatio, let r = frame.rightEyeAspectRatio else { return nil }
-            return (l + r) / 2
+            guard let left = frame.leftEyeAspectRatio, let right = frame.rightEyeAspectRatio else { return nil }
+            return (left + right) / 2
         }
         guard ears.count >= 4 else { return .none }
 

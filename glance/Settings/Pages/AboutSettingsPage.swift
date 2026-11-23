@@ -3,8 +3,8 @@
 //  glance
 //
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 struct AboutSettingsPage: View {
     @Bindable var updater: UpdaterController
@@ -20,8 +20,8 @@ struct AboutSettingsPage: View {
 
     private var versionString: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String ?? "1"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "2.0.0"
+        let build = info?["CFBundleVersion"] as? String ?? "5"
         return "Version \(short) (\(build))"
     }
 
@@ -41,6 +41,10 @@ struct AboutSettingsPage: View {
 
             Text(versionString)
                 .font(.system(size: 12))
+                .foregroundStyle(SettingsMetrics.textSecondary)
+
+            Text("By pearleseed")
+                .font(.system(size: 11))
                 .foregroundStyle(SettingsMetrics.textSecondary)
         }
         .frame(maxWidth: .infinity)
@@ -67,7 +71,7 @@ struct AboutSettingsPage: View {
                 title: "Send Feedback",
                 buttonTitle: "Send"
             ) {
-                if let url = URL(string: "https://tryglance.app/feedback") {
+                if let url = URL(string: "https://github.com/pearleseed/glance/issues") {
                     NSWorkspace.shared.open(url)
                 }
             }

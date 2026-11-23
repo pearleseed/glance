@@ -6,8 +6,8 @@
 //  step view stays a plain layout description instead of re-deriving this chrome.
 //
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// The primary (accent-filled) or secondary (dark) pill button used for
 /// Next/Back/Confirm across every step.
@@ -79,7 +79,9 @@ struct PermissionRow: View {
                 Text(granted ? "Granted" : "Grant")
                     .font(GlanceTheme.Font.grantLabel)
                     .foregroundStyle(GlanceTheme.textPrimary)
-                    .frame(width: OnboardingMetrics.grantButtonSize.width, height: OnboardingMetrics.grantButtonSize.height)
+                    .frame(
+                        width: OnboardingMetrics.grantButtonSize.width, height: OnboardingMetrics.grantButtonSize.height
+                    )
                     .background(GlanceTheme.surfaceRaised)
                     .clipShape(Capsule())
             }

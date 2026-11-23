@@ -13,14 +13,14 @@
 //  cleanly split which properties belong to which modifier when both fire in one transaction.
 //
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// The visible panel's current frame, relative to the fixed window's full
 /// bounds — see the `.background(GeometryReader...)` in `body` and
 /// `NotchWindowController.updateMousePassthrough()`.
 private struct InteractivePanelFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect? = nil
+    static var defaultValue: CGRect?
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = nextValue() ?? value
     }
@@ -395,8 +395,6 @@ struct NotchOverlayView: View {
         NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .default)
     }
 
-    // MARK: - Scan pulse
-
     private func updateScanPulse() {
         if isScanning {
             startScanPulse()
@@ -448,7 +446,8 @@ struct NotchOverlayView: View {
 
         // Pill doesn't start expanding until `pillEnterExpansionDelay` elapses, so
         // that's added on top here too.
-        let entryDelay = (style == .pill ? NotchGeometry.pillEnterExpansionDelay : 0)
+        let entryDelay =
+            (style == .pill ? NotchGeometry.pillEnterExpansionDelay : 0)
             + NotchGeometry.scanPulseStartDelay
         let half = NotchGeometry.scanPulseHalfCycleDuration
         let hold = NotchGeometry.scanPulseHoldDuration

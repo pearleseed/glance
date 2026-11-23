@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>SUFeedURL</key>
-	<string>https://tryglance.app/appcast.xml</string>
+	<string>https://github.com/pearleseed/glance/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>o9uQmlzKzh7NZvFtVktVh/wqw4Ie6WshX8K8NFDweWY=</string>
 	<key>SUAutomaticallyUpdate</key>

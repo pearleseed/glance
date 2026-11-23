@@ -32,7 +32,7 @@ final class SudoFaceAuthenticator {
     private let framePollInterval: Duration = .milliseconds(5)
     private let wrongFaceGraceDuration: Duration = .seconds(2)
 
-    private static let log = Logger(subsystem: "com.jonathan.glance", category: "SudoFaceAuthenticator")
+    private static let log = Logger(subsystem: "com.pearleseed.glance", category: "SudoFaceAuthenticator")
 
     init(pipeline: FaceRecognitionPipeline) {
         self.pipeline = pipeline
@@ -48,7 +48,7 @@ final class SudoFaceAuthenticator {
 
     private func dismissOverlayIfOwned() {
         guard !NotchOverlayController.shared.isArmed,
-              NotchOverlayController.shared.phase != .onboarding
+            NotchOverlayController.shared.phase != .onboarding
         else { return }
         NotchOverlayController.shared.dismissImmediately()
     }
@@ -73,32 +73,35 @@ final class SudoFaceAuthenticator {
             if generation == scanGeneration {
                 camera.stop()
             }
-            if didPresentOverlay && (Task.isCancelled || generation != scanGeneration || !canAuthenticateNow() || NotchOverlayController.shared.phase == .scanning) {
+            if didPresentOverlay
+                && (Task.isCancelled || generation != scanGeneration || !canAuthenticateNow()
+                    || NotchOverlayController.shared.phase == .scanning)
+            {
                 dismissOverlayIfOwned()
             }
         }
 
+        return await runAttemptLoop(
+            generation: generation,
+            showsUI: showsUI,
+            didPresentOverlay: &didPresentOverlay
+        )
+    }
+
+    private func runAttemptLoop(
+        generation: UInt64,
+        showsUI: Bool,
+        didPresentOverlay: inout Bool
+    ) async -> Bool {
         let totalDeadline = ContinuousClock.now + totalBudget
         let retryGate = RetryGate()
         var didAutoRetry = false
         var needsPresent = true
 
-        while ContinuousClock.now < totalDeadline,
-              !Task.isCancelled,
-              generation == scanGeneration,
-              canAuthenticateNow() {
+        while ContinuousClock.now < totalDeadline, isAttemptValid(generation: generation) {
             if showsUI && needsPresent {
                 didPresentOverlay = true
-                NotchOverlayController.shared.present(onRetry: { [weak retryGate] in
-                    if let retryGate, retryGate.signalRetryIfWaiting() {
-                        return
-                    }
-                    Task { @MainActor in
-                        await NotchOverlayController.shared.collapse()
-                    }
-                })
-                await yieldMainQueue()
-                guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
+                guard await presentOverlayForAttempt(retryGate: retryGate, generation: generation) else {
                     return false
                 }
                 needsPresent = false
@@ -109,90 +112,32 @@ final class SudoFaceAuthenticator {
             let attemptDuration = min(Duration.seconds(configuredSeconds), remaining)
             guard attemptDuration >= .milliseconds(500) else { break }
 
-            let attemptDeadline = ContinuousClock.now + attemptDuration
             let outcome = await runSingleScan(
                 generation: generation,
-                deadline: attemptDeadline,
+                deadline: ContinuousClock.now + attemptDuration,
                 requireOverlayScanning: showsUI
             )
-
             if generation == scanGeneration {
                 camera.stop()
             }
 
             switch outcome {
             case .matched:
-                guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
-                    if showsUI {
-                        dismissOverlayIfOwned()
-                    }
-                    return false
-                }
-                if showsUI {
-                    NotchOverlayController.shared.finish(success: true)
-                }
-                return true
-
+                return finishMatchedAttempt(generation: generation, showsUI: showsUI)
             case .cancelled, .hardFailure:
-                if showsUI {
-                    dismissOverlayIfOwned()
-                }
+                if showsUI { dismissOverlayIfOwned() }
                 return false
-
             case .failed:
-                guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
-                    if showsUI {
-                        dismissOverlayIfOwned()
-                    }
-                    return false
-                }
-                if showsUI {
-                    NotchOverlayController.shared.finish(success: false)
-                }
-
-                let canHoverRetry = showsUI && GlanceSettings.shared.retryOnHover
-                let canAutoRetry = GlanceSettings.shared.autoRetryOnce && !didAutoRetry
-
-                guard (canHoverRetry || canAutoRetry),
-                      ContinuousClock.now.duration(to: totalDeadline) >= minimumRetryBudget
-                else {
-                    return false
-                }
-
-                if showsUI {
-                    let waitDeadline = totalDeadline - .milliseconds(1500)
-                    let hoverTriggered = await waitForHoverRetryOrFailureEnd(
-                        retryGate: retryGate,
-                        deadline: waitDeadline,
-                        generation: generation
-                    )
-                    guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
-                        return false
-                    }
-                    if hoverTriggered {
-                        // NotchOverlayController.activate() already transitioned phase to .scanning.
-                        needsPresent = false
-                        continue
-                    }
-
-                    if canAutoRetry, ContinuousClock.now.duration(to: totalDeadline) >= minimumRetryBudget {
-                        await waitForOverlayClosed(
-                            deadline: totalDeadline - .milliseconds(1500),
-                            generation: generation
-                        )
-                        guard !Task.isCancelled, generation == scanGeneration, canAuthenticateNow() else {
-                            return false
-                        }
-                        didAutoRetry = true
-                        needsPresent = true
-                        continue
-                    }
-                    return false
-                } else {
-                    guard canAutoRetry else { return false }
-                    didAutoRetry = true
-                    try? await Task.sleep(for: .seconds(1))
-                    continue
+                let retryAction = await handleFailedAttempt(
+                    generation: generation,
+                    showsUI: showsUI,
+                    retryGate: retryGate,
+                    totalDeadline: totalDeadline,
+                    didAutoRetry: &didAutoRetry
+                )
+                switch retryAction {
+                case .stop: return false
+                case .retry(let shouldPresent): needsPresent = shouldPresent
                 }
             }
         }
@@ -200,22 +145,102 @@ final class SudoFaceAuthenticator {
         return false
     }
 
-    // MARK: - Preflight Security Gates
-
-    private var hasUnlockCapableEmbedder: Bool {
-        !pipeline.usingFallbackEmbedder && pipeline.embedder.isUnlockCapable
+    private enum RetryAction {
+        case stop
+        case retry(needsPresent: Bool)
     }
+
+    private func isAttemptValid(generation: UInt64) -> Bool {
+        !Task.isCancelled && generation == scanGeneration && canAuthenticateNow()
+    }
+
+    private func presentOverlayForAttempt(retryGate: RetryGate, generation: UInt64) async -> Bool {
+        NotchOverlayController.shared.present(onRetry: { [weak retryGate] in
+            if let retryGate, retryGate.signalRetryIfWaiting() {
+                return
+            }
+            Task { @MainActor in
+                await NotchOverlayController.shared.collapse()
+            }
+        })
+        await yieldMainQueue()
+        return isAttemptValid(generation: generation)
+    }
+
+    private func finishMatchedAttempt(generation: UInt64, showsUI: Bool) -> Bool {
+        guard isAttemptValid(generation: generation) else {
+            if showsUI { dismissOverlayIfOwned() }
+            return false
+        }
+        if showsUI {
+            NotchOverlayController.shared.finish(success: true)
+        }
+        return true
+    }
+
+    private func handleFailedAttempt(
+        generation: UInt64,
+        showsUI: Bool,
+        retryGate: RetryGate,
+        totalDeadline: ContinuousClock.Instant,
+        didAutoRetry: inout Bool
+    ) async -> RetryAction {
+        guard isAttemptValid(generation: generation) else {
+            if showsUI { dismissOverlayIfOwned() }
+            return .stop
+        }
+        if showsUI {
+            NotchOverlayController.shared.finish(success: false)
+        }
+
+        let canHoverRetry = showsUI && GlanceSettings.shared.retryOnHover
+        let canAutoRetry = GlanceSettings.shared.autoRetryOnce && !didAutoRetry
+        guard canHoverRetry || canAutoRetry,
+            ContinuousClock.now.duration(to: totalDeadline) >= minimumRetryBudget
+        else {
+            return .stop
+        }
+
+        guard showsUI else {
+            guard canAutoRetry else { return .stop }
+            didAutoRetry = true
+            try? await Task.sleep(for: .seconds(1))
+            return .retry(needsPresent: false)
+        }
+
+        let waitDeadline = totalDeadline - .milliseconds(1500)
+        let hoverTriggered = await waitForHoverRetryOrFailureEnd(
+            retryGate: retryGate,
+            deadline: waitDeadline,
+            generation: generation
+        )
+        guard isAttemptValid(generation: generation) else { return .stop }
+        if hoverTriggered {
+            // NotchOverlayController.activate() already transitioned phase to .scanning.
+            return .retry(needsPresent: false)
+        }
+
+        guard canAutoRetry, ContinuousClock.now.duration(to: totalDeadline) >= minimumRetryBudget else {
+            return .stop
+        }
+        await waitForOverlayClosed(deadline: waitDeadline, generation: generation)
+        guard isAttemptValid(generation: generation) else { return .stop }
+        didAutoRetry = true
+        return .retry(needsPresent: true)
+    }
+
+    // MARK: - Preflight Security Gates
 
     private func canAuthenticateNow() -> Bool {
         let settings = GlanceSettings.shared
         guard settings.sudoFaceAuthEnabled,
-              settings.hasCompletedOnboarding,
-              settings.hasAcknowledgedSecurityNotice,
-              SecureCredentialManager.isSessionUnlocked,
-              hasUnlockCapableEmbedder,
-              !LockMonitor.isScreenActuallyLocked(),
-              !NotchOverlayController.shared.isArmed,
-              NotchOverlayController.shared.phase != .onboarding
+            settings.hasCompletedOnboarding,
+            settings.hasAcknowledgedSecurityNotice,
+            SecureCredentialManager.isSessionUnlocked,
+            pipeline.isUnlockCapable,
+            !LockMonitor.isScreenActuallyLocked(),
+            !NotchOverlayController.shared.isArmed,
+            NotchOverlayController.shared.phase != .onboarding
         else {
             return false
         }
@@ -254,30 +279,20 @@ final class SudoFaceAuthenticator {
         }
 
         // Always enforce Heavy Liveness for sudo regardless of user's lock-screen liveness preferences.
-        let liveness = LivenessAnalyzer()
-        liveness.modeProvider = { .heavy }
-
-        var wrongFaceStartedAt: ContinuousClock.Instant?
-        var readyMatch: ScoredIdentity?
-        var matchedIdentityID: UUID?
-        var livenessConfirmed = false
-        var lastFaceBoundingBox: CGRect?
+        let evaluator = FaceAuthEvaluator(
+            pipeline: pipeline,
+            livenessEnabled: true,
+            livenessModeProvider: { .heavy },
+            wrongFaceGraceDuration: wrongFaceGraceDuration
+        )
         var lastProcessedFrameID: UInt64?
 
-        func resetIdentityLivenessState(to newIdentityID: UUID? = nil) {
-            readyMatch = nil
-            matchedIdentityID = newIdentityID
-            livenessConfirmed = false
-            liveness.resetConfirmations()
-        }
-
         while ContinuousClock.now < deadline,
-              !Task.isCancelled,
-              generation == scanGeneration,
-              (!requireOverlayScanning || NotchOverlayController.shared.phase == .scanning) {
-            guard canAuthenticateNow() else {
-                return .hardFailure
-            }
+            !Task.isCancelled,
+            generation == scanGeneration,
+            !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+        {
+            guard canAuthenticateNow() else { return .hardFailure }
 
             guard let frame = camera.currentFrame, frame.id != lastProcessedFrameID else {
                 try? await Task.sleep(for: framePollInterval)
@@ -285,79 +300,37 @@ final class SudoFaceAuthenticator {
             }
             lastProcessedFrameID = frame.id
 
-            let pipeline = self.pipeline
-            let previousBoundingBox = lastFaceBoundingBox
-            let extracted = await Task.detached(priority: .userInitiated) { () -> (FaceRecognitionResult, LivenessFrame)? in
-                guard let result = try? pipeline.recognize(in: frame, preferNear: previousBoundingBox, includeQuality: false) else {
-                    return nil
-                }
-                let faceCrop = CameraManager.renderCrop(from: frame, imageRect: result.face.boundingBox)
-                return (result, LivenessFeatureExtractor.extract(from: result, frame: frame.image, faceCrop: faceCrop))
-            }.value
+            let extracted = await FaceAuthEvaluator.extractFrame(
+                from: frame,
+                pipeline: pipeline,
+                previousBoundingBox: evaluator.lastFaceBoundingBox
+            )
 
-            guard !Task.isCancelled, generation == scanGeneration else {
-                return .cancelled
-            }
-            guard canAuthenticateNow() else {
-                return .hardFailure
-            }
+            guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
+            guard canAuthenticateNow() else { return .hardFailure }
 
-            guard let (result, livenessFrame) = extracted else {
-                wrongFaceStartedAt = nil
-                lastFaceBoundingBox = nil
-                resetIdentityLivenessState()
+            let step = evaluator.evaluate(
+                extracted,
+                activeIdentities: FaceEnrollmentStore.shared.activeIdentities,
+                threshold: GlanceSettings.shared.matchThreshold
+            )
+            switch step {
+            case .pending:
                 continue
-            }
-
-            lastFaceBoundingBox = result.face.normalizedBoundingBox
-
-            // Phase 1 identity-bound liveness: score & match first, then update confirmations for that identity only.
-            let scored = pipeline.score(result.embedding, against: FaceEnrollmentStore.shared.activeIdentities)
-            let matched = pipeline.bestMatch(in: scored, threshold: GlanceSettings.shared.matchThreshold)
-
-            if let matched {
-                wrongFaceStartedAt = nil
-                if matchedIdentityID != matched.identity.id {
-                    resetIdentityLivenessState(to: matched.identity.id)
-                }
-                readyMatch = matched
-
-                let snapshot = liveness.observe(livenessFrame)
-                switch snapshot.decision {
-                case .denied:
-                    Self.log.info("Sudo face auth liveness denied: \(snapshot.decision.denialReason ?? "spoof", privacy: .public)")
-                    return .failed
-                case .confirmed:
-                    livenessConfirmed = true
-                case .pending:
-                    break
-                }
-            } else {
-                resetIdentityLivenessState()
-                let snapshot = liveness.observeUnmatched(livenessFrame)
-                if case .denied = snapshot.decision {
-                    Self.log.info("Sudo face auth unmatched liveness denied: \(snapshot.decision.denialReason ?? "spoof", privacy: .public)")
-                    return .failed
-                }
-
-                if wrongFaceStartedAt == nil {
-                    wrongFaceStartedAt = .now
-                }
-                if ContinuousClock.now - wrongFaceStartedAt! >= wrongFaceGraceDuration {
-                    return .failed
-                }
-            }
-
-            if let readyMatch, livenessConfirmed {
-                Self.log.info("Sudo face auth matched identity \(readyMatch.identity.name, privacy: .private) (\(String(format: "%.3f", readyMatch.centroidSimilarity), privacy: .public))")
+            case .matched(let readyMatch, _):
+                Self.log.info(
+                    "Sudo face auth matched identity \(readyMatch.identity.name, privacy: .private) (\(String(format: "%.3f", readyMatch.centroidSimilarity), privacy: .public))"
+                )
                 return .matched
+            case .spoofDenied(let reason):
+                Self.log.info("Sudo face auth liveness denied: \(reason ?? "spoof", privacy: .public)")
+                return .failed
+            case .wrongFaceTimedOut:
+                return .failed
             }
         }
 
-        if Task.isCancelled || generation != scanGeneration {
-            return .cancelled
-        }
-        return .failed
+        return (Task.isCancelled || generation != scanGeneration) ? .cancelled : .failed
     }
 
     // MARK: - Overlay Coordination Helpers
@@ -377,9 +350,10 @@ final class SudoFaceAuthenticator {
     ) async -> Bool {
         let watcher = Task { @MainActor [weak retryGate] in
             while !Task.isCancelled,
-                  ContinuousClock.now < deadline,
-                  generation == self.scanGeneration,
-                  NotchOverlayController.shared.phase == .failure {
+                ContinuousClock.now < deadline,
+                generation == self.scanGeneration,
+                NotchOverlayController.shared.phase == .failure
+            {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             retryGate?.cancelWaiting()
@@ -401,9 +375,10 @@ final class SudoFaceAuthenticator {
         generation: UInt64
     ) async {
         while !Task.isCancelled,
-              ContinuousClock.now < deadline,
-              generation == scanGeneration,
-              NotchOverlayController.shared.phase != .closed {
+            ContinuousClock.now < deadline,
+            generation == scanGeneration,
+            NotchOverlayController.shared.phase != .closed
+        {
             try? await Task.sleep(for: .milliseconds(50))
         }
     }

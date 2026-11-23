@@ -8,7 +8,6 @@
 import AppKit
 import CoreGraphics
 import Foundation
-import os
 
 @MainActor
 protocol IlluminationPresenting: AnyObject {
@@ -26,7 +25,7 @@ final class SceneIlluminator {
     private let panel: IlluminationPresenting
     private let screenProvider: @MainActor () -> NSScreen?
     private let displayIDProvider: @MainActor (NSScreen) -> CGDirectDisplayID?
-    private let observerBox: ObserverBox
+    private let observerBox = NotificationObserverBox()
 
     private var isActive = false
     private var savedBrightness: (displayID: CGDirectDisplayID, value: Float)?
@@ -44,17 +43,16 @@ final class SceneIlluminator {
         self.panel = panel
         self.screenProvider = screenProvider
         self.displayIDProvider = displayIDProvider
-        self.observerBox = ObserverBox(center: notificationCenter)
 
-        observerBox.add(notificationCenter.addObserver(
+        observerBox.observe(
+            center: notificationCenter,
             forName: NSApplication.willTerminateNotification,
-            object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.end()
             }
-        })
+        }
     }
 
     /// Idempotent activation targeting `screen` (or `screenProvider()` when `nil`).
@@ -74,8 +72,9 @@ final class SceneIlluminator {
         isActive = true
 
         if let displayID,
-           let currentBrightness = brightnessControl.getBrightness(for: displayID),
-           currentBrightness < Self.maxBrightness {
+            let currentBrightness = brightnessControl.getBrightness(for: displayID),
+            currentBrightness < Self.maxBrightness
+        {
             if brightnessControl.setBrightness(Self.maxBrightness, for: displayID) {
                 savedBrightness = (displayID, currentBrightness)
             }
@@ -101,34 +100,5 @@ final class SceneIlluminator {
         }
 
         panel.hide()
-    }
-
-    /// Owns `NotificationCenter` tokens outside actor isolation so `deinit` can unregister them safely under Swift 6.
-    nonisolated private final class ObserverBox: Sendable {
-        private struct State: @unchecked Sendable {
-            var tokens: [NSObjectProtocol] = []
-        }
-
-        private let center: NotificationCenter
-        private let state = OSAllocatedUnfairLock(initialState: State())
-
-        init(center: NotificationCenter) {
-            self.center = center
-        }
-
-        func add(_ token: NSObjectProtocol) {
-            state.withLock { $0.tokens.append(token) }
-        }
-
-        deinit {
-            let tokens = state.withLock { state in
-                let current = state.tokens
-                state.tokens.removeAll()
-                return current
-            }
-            for token in tokens {
-                center.removeObserver(token)
-            }
-        }
     }
 }

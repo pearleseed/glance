@@ -65,7 +65,7 @@ final class InstalledApps {
         let searchRoots = [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             URL(fileURLWithPath: "/System/Applications", isDirectory: true),
-            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
         ]
 
         var byLowerBundleID: [String: InstalledApp] = [:]
@@ -73,20 +73,20 @@ final class InstalledApps {
 
         for root in searchRoots {
             guard fileManager.fileExists(atPath: root.path),
-                  let enumerator = fileManager.enumerator(
-                      at: root,
-                      includingPropertiesForKeys: Array(resourceKeys),
-                      options: [.skipsHiddenFiles, .skipsPackageDescendants]
-                  )
+                let enumerator = fileManager.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: Array(resourceKeys),
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                )
             else { continue }
 
             while let url = enumerator.nextObject() as? URL {
                 guard url.pathExtension.caseInsensitiveCompare("app") == .orderedSame else { continue }
                 let resolvedURL = url.resolvingSymlinksInPath()
                 guard let bundle = Bundle(url: resolvedURL) ?? Bundle(url: url),
-                      let rawBundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      LockedApp.canLock(bundleIdentifier: rawBundleID),
-                      !isBackgroundOnlyOrAgent(bundle)
+                    let rawBundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    LockedApp.canLock(bundleIdentifier: rawBundleID),
+                    !isBackgroundOnlyOrAgent(bundle)
                 else { continue }
 
                 let dedupKey = rawBundleID.lowercased()

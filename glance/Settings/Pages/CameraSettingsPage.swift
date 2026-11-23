@@ -86,7 +86,7 @@ struct CameraSettingsPage: View {
             }
 
             SettingsSectionTitle(text: "Preview")
-            .padding(.bottom, -4)
+                .padding(.bottom, -4)
             previewArea
                 .frame(height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.rowRadius))

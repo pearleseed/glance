@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "indentation": {
+    "spaces": 4
+  },
+  "lineLength": 120,
+  "maximumBlankLines": 1,
+  "respectsExistingLineBreaks": true,
+  "indentSwitchCaseLabels": false,
+  "indentConditionalCompilationBlocks": true,
+  "lineBreakBeforeControlFlowKeywords": false,
+  "lineBreakBeforeEachArgument": false,
+  "lineBreakBeforeEachGenericRequirement": false,
+  "lineBreakBetweenDeclarationAttributes": false,
+  "lineBreakAroundMultilineExpressionChainComponents": false,
+  "multiElementCollectionTrailingCommas": false,
+  "multilineTrailingCommaBehavior": "keptAsWritten",
+  "reflowMultilineStringLiterals": "never",
+  "tabWidth": 4
+}

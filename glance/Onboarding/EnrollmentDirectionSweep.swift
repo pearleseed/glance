@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-enum EnrollmentSweepDirection: CaseIterable, Hashable {
+nonisolated enum EnrollmentSweepDirection: CaseIterable, Hashable, Sendable {
     case left, right, up, down, topLeft, topRight, bottomLeft, bottomRight
 
     /// Unit travel vector in screen space (x right, y down); sweep originates on the
@@ -16,40 +16,40 @@ enum EnrollmentSweepDirection: CaseIterable, Hashable {
     var travel: CGVector {
         let d = CGFloat(1 / sqrt(2.0))
         switch self {
-        case .left:        return CGVector(dx: -1, dy:  0)
-        case .right:       return CGVector(dx:  1, dy:  0)
-        case .up:          return CGVector(dx:  0, dy: -1)
-        case .down:        return CGVector(dx:  0, dy:  1)
-        case .topLeft:     return CGVector(dx: -d, dy: -d)
-        case .topRight:    return CGVector(dx:  d, dy: -d)
-        case .bottomLeft:  return CGVector(dx: -d, dy:  d)
-        case .bottomRight: return CGVector(dx:  d, dy:  d)
+        case .left: return CGVector(dx: -1, dy: 0)
+        case .right: return CGVector(dx: 1, dy: 0)
+        case .up: return CGVector(dx: 0, dy: -1)
+        case .down: return CGVector(dx: 0, dy: 1)
+        case .topLeft: return CGVector(dx: -d, dy: -d)
+        case .topRight: return CGVector(dx: d, dy: -d)
+        case .bottomLeft: return CGVector(dx: -d, dy: d)
+        case .bottomRight: return CGVector(dx: d, dy: d)
         }
     }
 
     init?(pose: EnrollmentPose) {
         switch pose {
-        case .center:      return nil
-        case .left:        self = .left
-        case .right:       self = .right
-        case .top:         self = .up
-        case .bottom:      self = .down
-        case .topLeft:     self = .topLeft
-        case .topRight:    self = .topRight
-        case .bottomLeft:  self = .bottomLeft
+        case .center: return nil
+        case .left: self = .left
+        case .right: self = .right
+        case .top: self = .up
+        case .bottom: self = .down
+        case .topLeft: self = .topLeft
+        case .topRight: self = .topRight
+        case .bottomLeft: self = .bottomLeft
         case .bottomRight: self = .bottomRight
         }
     }
 
     var previewLabel: String {
         switch self {
-        case .left:        return "Left"
-        case .right:       return "Right"
-        case .up:          return "Up"
-        case .down:        return "Down"
-        case .topLeft:     return "Top left"
-        case .topRight:    return "Top right"
-        case .bottomLeft:  return "Bottom left"
+        case .left: return "Left"
+        case .right: return "Right"
+        case .up: return "Up"
+        case .down: return "Down"
+        case .topLeft: return "Top left"
+        case .topRight: return "Top right"
+        case .bottomLeft: return "Bottom left"
         case .bottomRight: return "Bottom right"
         }
     }
@@ -70,7 +70,7 @@ struct EnrollmentDirectionSweep: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .opacity(OnboardingMetrics.sweepMasterOpacity)
+            .opacity(OnboardingMetrics.sweepOverallOpacity)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -112,7 +112,8 @@ extension EnrollmentDirectionSweep {
             let edgeFade = 1 - abs(Double(lateral)) * 0.22
             let isVivid = index % 6 == 1 || index % 6 == 4
             let heavyBlur = index % 4 != 0
-            let blurScale: CGFloat = [1.35, 1.16, 0.96, 1.22, 0.82, 1.32, 1.02][lane]
+            let blurScale: CGFloat =
+                [1.35, 1.16, 0.96, 1.22, 0.82, 1.32, 1.02][lane]
                 * (heavyBlur ? 2.6 : 1.1)
             let peakBase: Double = [0.58, 0.72, 0.80, 0.52, 0.66, 0.42, 0.48][lane]
             return StreakSpec(
@@ -311,7 +312,7 @@ private struct SweepStreak: View {
                         .init(color: colors[0].opacity(0.6), location: 0.18),
                         .init(color: colors[1], location: 0.55),
                         .init(color: colors[1].opacity(0.85), location: 0.82),
-                        .init(color: colors[1].opacity(0), location: 1),
+                        .init(color: colors[1].opacity(0), location: 1)
                     ],
                     startPoint: .leading,
                     endPoint: .trailing
@@ -330,7 +331,7 @@ private struct SweepStreak: View {
         Task { @MainActor in
             withAnimation(
                 .timingCurve(0.68, 0.0, 0.32, 1.0, duration: spec.duration)
-                .delay(spec.delay)
+                    .delay(spec.delay)
             ) {
                 progress = 1
             }
@@ -345,7 +346,7 @@ private struct SweepStreak: View {
         GridItem(.flexible(), spacing: 8),
         GridItem(.flexible(), spacing: 8),
         GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
     ]
     LazyVGrid(columns: columns, spacing: 8) {
         ForEach(EnrollmentSweepDirection.allCases, id: \.self) { direction in

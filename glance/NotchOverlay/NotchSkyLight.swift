@@ -34,25 +34,28 @@ final class NotchSkyLight {
     private var space: SLSSpaceID
     private var terminationObserver: NSObjectProtocol?
 
-    private typealias F_SLSMainConnectionID = @convention(c) () -> Int32
-    private typealias F_SLSSpaceCreate = @convention(c) (Int32, Int32, CFDictionary?) -> SLSSpaceID
-    private typealias F_SLSSpaceSetAbsoluteLevel = @convention(c) (Int32, SLSSpaceID, Int32) -> Int32
-    private typealias F_SLSShowSpaces = @convention(c) (Int32, CFArray) -> Int32
-    private typealias F_SLSHideSpaces = @convention(c) (Int32, CFArray) -> Int32
-    private typealias F_SLSSpaceDestroy = @convention(c) (Int32, SLSSpaceID) -> Int32
-    private typealias F_SLSSpaceAddWindowsAndRemoveFromSpaces = @convention(c) (Int32, SLSSpaceID, CFArray, Int32) -> Int32
-    private typealias F_SLSRemoveWindowsFromSpaces = @convention(c) (Int32, CFArray, CFArray) -> Int32
+    private typealias SLSMainConnectionIDFn = @convention(c) () -> Int32
+    private typealias SLSSpaceCreateFn = @convention(c) (Int32, Int32, CFDictionary?) -> SLSSpaceID
+    private typealias SLSSpaceSetAbsoluteLevelFn = @convention(c) (Int32, SLSSpaceID, Int32) -> Int32
+    private typealias SLSShowSpacesFn = @convention(c) (Int32, CFArray) -> Int32
+    private typealias SLSHideSpacesFn = @convention(c) (Int32, CFArray) -> Int32
+    private typealias SLSSpaceDestroyFn = @convention(c) (Int32, SLSSpaceID) -> Int32
+    private typealias SLSSpaceAddWindowsAndRemoveFromSpacesFn =
+        @convention(c) (Int32, SLSSpaceID, CFArray, Int32) -> Int32
+    private typealias SLSRemoveWindowsFromSpacesFn = @convention(c) (Int32, CFArray, CFArray) -> Int32
 
-    private let hideSpaces: F_SLSHideSpaces
-    private let spaceDestroy: F_SLSSpaceDestroy
-    private let addWindowsAndRemoveFromSpaces: F_SLSSpaceAddWindowsAndRemoveFromSpaces
-    private let removeWindowsFromSpaces: F_SLSRemoveWindowsFromSpaces
+    private let hideSpaces: SLSHideSpacesFn
+    private let spaceDestroy: SLSSpaceDestroyFn
+    private let addWindowsAndRemoveFromSpaces: SLSSpaceAddWindowsAndRemoveFromSpacesFn
+    private let removeWindowsFromSpaces: SLSRemoveWindowsFromSpacesFn
 
     private init?() {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
-            RTLD_NOW
-        ) else { return nil }
+        guard
+            let handle = dlopen(
+                "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+                RTLD_NOW
+            )
+        else { return nil }
 
         guard
             let mainConnectionSym = dlsym(handle, "SLSMainConnectionID"),
@@ -65,14 +68,14 @@ final class NotchSkyLight {
             let removeSym = dlsym(handle, "SLSRemoveWindowsFromSpaces")
         else { return nil }
 
-        let mainConnectionID = unsafeBitCast(mainConnectionSym, to: F_SLSMainConnectionID.self)
-        let spaceCreate = unsafeBitCast(spaceCreateSym, to: F_SLSSpaceCreate.self)
-        let setAbsoluteLevel = unsafeBitCast(setLevelSym, to: F_SLSSpaceSetAbsoluteLevel.self)
-        let showSpaces = unsafeBitCast(showSpacesSym, to: F_SLSShowSpaces.self)
-        hideSpaces = unsafeBitCast(hideSpacesSym, to: F_SLSHideSpaces.self)
-        spaceDestroy = unsafeBitCast(spaceDestroySym, to: F_SLSSpaceDestroy.self)
-        addWindowsAndRemoveFromSpaces = unsafeBitCast(addRemoveSym, to: F_SLSSpaceAddWindowsAndRemoveFromSpaces.self)
-        removeWindowsFromSpaces = unsafeBitCast(removeSym, to: F_SLSRemoveWindowsFromSpaces.self)
+        let mainConnectionID = unsafeBitCast(mainConnectionSym, to: SLSMainConnectionIDFn.self)
+        let spaceCreate = unsafeBitCast(spaceCreateSym, to: SLSSpaceCreateFn.self)
+        let setAbsoluteLevel = unsafeBitCast(setLevelSym, to: SLSSpaceSetAbsoluteLevelFn.self)
+        let showSpaces = unsafeBitCast(showSpacesSym, to: SLSShowSpacesFn.self)
+        hideSpaces = unsafeBitCast(hideSpacesSym, to: SLSHideSpacesFn.self)
+        spaceDestroy = unsafeBitCast(spaceDestroySym, to: SLSSpaceDestroyFn.self)
+        addWindowsAndRemoveFromSpaces = unsafeBitCast(addRemoveSym, to: SLSSpaceAddWindowsAndRemoveFromSpacesFn.self)
+        removeWindowsFromSpaces = unsafeBitCast(removeSym, to: SLSRemoveWindowsFromSpacesFn.self)
 
         connection = mainConnectionID()
         // The `1` flag is load-bearing: any other value causes Finder to draw desktop icons into this space.
@@ -117,6 +120,7 @@ final class NotchSkyLight {
     /// normal window-server behavior. Call as soon as the screen unlocks.
     func undelegate(_ window: NSWindow) {
         guard space != 0, window.windowNumber > 0 else { return }
-        _ = removeWindowsFromSpaces(connection, [NSNumber(value: window.windowNumber)] as CFArray, [NSNumber(value: space)] as CFArray)
+        _ = removeWindowsFromSpaces(
+            connection, [NSNumber(value: window.windowNumber)] as CFArray, [NSNumber(value: space)] as CFArray)
     }
 }

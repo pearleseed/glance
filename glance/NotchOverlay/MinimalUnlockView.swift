@@ -51,9 +51,9 @@ struct MinimalUnlockView: View {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder
-    func magicReplaceTransition() -> some View {
+    fileprivate func magicReplaceTransition() -> some View {
         if #available(macOS 15, *) {
             contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
         } else {

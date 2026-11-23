@@ -5,8 +5,8 @@
 //  Runtime linear-light CIColorMatrix tinting for scan/unlock stills & videos.
 //
 
-import AppKit
 import AVFoundation
+import AppKit
 import CoreImage
 
 /// Which media the overlay is showing. `.idle` is a still image (the first
@@ -87,14 +87,17 @@ nonisolated enum AnimationTint {
 
     static func apply(_ rgb: AnimationTintRGB?, to image: NSImage) -> NSImage {
         guard let rgb,
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
+            let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return image }
         let output = apply(rgb, to: CIImage(cgImage: cgImage))
-        guard let rendered = linearContext.createCGImage(
-            output,
-            from: output.extent,
-            format: .RGBA8,
-            colorSpace: srgbColorSpace
-        ) else {
+        guard
+            let rendered = linearContext.createCGImage(
+                output,
+                from: output.extent,
+                format: .RGBA8,
+                colorSpace: srgbColorSpace
+            )
+        else {
             return image
         }
         return NSImage(cgImage: rendered, size: image.size)

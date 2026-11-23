@@ -7,8 +7,8 @@
 //  spoofing, never positive evidence of liveness.
 //
 
-import Vision
 import CoreGraphics
+import Vision
 
 struct DeviceBezelObservation {
     /// Largest device-plausible rectangle found this frame, same pixel space as `DetectedFace.boundingBox`.
@@ -41,7 +41,7 @@ nonisolated enum DeviceBezelDetector {
         let request = makeRequest()
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         guard (try? handler.perform([request])) != nil,
-              let results = request.results, !results.isEmpty
+            let results = request.results, !results.isEmpty
         else { return .none }
 
         let imageSize = CGSize(width: image.width, height: image.height)

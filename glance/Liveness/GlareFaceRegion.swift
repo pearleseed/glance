@@ -20,15 +20,16 @@ nonisolated enum GlareFaceRegion {
     /// corners stay excluded.
     static func polygon(contour: [CGPoint], faceBounds: CGRect, imageSize: CGSize) -> [CGPoint]? {
         guard contour.count >= 3,
-              faceBounds.width > 0, faceBounds.height > 0,
-              imageSize.width > 0, imageSize.height > 0,
-              faceBounds.origin.x.isFinite, faceBounds.origin.y.isFinite,
-              faceBounds.size.width.isFinite, faceBounds.size.height.isFinite,
-              imageSize.width.isFinite, imageSize.height.isFinite,
-              contour.allSatisfy({ $0.x.isFinite && $0.y.isFinite })
+            faceBounds.width > 0, faceBounds.height > 0,
+            imageSize.width > 0, imageSize.height > 0,
+            faceBounds.origin.x.isFinite, faceBounds.origin.y.isFinite,
+            faceBounds.size.width.isFinite, faceBounds.size.height.isFinite,
+            imageSize.width.isFinite, imageSize.height.isFinite,
+            contour.allSatisfy({ $0.x.isFinite && $0.y.isFinite })
         else { return nil }
 
-        let cropBounds = faceBounds
+        let cropBounds =
+            faceBounds
             .insetBy(dx: -faceBounds.width * cropPaddingFraction, dy: -faceBounds.height * cropPaddingFraction)
             .intersection(CGRect(origin: .zero, size: imageSize))
         guard !cropBounds.isNull, !cropBounds.isEmpty, cropBounds.width > 0, cropBounds.height > 0 else {
@@ -38,15 +39,17 @@ nonisolated enum GlareFaceRegion {
         // Handle both ordered Vision contours (temple -> chin -> temple) and arbitrary orderings
         // by locating the horizontal extremes, breaking ties toward the upper (smaller-y) point.
         guard let leftTemple = contour.min(by: { $0.x < $1.x || ($0.x == $1.x && $0.y < $1.y) }),
-              let rightTemple = contour.max(by: { $0.x < $1.x || ($0.x == $1.x && $0.y > $1.y) })
+            let rightTemple = contour.max(by: { $0.x < $1.x || ($0.x == $1.x && $0.y > $1.y) })
         else { return nil }
 
         let inset = faceBounds.width * foreheadInwardTaperFraction
         let midX = faceBounds.midX
-        let leftForeheadX = leftTemple.x <= midX
+        let leftForeheadX =
+            leftTemple.x <= midX
             ? min(leftTemple.x + inset, midX)
             : max(leftTemple.x - inset, midX)
-        let rightForeheadX = rightTemple.x >= midX
+        let rightForeheadX =
+            rightTemple.x >= midX
             ? max(rightTemple.x - inset, midX)
             : min(rightTemple.x + inset, midX)
 
@@ -98,8 +101,8 @@ nonisolated enum GlareFaceRegion {
         return lower + upper
     }
 
-    private static func cross(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
-        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    private static func cross(_ origin: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x)
     }
 
     private static func polygonArea(_ vertices: [CGPoint]) -> CGFloat {

@@ -20,7 +20,7 @@ private let safari = AppLockEngine.App(pid: 102, bundleID: "com.apple.Safari", i
 private let mail = AppLockEngine.App(pid: 104, bundleID: "com.apple.mail", isRegular: true)
 private let messages = AppLockEngine.App(pid: 105, bundleID: "com.apple.MobileSMS", isRegular: true)
 private let helper = AppLockEngine.App(pid: 103, bundleID: "com.apple.SecurityAgent", isRegular: false)
-private let glanceOwn = "com.jonathan.glance"
+private let glanceOwn = "com.pearleseed.glance"
 
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
@@ -240,7 +240,7 @@ struct AppLockSelfTest {
         r.test("blacklist-4: protection check is case-insensitive and trims whitespace") {
             expect(AppLockBlacklist.isProtected("COM.APPLE.FINDER", ownBundleID: glanceOwn), "case-insensitive Finder")
             expect(AppLockBlacklist.isProtected(" com.apple.terminal ", ownBundleID: glanceOwn), "trimmed lowercase Terminal")
-            expect(AppLockBlacklist.isProtected("COM.JONATHAN.GLANCE", ownBundleID: "com.jonathan.glance"), "case-insensitive own bundle")
+            expect(AppLockBlacklist.isProtected("COM.PEARLESEED.GLANCE", ownBundleID: "com.pearleseed.glance"), "case-insensitive own bundle")
         }
 
         r.test("blacklist-5: allows normal apps and all 5 caution apps without hard-blocking") {

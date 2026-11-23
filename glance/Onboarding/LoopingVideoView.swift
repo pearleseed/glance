@@ -6,9 +6,9 @@
 //  before restarting. Distinct from ScanAnimationView, which plays once and holds.
 //
 
-import SwiftUI
 import AVFoundation
 import AppKit
+import SwiftUI
 
 struct LoopingVideoView: NSViewRepresentable {
     let resourceName: String

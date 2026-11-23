@@ -32,7 +32,8 @@ struct EnrollmentRingView: View {
                     .rotationEffect(.degrees(angle(for: index)))
                     .opacity(isComplete ? 0 : 1)
                     .animation(
-                        .easeOut(duration: 0.3).delay(Double(index % OnboardingMetrics.ticksPerSector) * OnboardingMetrics.tickStagger),
+                        .easeOut(duration: 0.3).delay(
+                            Double(index % OnboardingMetrics.ticksPerSector) * OnboardingMetrics.tickStagger),
                         value: isLit(index)
                     )
                     .animation(.easeOut(duration: 0.22), value: pulseActive)
@@ -49,8 +50,12 @@ struct EnrollmentRingView: View {
             Circle()
                 .stroke(GlanceTheme.accent, lineWidth: OnboardingMetrics.completionRingWidth)
                 .frame(
-                    width: diameter + 2 * (OnboardingMetrics.tickLengthLit - OnboardingMetrics.completionRingRadiusInset) - OnboardingMetrics.completionRingWidth,
-                    height: diameter + 2 * (OnboardingMetrics.tickLengthLit - OnboardingMetrics.completionRingRadiusInset) - OnboardingMetrics.completionRingWidth
+                    width: diameter + 2
+                        * (OnboardingMetrics.tickLengthLit - OnboardingMetrics.completionRingRadiusInset)
+                        - OnboardingMetrics.completionRingWidth,
+                    height: diameter + 2
+                        * (OnboardingMetrics.tickLengthLit - OnboardingMetrics.completionRingRadiusInset)
+                        - OnboardingMetrics.completionRingWidth
                 )
                 .opacity(isComplete ? 1 : 0)
                 .scaleEffect(isComplete ? 1 : 0.92)

@@ -6,8 +6,8 @@
 //  Vision-free `LivenessFrame` — keeps the decision logic compilable standalone.
 //
 
-import Vision
 import CoreGraphics
+import Vision
 
 nonisolated enum LivenessFeatureExtractor {
     /// Never fails — a face with no landmarks still yields a frame; cues that need landmarks abstain.
@@ -45,12 +45,15 @@ nonisolated enum LivenessFeatureExtractor {
         let leftEAR = landmarks.leftEye.flatMap { LandmarkGeometry.eyeAspectRatio(of: $0, imageSize: imageSize) }
         let rightEAR = landmarks.rightEye.flatMap { LandmarkGeometry.eyeAspectRatio(of: $0, imageSize: imageSize) }
 
-        let eyeLeft = LandmarkGeometry.eyeCenter(pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize)
-        let eyeRight = LandmarkGeometry.eyeCenter(pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize)
+        let eyeLeft = LandmarkGeometry.eyeCenter(
+            pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize)
+        let eyeRight = LandmarkGeometry.eyeCenter(
+            pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize)
 
         var noseOffsetRatio: CGFloat?
         if let eyeLeft, let eyeRight,
-           let nose = landmarks.nose, let noseCenter = LandmarkGeometry.centroid(of: nose, imageSize: imageSize) {
+            let nose = landmarks.nose, let noseCenter = LandmarkGeometry.centroid(of: nose, imageSize: imageSize)
+        {
             noseOffsetRatio = LandmarkGeometry.eyeAlignedNoseOffsetRatio(
                 eyeA: eyeLeft, eyeB: eyeRight, noseCenter: noseCenter
             )

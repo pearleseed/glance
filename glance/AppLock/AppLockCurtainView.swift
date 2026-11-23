@@ -77,7 +77,7 @@ struct AppLockCurtainView: View {
                 Image(nsImage: model.appIcon)
                     .resizable()
                     .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
+                    .scaledToFit()
                     .frame(width: iconSize, height: iconSize)
                     .shadow(color: Color.black.opacity(0.28), radius: 8, y: 3)
 
@@ -115,43 +115,47 @@ struct AppLockCurtainView: View {
             }
             .frame(maxWidth: max(size.width - 40, 140))
 
-            HStack(spacing: 10) {
-                if !model.isScanning && model.canRetry {
-                    Button {
-                        model.onRetry?()
-                    } label: {
-                        Label("Try Again", systemImage: "arrow.clockwise")
-                            .font(.system(size: compact ? 11 : 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, compact ? 11 : 14)
-                            .padding(.vertical, compact ? 6 : 8)
-                            .background(GlanceTheme.accent)
-                            .clipShape(Capsule())
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
+            primaryActionButtons(compact: compact)
+        }
+        .padding(compact ? 14 : 24)
+    }
 
+    private func primaryActionButtons(compact: Bool) -> some View {
+        HStack(spacing: 10) {
+            if !model.isScanning && model.canRetry {
                 Button {
-                    model.onUseSystemAuth?()
+                    model.onRetry?()
                 } label: {
-                    Label("Use Touch ID / Password", systemImage: "touchid")
-                        .font(.system(size: compact ? 11 : 12, weight: .medium))
-                        .foregroundStyle(SettingsMetrics.textPrimary)
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                        .font(.system(size: compact ? 11 : 12, weight: .semibold))
+                        .foregroundStyle(.white)
                         .padding(.horizontal, compact ? 11 : 14)
                         .padding(.vertical, compact ? 6 : 8)
-                        .background(SettingsMetrics.neutralButtonFill)
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(SettingsMetrics.rowBorder, lineWidth: SettingsMetrics.rowBorderWidth)
-                        )
+                        .background(GlanceTheme.accent)
                         .clipShape(Capsule())
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
+
+            Button {
+                model.onUseSystemAuth?()
+            } label: {
+                Label("Use Touch ID / Password", systemImage: "touchid")
+                    .font(.system(size: compact ? 11 : 12, weight: .medium))
+                    .foregroundStyle(SettingsMetrics.textPrimary)
+                    .padding(.horizontal, compact ? 11 : 14)
+                    .padding(.vertical, compact ? 6 : 8)
+                    .background(SettingsMetrics.neutralButtonFill)
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(SettingsMetrics.rowBorder, lineWidth: SettingsMetrics.rowBorderWidth)
+                    )
+                    .clipShape(Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(compact ? 14 : 24)
     }
 
     @ViewBuilder

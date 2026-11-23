@@ -6,8 +6,8 @@
 //  moved out of `FaceAligner` so the two call sites can't drift apart.
 //
 
-import Vision
 import CoreGraphics
+import Vision
 
 /// Every landmark region this app reads from `VNFaceLandmarks2D`. Includes several regions
 /// `FaceAligner` never needed — liveness samples more of them for its residual-coherence check.
@@ -56,7 +56,7 @@ nonisolated enum LandmarkGeometry {
     /// liveness scoring so scores stay comparable regardless of camera distance.
     static func interocularDistance(from landmarks: VNFaceLandmarks2D, imageSize: CGSize) -> CGFloat? {
         guard let left = eyeCenter(pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize),
-              let right = eyeCenter(pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize)
+            let right = eyeCenter(pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize)
         else { return nil }
         return hypot(left.x - right.x, left.y - right.y)
     }
@@ -168,14 +168,16 @@ nonisolated enum LandmarkGeometry {
     /// Hartley-normalized DLT homography with `h33 = 1`, solved as an 8×8
     /// normal-equation system. Needs at least 4 correspondences; 6+ is
     /// the practical floor used by callers so the fit is overdetermined.
-    static func solveHomography(from sourcePoints: [CGPoint], to destinationPoints: [CGPoint], weights: [CGFloat]? = nil) -> Homography? {
+    static func solveHomography(
+        from sourcePoints: [CGPoint], to destinationPoints: [CGPoint], weights: [CGFloat]? = nil
+    ) -> Homography? {
         guard sourcePoints.count == destinationPoints.count, sourcePoints.count >= 4 else { return nil }
         if let weights {
             guard weights.count == sourcePoints.count else { return nil }
         }
 
         guard let srcT = normalizingTransform(sourcePoints),
-              let dstT = normalizingTransform(destinationPoints)
+            let dstT = normalizingTransform(destinationPoints)
         else { return nil }
 
         let n = sourcePoints.count
@@ -187,7 +189,10 @@ nonisolated enum LandmarkGeometry {
             let dst = applyNormalization(destinationPoints[i], dstT)
             let w = (weights?[i] ?? 1).squareRoot()
             guard w > 0 else { continue }
-            let x = src.x, y = src.y, u = dst.x, v = dst.y
+            let x = src.x
+            let y = src.y
+            let u = dst.x
+            let v = dst.y
             // Two DLT rows, h33 fixed at 1:
             // [x y 1 0 0 0 -u x -u y] · h = u
             // [0 0 0 x y 1 -v x -v y] · h = v
@@ -214,7 +219,9 @@ nonisolated enum LandmarkGeometry {
     static func solveRobustHomography(from sourcePoints: [CGPoint], to destinationPoints: [CGPoint]) -> Homography? {
         guard var current = solveHomography(from: sourcePoints, to: destinationPoints) else { return nil }
         for _ in 0..<2 {
-            let residuals = zip(sourcePoints, destinationPoints).map { hypot($1.x - current.apply($0).x, $1.y - current.apply($0).y) }
+            let residuals = zip(sourcePoints, destinationPoints).map {
+                hypot($1.x - current.apply($0).x, $1.y - current.apply($0).y)
+            }
             let scale = max(medianValue(residuals), 1e-4)
             let cutoff = 4.685 * 1.4826 * scale
             var weights: [CGFloat] = residuals.map { r in
@@ -255,39 +262,63 @@ nonisolated enum LandmarkGeometry {
         CGPoint(x: t.scale * (point.x - t.centerX), y: t.scale * (point.y - t.centerY))
     }
 
-    /// `H = Tdst⁻¹ · Hn · Tsrc`.
-    private static func denormalizeHomography(_ h: Homography, source: SimilarityNorm, destination: SimilarityNorm) -> Homography {
-        let s1 = source.scale, cx1 = source.centerX, cy1 = source.centerY
-        let s2 = destination.scale, cx2 = destination.centerX, cy2 = destination.centerY
-        // Tsrc
-        let ts = (s1, CGFloat(0), -s1 * cx1, CGFloat(0), s1, -s1 * cy1, CGFloat(0), CGFloat(0), CGFloat(1))
-        // Hn · Tsrc
-        let hn = (h.h11, h.h12, h.h13, h.h21, h.h22, h.h23, h.h31, h.h32, h.h33)
-        let m = multiply3x3(hn, ts)
-        // Tdst⁻¹
-        let ti = (1 / s2, CGFloat(0), cx2, CGFloat(0), 1 / s2, cy2, CGFloat(0), CGFloat(0), CGFloat(1))
-        let r = multiply3x3(ti, m)
-        return Homography(h11: r.0, h12: r.1, h13: r.2, h21: r.3, h22: r.4, h23: r.5, h31: r.6, h32: r.7, h33: r.8)
+    private struct Matrix3x3 {
+        let m11, m12, m13: CGFloat
+        let m21, m22, m23: CGFloat
+        let m31, m32, m33: CGFloat
+
+        func multiplied(by other: Matrix3x3) -> Matrix3x3 {
+            Matrix3x3(
+                m11: m11 * other.m11 + m12 * other.m21 + m13 * other.m31,
+                m12: m11 * other.m12 + m12 * other.m22 + m13 * other.m32,
+                m13: m11 * other.m13 + m12 * other.m23 + m13 * other.m33,
+                m21: m21 * other.m11 + m22 * other.m21 + m23 * other.m31,
+                m22: m21 * other.m12 + m22 * other.m22 + m23 * other.m32,
+                m23: m21 * other.m13 + m22 * other.m23 + m23 * other.m33,
+                m31: m31 * other.m11 + m32 * other.m21 + m33 * other.m31,
+                m32: m31 * other.m12 + m32 * other.m22 + m33 * other.m32,
+                m33: m31 * other.m13 + m32 * other.m23 + m33 * other.m33
+            )
+        }
     }
 
-    private static func multiply3x3(
-        _ a: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat),
-        _ b: (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)
-    ) -> (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat) {
-        (
-            a.0 * b.0 + a.1 * b.3 + a.2 * b.6,
-            a.0 * b.1 + a.1 * b.4 + a.2 * b.7,
-            a.0 * b.2 + a.1 * b.5 + a.2 * b.8,
-            a.3 * b.0 + a.4 * b.3 + a.5 * b.6,
-            a.3 * b.1 + a.4 * b.4 + a.5 * b.7,
-            a.3 * b.2 + a.4 * b.5 + a.5 * b.8,
-            a.6 * b.0 + a.7 * b.3 + a.8 * b.6,
-            a.6 * b.1 + a.7 * b.4 + a.8 * b.7,
-            a.6 * b.2 + a.7 * b.5 + a.8 * b.8
+    /// `H = Tdst⁻¹ · Hn · Tsrc`.
+    private static func denormalizeHomography(_ h: Homography, source: SimilarityNorm, destination: SimilarityNorm)
+        -> Homography
+    {
+        let s1 = source.scale
+        let cx1 = source.centerX
+        let cy1 = source.centerY
+        let s2 = destination.scale
+        let cx2 = destination.centerX
+        let cy2 = destination.centerY
+
+        let tSrc = Matrix3x3(
+            m11: s1, m12: 0, m13: -s1 * cx1,
+            m21: 0, m22: s1, m23: -s1 * cy1,
+            m31: 0, m32: 0, m33: 1
+        )
+        let hNorm = Matrix3x3(
+            m11: h.h11, m12: h.h12, m13: h.h13,
+            m21: h.h21, m22: h.h22, m23: h.h23,
+            m31: h.h31, m32: h.h32, m33: h.h33
+        )
+        let tDstInv = Matrix3x3(
+            m11: 1 / s2, m12: 0, m13: cx2,
+            m21: 0, m22: 1 / s2, m23: cy2,
+            m31: 0, m32: 0, m33: 1
+        )
+        let r = tDstInv.multiplied(by: hNorm.multiplied(by: tSrc))
+        return Homography(
+            h11: r.m11, h12: r.m12, h13: r.m13,
+            h21: r.m21, h22: r.m22, h23: r.m23,
+            h31: r.m31, h32: r.m32, h33: r.m33
         )
     }
 
-    private static func accumulateNormalEquations(_ row: [CGFloat], _ b: CGFloat, into ata: inout [[CGFloat]], atb: inout [CGFloat]) {
+    private static func accumulateNormalEquations(
+        _ row: [CGFloat], _ b: CGFloat, into ata: inout [[CGFloat]], atb: inout [CGFloat]
+    ) {
         for i in 0..<8 {
             atb[i] += row[i] * b
             for j in 0..<8 {
@@ -359,7 +390,9 @@ nonisolated enum LandmarkGeometry {
     /// Closed-form least-squares similarity transform (rotation + uniform scale + translation),
     /// via 2D Procrustes in complex-number form — no SVD needed. This is exactly the model a flat
     /// presentation is limited to; motion it can't explain is the non-rigid residual `LivenessScoring` measures.
-    static func solveSimilarityTransform(from sourcePoints: [CGPoint], to destinationPoints: [CGPoint]) -> CGAffineTransform? {
+    static func solveSimilarityTransform(from sourcePoints: [CGPoint], to destinationPoints: [CGPoint])
+        -> CGAffineTransform?
+    {
         guard sourcePoints.count == destinationPoints.count, sourcePoints.count >= 2 else { return nil }
 
         let n = CGFloat(sourcePoints.count)
@@ -387,7 +420,10 @@ nonisolated enum LandmarkGeometry {
 
         // dst = R * scale * (src - srcMean) + dstMean, expanded into
         // CGAffineTransform's convention: x' = a*x + c*y + tx, y' = b*x + d*y + ty
-        let a = sc, b = ss, c = -ss, d = sc
+        let a = sc
+        let b = ss
+        let c = -ss
+        let d = sc
         let tx = dstMean.x - (a * srcMean.x + c * srcMean.y)
         let ty = dstMean.y - (b * srcMean.x + d * srcMean.y)
         return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)

@@ -205,8 +205,9 @@ enum SettingsMetrics {
     /// Resolves live against the current system appearance rather than a
     /// value fixed at evaluation time.
     private static func adaptiveColor(dark: NSColor, light: NSColor) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-        })
+        Color(
+            nsColor: NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            })
     }
 }
