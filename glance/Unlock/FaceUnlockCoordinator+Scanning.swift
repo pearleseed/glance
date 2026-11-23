@@ -179,6 +179,9 @@ extension FaceUnlockCoordinator {
 
         guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
 
+        // Clear any leftover backpressure flag if a superseded cycle exited mid-extraction without stopping the camera.
+        camera.setConsumerBusy(false)
+
         while ContinuousClock.now < deadline,
             !Task.isCancelled,
             generation == scanGeneration,
