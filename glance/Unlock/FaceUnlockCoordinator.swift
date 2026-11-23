@@ -66,8 +66,6 @@ final class FaceUnlockCoordinator {
     private let lockStateSettleTimeout: Duration = .milliseconds(300)
     /// Polling cadence while waiting for lock state to settle.
     private let lockStatePollInterval: Duration = .milliseconds(25)
-    /// Polling cadence while waiting for the next fresh camera frame during a scan.
-    let framePollInterval: Duration = .milliseconds(5)
     /// Brief buffer past the login window's entrance before showing the notch overlay.
     private let armDelay: Duration = .milliseconds(250)
 

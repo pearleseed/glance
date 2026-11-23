@@ -11,9 +11,11 @@
 //    6. `CameraFrameWaiter` event-driven wakeup (`nextFrame(after:until:)`)
 //    7. `CameraFrameWaiter` cancellation on `stop()`, timeout expiry, external `Task.cancel()`, and `start -> stop -> start` isolation
 //    8. `PendingCameraFrameState` preview-only (`publishesFrames: false`) & `isConsumerBusy` backpressure gating
+//    9. `ObservationWaiter` & `ObservationSignal` event-driven `@Observable` waiting, timeout, and cancellation
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/performance_selftest \
+//        glance/Core/ObservationWaiter.swift \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Camera/SharedCoreImageContext.swift \
 //        glance/Camera/CameraFrame.swift \
@@ -58,6 +60,20 @@ private enum MockPipelineLoadError: LocalizedError {
     }
 }
 
+@Observable
+@MainActor
+private final class MockOverlayState {
+    enum Phase: Equatable {
+        case failure
+        case collapsing
+        case closed
+        case scanning
+    }
+
+    var phase: Phase = .failure
+    var stepCount: Int = 0
+}
+
 @main
 struct PerformanceSelfTest {
     @MainActor
@@ -70,6 +86,8 @@ struct PerformanceSelfTest {
         try await testFrameDeliveryWakesImmediately()
         try await testFrameWaiterCancelledOnStopAndTimeout()
         testCaptureBackpressureAndPreviewOnlyGate()
+        try await testObservationWaiterTransitionsAndSignal()
+        try await testObservationWaiterTimeoutCancellationAndRaces()
         print("\nAll performance self-tests passed.")
     }
 
@@ -588,5 +606,128 @@ struct PerformanceSelfTest {
         )
 
         print("PASS: PendingCameraFrameState preview-only and consumer backpressure gating")
+    }
+
+    @MainActor
+    private static func testObservationWaiterTransitionsAndSignal() async throws {
+        let clock = ContinuousClock()
+        let state = MockOverlayState()
+        let signal = ObservationSignal()
+
+        // 1. Predicate already false returns immediately.
+        let immediateStart = clock.now
+        await ObservationWaiter.waitWhile(until: immediateStart + .seconds(2)) {
+            state.phase == .closed
+        }
+        let immediateElapsed = clock.now - immediateStart
+        precondition(immediateElapsed < .milliseconds(15), "FAIL: already-false wait suspended for \(immediateElapsed)")
+
+        // 2. Wakes immediately when `@Observable` property changes away from `.failure`.
+        state.phase = .failure
+        let collapseTask = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(15))
+            state.phase = .collapsing
+        }
+        let wait1Start = clock.now
+        await ObservationWaiter.waitWhile(until: wait1Start + .seconds(2)) {
+            state.phase == .failure
+        }
+        let wait1Elapsed = clock.now - wait1Start
+        try await collapseTask.value
+        precondition(state.phase == .collapsing, "FAIL: expected phase .collapsing")
+        precondition(wait1Elapsed < .milliseconds(60), "FAIL: phase wake took too long: \(wait1Elapsed)")
+
+        // 3. Intermediate changes keeping predicate true re-subscribe until final transition.
+        state.stepCount = 0
+        let stepsTask = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(10))
+            state.stepCount = 1
+            try await Task.sleep(for: .milliseconds(10))
+            state.stepCount = 2
+            try await Task.sleep(for: .milliseconds(10))
+            state.stepCount = 3
+        }
+        let wait2Start = clock.now
+        await ObservationWaiter.waitWhile(until: wait2Start + .seconds(2)) {
+            state.stepCount < 3
+        }
+        let wait2Elapsed = clock.now - wait2Start
+        try await stepsTask.value
+        precondition(state.stepCount == 3, "FAIL: expected stepCount == 3")
+        precondition(wait2Elapsed < .milliseconds(100), "FAIL: multi-step wait took too long: \(wait2Elapsed)")
+
+        // 4. Non-observable stop flag wakes immediately via `ObservationSignal`.
+        var activeGeneration: UInt64 = 1
+        let signalTask = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(15))
+            activeGeneration = 2
+            signal.signal()
+        }
+        let wait3Start = clock.now
+        await ObservationWaiter.waitWhile(until: wait3Start + .seconds(2)) {
+            _ = signal.version
+            return activeGeneration == 1 && state.phase == .collapsing
+        }
+        let wait3Elapsed = clock.now - wait3Start
+        try await signalTask.value
+        precondition(wait3Elapsed < .milliseconds(60), "FAIL: signal wake took too long: \(wait3Elapsed)")
+
+        print("PASS: ObservationWaiter @Observable transitions & ObservationSignal wakeups")
+    }
+
+    @MainActor
+    private static func testObservationWaiterTimeoutCancellationAndRaces() async throws {
+        let clock = ContinuousClock()
+        let state = MockOverlayState()
+        state.phase = .failure
+
+        // 1. Deadline expiry returns cleanly without change.
+        let timeoutStart = clock.now
+        await ObservationWaiter.waitWhile(until: timeoutStart + .milliseconds(35)) {
+            state.phase == .failure
+        }
+        let timeoutElapsed = clock.now - timeoutStart
+        precondition(
+            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(200),
+            "FAIL: observation timeout elapsed out of range: \(timeoutElapsed)"
+        )
+
+        // 2. External Task.cancel() returns promptly without leaking continuations.
+        let cancelStart = clock.now
+        let waitingTask = Task { @MainActor in
+            await ObservationWaiter.waitWhile(until: cancelStart + .seconds(2)) {
+                state.phase == .failure
+            }
+        }
+        try await Task.sleep(for: .milliseconds(12))
+        waitingTask.cancel()
+        await waitingTask.value
+        let cancelElapsed = clock.now - cancelStart
+        precondition(cancelElapsed < .milliseconds(60), "FAIL: observation cancel took too long: \(cancelElapsed)")
+
+        // 3. Stress rapid concurrent mutation / cancellation / timeout races.
+        let signal = ObservationSignal()
+        for iteration in 0..<40 {
+            state.phase = .failure
+            let task = Task { @MainActor in
+                await ObservationWaiter.waitWhile(until: clock.now + .milliseconds(15)) {
+                    _ = signal.version
+                    return state.phase == .failure
+                }
+            }
+            if iteration.isMultiple(of: 2) {
+                await Task.yield()
+            }
+            if iteration % 3 == 0 {
+                state.phase = .closed
+            } else if iteration % 3 == 1 {
+                signal.signal()
+            } else {
+                task.cancel()
+            }
+            await task.value
+        }
+
+        print("PASS: ObservationWaiter timeout, Task.cancel(), and race stress tests")
     }
 }

@@ -20,19 +20,25 @@ final class AppLockFaceScanner {
     }
 
     private let pipeline: FaceRecognitionPipeline
-    private let camera = CameraManager()
+    private var _camera: CameraManager?
 
     private var scanTask: Task<Void, Never>?
     private var scanGeneration: UInt64 = 0
     private var activeChallengeID: UUID?
 
-    private let framePollInterval: Duration = .milliseconds(5)
     private let wrongFaceGraceDuration: Duration = .seconds(2)
 
     private static let log = Logger(subsystem: "com.pearleseed.glance", category: "AppLockFaceScanner")
 
     init(pipeline: FaceRecognitionPipeline) {
         self.pipeline = pipeline
+    }
+
+    private func getOrCreateCamera() -> CameraManager {
+        if let _camera { return _camera }
+        let camera = CameraManager()
+        _camera = camera
+        return camera
     }
 
     /// Starts scanning for `challengeID`. Any prior in-flight scan is superseded cleanly.
@@ -72,7 +78,7 @@ final class AppLockFaceScanner {
         activeChallengeID = nil
         scanTask?.cancel()
         scanTask = nil
-        camera.stop()
+        _camera?.stop()
     }
 
     private func preflightGateFailure() -> String? {
@@ -116,6 +122,7 @@ final class AppLockFaceScanner {
         }
 
         onStatus("Starting camera…")
+        let camera = getOrCreateCamera()
         await camera.start()
 
         defer {
@@ -134,6 +141,7 @@ final class AppLockFaceScanner {
         onStatus("Looking for your face…")
         let scanSeconds = max(TimeInterval(GlanceSettings.shared.faceDetectionSeconds), 1.0)
         return await scanFrames(
+            camera: camera,
             generation: generation,
             challengeID: challengeID,
             deadline: ContinuousClock.now + .seconds(scanSeconds)
@@ -141,6 +149,7 @@ final class AppLockFaceScanner {
     }
 
     private func scanFrames(
+        camera: CameraManager,
         generation: UInt64,
         challengeID: UUID,
         deadline: ContinuousClock.Instant
@@ -153,22 +162,37 @@ final class AppLockFaceScanner {
         )
         var lastProcessedFrameID: UInt64?
 
+        if let gateFailure = preflightGateFailure() {
+            return .failed(gateFailure, canRetry: false)
+        }
+
         while ContinuousClock.now < deadline, isScanActive(generation: generation, challengeID: challengeID) {
+            guard let frame = await camera.nextFrame(after: lastProcessedFrameID, until: deadline) else {
+                break
+            }
+            lastProcessedFrameID = frame.id
+
+            guard isScanActive(generation: generation, challengeID: challengeID) else {
+                return .cancelled
+            }
             if let gateFailure = preflightGateFailure() {
                 return .failed(gateFailure, canRetry: false)
             }
 
-            guard let frame = camera.currentFrame, frame.id != lastProcessedFrameID else {
-                try? await Task.sleep(for: framePollInterval)
-                continue
+            let extracted: ExtractedAuthFrame
+            do {
+                camera.setConsumerBusy(true)
+                defer {
+                    if generation == scanGeneration {
+                        camera.setConsumerBusy(false)
+                    }
+                }
+                extracted = await FaceAuthEvaluator.extractFrame(
+                    from: frame,
+                    pipeline: pipeline,
+                    previousBoundingBox: evaluator.lastFaceBoundingBox
+                )
             }
-            lastProcessedFrameID = frame.id
-
-            let extracted = await FaceAuthEvaluator.extractFrame(
-                from: frame,
-                pipeline: pipeline,
-                previousBoundingBox: evaluator.lastFaceBoundingBox
-            )
 
             guard isScanActive(generation: generation, challengeID: challengeID) else {
                 return .cancelled

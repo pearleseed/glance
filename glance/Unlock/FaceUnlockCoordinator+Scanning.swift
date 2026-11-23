@@ -56,7 +56,8 @@ extension FaceUnlockCoordinator {
         statusMessage = "Looking for your face…"
 
         let outcome = await observeScanWindow(
-            deadline: Date().addingTimeInterval(scanWindowDuration),
+            generation: generation,
+            deadline: ContinuousClock.now + .seconds(scanWindowDuration),
             requireOverlayScanning: showsUI
         )
 
@@ -161,7 +162,11 @@ extension FaceUnlockCoordinator {
 
     /// Recognition runs first per frame so confirm-liveness only accumulates for a matched identity and resets whenever
     /// the face disappears, fails to match, or switches identities (while unmatched faces still feed deny-only liveness cues).
-    private func observeScanWindow(deadline: Date, requireOverlayScanning: Bool) async -> ScanOutcome {
+    private func observeScanWindow(
+        generation: Int,
+        deadline: ContinuousClock.Instant,
+        requireOverlayScanning: Bool
+    ) async -> ScanOutcome {
         let livenessEnabled = GlanceSettings.shared.livenessChecksEnabled
         let nightBoostEnabled = GlanceSettings.shared.nightBoostEnabled
         let evaluator = FaceAuthEvaluator(
@@ -172,23 +177,49 @@ extension FaceUnlockCoordinator {
         )
         var lastProcessedFrameID: UInt64?
 
-        while Date() < deadline, !Task.isCancelled,
+        guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
+
+        while ContinuousClock.now < deadline,
+            !Task.isCancelled,
+            generation == scanGeneration,
             !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
         {
-            guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
-
-            guard let frame = camera.currentFrame, frame.id != lastProcessedFrameID else {
-                try? await Task.sleep(for: framePollInterval)
-                continue
+            guard let frame = await camera.nextFrame(after: lastProcessedFrameID, until: deadline) else {
+                break
             }
             lastProcessedFrameID = frame.id
 
-            let extracted = await FaceAuthEvaluator.extractFrame(
-                from: frame,
-                pipeline: pipeline,
-                previousBoundingBox: evaluator.lastFaceBoundingBox,
-                nightBoostEnabled: nightBoostEnabled
-            )
+            guard !Task.isCancelled,
+                generation == scanGeneration,
+                !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+            else {
+                return .noResolution
+            }
+            guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
+
+            let extracted: ExtractedAuthFrame
+            do {
+                camera.setConsumerBusy(true)
+                defer {
+                    if generation == scanGeneration {
+                        camera.setConsumerBusy(false)
+                    }
+                }
+                extracted = await FaceAuthEvaluator.extractFrame(
+                    from: frame,
+                    pipeline: pipeline,
+                    previousBoundingBox: evaluator.lastFaceBoundingBox,
+                    nightBoostEnabled: nightBoostEnabled
+                )
+            }
+
+            guard !Task.isCancelled,
+                generation == scanGeneration,
+                !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+            else {
+                return .noResolution
+            }
+            guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
 
             activateNightBoostIfNeeded(
                 luminance: extracted.luminance,

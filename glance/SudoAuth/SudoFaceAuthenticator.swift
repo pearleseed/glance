@@ -22,14 +22,14 @@ final class SudoFaceAuthenticator {
     }
 
     private let pipeline: FaceRecognitionPipeline
-    private let camera = CameraManager()
+    private var _camera: CameraManager?
+    private let stopSignal = ObservationSignal()
 
     private var isAuthenticating = false
     private var scanGeneration: UInt64 = 0
 
     private let totalBudget: Duration = .seconds(24)
     private let minimumRetryBudget: Duration = .seconds(2)
-    private let framePollInterval: Duration = .milliseconds(5)
     private let wrongFaceGraceDuration: Duration = .seconds(2)
 
     private static let log = Logger(subsystem: "com.pearleseed.glance", category: "SudoFaceAuthenticator")
@@ -38,9 +38,17 @@ final class SudoFaceAuthenticator {
         self.pipeline = pipeline
     }
 
+    private func getOrCreateCamera() -> CameraManager {
+        if let _camera { return _camera }
+        let camera = CameraManager()
+        _camera = camera
+        return camera
+    }
+
     func stop() {
         scanGeneration &+= 1
-        camera.stop()
+        stopSignal.signal()
+        _camera?.stop()
         if isAuthenticating {
             dismissOverlayIfOwned()
         }
@@ -69,7 +77,7 @@ final class SudoFaceAuthenticator {
         defer {
             isAuthenticating = false
             if didStartCamera && generation == scanGeneration {
-                camera.stop()
+                _camera?.stop()
             }
             if didPresentOverlay
                 && (Task.isCancelled || generation != scanGeneration || !canAuthenticateNow()
@@ -130,7 +138,7 @@ final class SudoFaceAuthenticator {
                 requireOverlayScanning: showsUI
             )
             if generation == scanGeneration {
-                camera.stop()
+                _camera?.stop()
             }
 
             switch outcome {
@@ -272,6 +280,7 @@ final class SudoFaceAuthenticator {
     ) async -> SingleScanOutcome {
         guard canAuthenticateNow() else { return .hardFailure }
 
+        let camera = getOrCreateCamera()
         await camera.start()
         defer {
             if generation == scanGeneration {
@@ -304,21 +313,36 @@ final class SudoFaceAuthenticator {
             generation == scanGeneration,
             !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
         {
-            guard canAuthenticateNow() else { return .hardFailure }
-
-            guard let frame = camera.currentFrame, frame.id != lastProcessedFrameID else {
-                try? await Task.sleep(for: framePollInterval)
-                continue
+            guard let frame = await camera.nextFrame(after: lastProcessedFrameID, until: deadline) else {
+                break
             }
             lastProcessedFrameID = frame.id
 
-            let extracted = await FaceAuthEvaluator.extractFrame(
-                from: frame,
-                pipeline: pipeline,
-                previousBoundingBox: evaluator.lastFaceBoundingBox
-            )
+            guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
+            guard !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning else {
+                break
+            }
+            guard canAuthenticateNow() else { return .hardFailure }
+
+            let extracted: ExtractedAuthFrame
+            do {
+                camera.setConsumerBusy(true)
+                defer {
+                    if generation == scanGeneration {
+                        camera.setConsumerBusy(false)
+                    }
+                }
+                extracted = await FaceAuthEvaluator.extractFrame(
+                    from: frame,
+                    pipeline: pipeline,
+                    previousBoundingBox: evaluator.lastFaceBoundingBox
+                )
+            }
 
             guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
+            guard !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning else {
+                break
+            }
             guard canAuthenticateNow() else { return .hardFailure }
 
             let step = evaluator.evaluate(
@@ -360,13 +384,15 @@ final class SudoFaceAuthenticator {
         deadline: ContinuousClock.Instant,
         generation: UInt64
     ) async -> Bool {
-        let watcher = Task { @MainActor [weak retryGate] in
-            while !Task.isCancelled,
-                ContinuousClock.now < deadline,
-                generation == self.scanGeneration,
-                NotchOverlayController.shared.phase == .failure
-            {
-                try? await Task.sleep(for: .milliseconds(50))
+        guard !Task.isCancelled, generation == scanGeneration else {
+            return false
+        }
+        let watcher = Task { @MainActor [weak self, weak retryGate] in
+            await ObservationWaiter.waitWhile(until: deadline) {
+                guard let self else { return false }
+                _ = self.stopSignal.version
+                return generation == self.scanGeneration
+                    && NotchOverlayController.shared.phase == .failure
             }
             retryGate?.cancelWaiting()
         }
@@ -386,12 +412,11 @@ final class SudoFaceAuthenticator {
         deadline: ContinuousClock.Instant,
         generation: UInt64
     ) async {
-        while !Task.isCancelled,
-            ContinuousClock.now < deadline,
-            generation == scanGeneration,
-            NotchOverlayController.shared.phase != .closed
-        {
-            try? await Task.sleep(for: .milliseconds(50))
+        await ObservationWaiter.waitWhile(until: deadline) { [weak self] in
+            guard let self else { return false }
+            _ = self.stopSignal.version
+            return generation == self.scanGeneration
+                && NotchOverlayController.shared.phase != .closed
         }
     }
 }
