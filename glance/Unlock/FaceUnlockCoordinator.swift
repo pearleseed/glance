@@ -18,7 +18,7 @@ final class FaceUnlockCoordinator {
     let pocController: POCController
     let lockMonitor = LockMonitor()
     let camera = CameraManager()
-    let pipeline = FaceRecognitionPipeline()
+    let pipeline: FaceRecognitionPipeline
 
     /// Persisted via GlanceSettings. Setting to false cancels any in-flight scan and disarms the overlay immediately.
     var isEnabled: Bool {
@@ -105,11 +105,18 @@ final class FaceUnlockCoordinator {
         pipeline.isUnlockCapable
     }
 
+    /// Allows arming and space-key monitoring while ArcFace is still loading at startup;
+    /// `runScanCycle` awaits readiness and verifies `hasUnlockCapableEmbedder` before scanning.
+    private var canArmWithPipeline: Bool {
+        pipeline.loadState == .loading || hasUnlockCapableEmbedder
+    }
+
     /// Reads the space key on the lock screen for the "On space" trigger; only runs while locked + opted in.
     private let spaceKeyMonitor = SpaceKeyMonitor()
 
-    init(pocController: POCController) {
+    init(pocController: POCController, pipeline: FaceRecognitionPipeline) {
         self.pocController = pocController
+        self.pipeline = pipeline
         self.isEnabled = GlanceSettings.shared.isFaceUnlockEnabled
         self.matchThreshold = GlanceSettings.shared.matchThreshold
         spaceKeyMonitor.onSpaceKeyDown = { [weak self] in self?.handleSpaceKeyPress() }
@@ -274,7 +281,7 @@ final class FaceUnlockCoordinator {
 
     private func checkArmPrerequisites() -> UnlockTrigger? {
         guard isEnabled, !hasArmedForCurrentLock, isOnboardingGateSatisfied else { return nil }
-        guard hasUnlockCapableEmbedder else {
+        guard canArmWithPipeline else {
             statusMessage = "Face unlock unavailable — the discriminative face model could not be loaded."
             return nil
         }
@@ -369,7 +376,7 @@ final class FaceUnlockCoordinator {
             isEnabled
             && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
             && isOnboardingGateSatisfied
-            && hasUnlockCapableEmbedder
+            && canArmWithPipeline
             && GlanceSettings.shared.unlockTriggers.contains(.onSpace)
             && LockMonitor.isScreenActuallyLocked()
             && SpaceKeyMonitor.hasInputMonitoringAccess()
@@ -385,7 +392,7 @@ final class FaceUnlockCoordinator {
         guard isEnabled,
             GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()),
             isOnboardingGateSatisfied,
-            hasUnlockCapableEmbedder,
+            canArmWithPipeline,
             GlanceSettings.shared.unlockTriggers.contains(.onSpace),
             LockMonitor.isScreenActuallyLocked(),
             NotchGeometry.preferredScreen() != nil,
@@ -416,7 +423,7 @@ final class FaceUnlockCoordinator {
         LockMonitor.isScreenActuallyLocked()
             && isEnabled
             && isOnboardingGateSatisfied
-            && hasUnlockCapableEmbedder
+            && canArmWithPipeline
             && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
     }
 

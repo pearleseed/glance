@@ -6,14 +6,18 @@
 //    1. `ArcFaceEmbedder.floatVector(from:)` Float16 fast-path accuracy & parity with `MLMultiArray` subscripting
 //    2. `ArcFaceEmbedder.preferredComputeUnits()` architecture-aware selection (`.cpuAndNeuralEngine` on arm64, `.cpuOnly` on x86_64)
 //    3. `FaceIdentity.isStale(comparedTo:)` migration from `arcface-w600k_mbf-v1` to `arcface-w600k_r50-v1`
+//    4. `FaceRecognitionPipeline` non-blocking background model load & concurrent `waitUntilReady()`
+//    5. `FaceRecognitionPipeline` async loader failure fails closed to `VisionFeaturePrintEmbedder`
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/performance_selftest \
 //        glance/Liveness/LandmarkGeometry.swift \
+//        glance/Camera/CameraFrame.swift \
 //        glance/Recognition/FaceAligner.swift \
 //        glance/Recognition/FaceDetector.swift \
 //        glance/Recognition/FaceEmbedder.swift \
 //        glance/Recognition/ArcFaceEmbedder.swift \
+//        glance/Recognition/FaceRecognitionPipeline.swift \
 //        glance/Recognition/FaceEnrollmentStore.swift \
 //        glance/Security/KeychainManager.swift \
 //        glance/Security/SecureCredentialManager.swift \
@@ -26,6 +30,8 @@ import Accelerate
 import CoreGraphics
 import CoreML
 import Foundation
+import Observation
+import os
 
 private struct MockR50Embedder: FaceEmbedder {
     nonisolated let name = ArcFaceEmbedder.name
@@ -39,12 +45,23 @@ private struct MockR50Embedder: FaceEmbedder {
     }
 }
 
+private enum MockPipelineLoadError: LocalizedError {
+    case simulatedFailure
+
+    var errorDescription: String? {
+        "Simulated model load failure"
+    }
+}
+
 @main
 struct PerformanceSelfTest {
-    static func main() throws {
+    @MainActor
+    static func main() async throws {
         try testArcFaceFloat16Extraction()
         testArcFaceComputeUnitsForArchitecture()
         testStaleMigrationFromW600kMbf()
+        try await testAsyncPipelineInitDoesNotBlockAndWaitsCleanly()
+        await testAsyncPipelineFailureFailsClosed()
         print("\nAll performance self-tests passed.")
     }
 
@@ -209,5 +226,140 @@ struct PerformanceSelfTest {
         )
 
         print("PASS: stale migration from arcface-w600k_mbf-v1 to arcface-w600k_r50-v1")
+    }
+
+    @MainActor
+    private static func testAsyncPipelineInitDoesNotBlockAndWaitsCleanly() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let pipeline = FaceRecognitionPipeline(asyncLoad: true) {
+            Thread.sleep(forTimeInterval: 0.15)
+            return MockR50Embedder()
+        }
+        let initElapsed = clock.now - start
+
+        precondition(
+            initElapsed < .milliseconds(20),
+            "FAIL: async FaceRecognitionPipeline init blocked caller for \(initElapsed)"
+        )
+        precondition(
+            pipeline.loadState == .loading,
+            "FAIL: expected initial loadState == .loading, got \(pipeline.loadState)"
+        )
+        precondition(
+            !pipeline.isUnlockCapable,
+            "FAIL: pipeline must not be unlock-capable while .loading"
+        )
+        precondition(
+            pipeline.usingFallbackEmbedder,
+            "FAIL: pipeline must fail closed to fallback placeholder while .loading"
+        )
+
+        let observedChange = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = pipeline.loadState
+        } onChange: {
+            observedChange.withLock { $0 = true }
+        }
+
+        let waiterA = Task { @MainActor in
+            await pipeline.waitUntilReady()
+            return (
+                pipeline.loadState,
+                pipeline.isUnlockCapable,
+                pipeline.usingFallbackEmbedder,
+                pipeline.currentEmbedder().modelIdentifier
+            )
+        }
+        let waiterB = Task.detached {
+            await pipeline.waitUntilReady()
+            return (
+                pipeline.loadState,
+                pipeline.isUnlockCapable,
+                pipeline.usingFallbackEmbedder,
+                pipeline.currentEmbedder().modelIdentifier
+            )
+        }
+
+        let resultA = await waiterA.value
+        let resultB = await waiterB.value
+        let totalElapsed = clock.now - start
+
+        for (label, result) in [("main-actor waiter", resultA), ("detached waiter", resultB)] {
+            precondition(
+                result.0 == .ready,
+                "FAIL: \(label) saw loadState == \(result.0) after waitUntilReady()"
+            )
+            precondition(
+                result.1,
+                "FAIL: \(label) saw isUnlockCapable == false after ready"
+            )
+            precondition(
+                !result.2,
+                "FAIL: \(label) saw usingFallbackEmbedder == true after ready"
+            )
+            precondition(
+                result.3 == ArcFaceEmbedder.modelIdentifier,
+                "FAIL: \(label) saw unexpected embedder \(result.3)"
+            )
+        }
+        precondition(
+            totalElapsed >= .milliseconds(130),
+            "FAIL: waitUntilReady() returned before simulated 150ms loader completed (\(totalElapsed))"
+        )
+        precondition(
+            observedChange.withLock { $0 },
+            "FAIL: @Observable onChange did not fire when loadState transitioned to .ready"
+        )
+
+        print("PASS: async FaceRecognitionPipeline non-blocking init & concurrent waitUntilReady()")
+    }
+
+    @MainActor
+    private static func testAsyncPipelineFailureFailsClosed() async {
+        let pipeline = FaceRecognitionPipeline(asyncLoad: true) {
+            Thread.sleep(forTimeInterval: 0.03)
+            throw MockPipelineLoadError.simulatedFailure
+        }
+
+        await pipeline.waitUntilReady()
+
+        precondition(
+            pipeline.usingFallbackEmbedder,
+            "FAIL: failed async loader must set usingFallbackEmbedder == true"
+        )
+        precondition(
+            !pipeline.isUnlockCapable,
+            "FAIL: failed async loader must keep isUnlockCapable == false"
+        )
+        guard case .fallback(let reason) = pipeline.loadState else {
+            fatalError("FAIL: expected .fallback loadState after loader error, got \(pipeline.loadState)")
+        }
+        precondition(!reason.isEmpty, "FAIL: fallback loadState reason must not be empty")
+        precondition(
+            pipeline.fallbackReason == reason,
+            "FAIL: fallbackReason mismatch (\(String(describing: pipeline.fallbackReason)) vs \(reason))"
+        )
+        let fallbackEmbedder = pipeline.currentEmbedder()
+        precondition(
+            !fallbackEmbedder.isUnlockCapable,
+            "FAIL: fallback embedder must not be unlock-capable"
+        )
+
+        let fakeFallbackIdentity = FaceIdentity(
+            id: UUID(),
+            name: "Fallback Test",
+            samples: [FaceSample(embedding: [1, 0], pose: "center", capturedAt: Date(), quality: 0.9)],
+            modelIdentifier: fallbackEmbedder.modelIdentifier,
+            embeddingDimension: 2,
+            createdAt: Date()
+        )
+        let scored = pipeline.score([1, 0], against: [fakeFallbackIdentity])
+        precondition(
+            pipeline.bestMatch(in: scored, threshold: 0.50) == nil,
+            "FAIL: failed pipeline must never match in bestMatch"
+        )
+
+        print("PASS: async FaceRecognitionPipeline loader failure fails closed")
     }
 }

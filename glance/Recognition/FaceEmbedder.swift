@@ -43,7 +43,7 @@ enum FaceEmbedderError: LocalizedError {
     }
 }
 
-struct VisionFeaturePrintEmbedder: FaceEmbedder {
+nonisolated struct VisionFeaturePrintEmbedder: FaceEmbedder {
     nonisolated let name = "Vision Feature Print"
     nonisolated let modelIdentifier = "vision-feature-print-v1"
     // Nominal hint only — `modelIdentifier` is the real discriminator `SecureFaceStore` relies on.

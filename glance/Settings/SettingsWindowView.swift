@@ -192,7 +192,7 @@ struct SettingsWindowView: View {
             case .about:
                 AboutSettingsPage(updater: environment.updater, environment: environment)
             case .debugFaceLab:
-                LazyFaceLabPage()
+                LazyFaceLabPage(pipeline: environment.recognitionPipeline)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -217,11 +217,11 @@ struct SettingsWindowView: View {
     }
 }
 
-/// Face Lab is deliberately hidden behind a debug gesture, so keeping its
-/// Core ML pipeline alive for the app's entire background lifetime wastes a
-/// substantial amount of memory. Create it only when that tab is selected and
-/// release it again as soon as the user leaves.
+/// Face Lab is deliberately hidden behind a debug gesture, so we defer creating
+/// its controller and camera manager until the tab is selected while reusing
+/// the shared `AppEnvironment.recognitionPipeline`.
 private struct LazyFaceLabPage: View {
+    let pipeline: FaceRecognitionPipeline
     @State private var controller: FaceLabController?
 
     var body: some View {
@@ -232,11 +232,10 @@ private struct LazyFaceLabPage: View {
                 ProgressView("Loading Face Lab…")
                     .frame(maxWidth: .infinity, minHeight: SettingsMetrics.emptyStateMinHeight)
                     .task {
-                        // Yield once so the loading state can draw before Core ML
-                        // initializes its model and Neural Engine resources.
+                        // Yield once so the loading state can draw before creating the controller.
                         await Task.yield()
                         guard !Task.isCancelled, controller == nil else { return }
-                        controller = FaceLabController()
+                        controller = FaceLabController(pipeline: pipeline)
                     }
             }
         }

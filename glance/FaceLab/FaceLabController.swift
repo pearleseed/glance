@@ -33,7 +33,7 @@ struct CalibrationSample: Identifiable {
 final class FaceLabController {
     let camera = CameraManager()
     let store = FaceEnrollmentStore.shared
-    let pipeline = FaceRecognitionPipeline()
+    let pipeline: FaceRecognitionPipeline
 
     private(set) var detectedFaces: [DetectedFace] = []
     private(set) var currentResult: FaceRecognitionResult?
@@ -85,7 +85,8 @@ final class FaceLabController {
 
     private var isProcessingFrame = false
 
-    init() {
+    init(pipeline: FaceRecognitionPipeline) {
+        self.pipeline = pipeline
         observeFrames()
         livenessAnalyzer.keepsComputingConfirmCuesAfterConfirmation = true
         livenessAnalyzer.modeProvider = { [weak self] in self?.livenessMode ?? .heavy }
@@ -94,6 +95,19 @@ final class FaceLabController {
             self?.enabledLivenessCues ?? Set(LivenessCue.allCases)
         }
         store.reloadIfUnlocked()
+        switch pipeline.loadState {
+        case .loading:
+            log("Loading ArcFace model…")
+            Task { @MainActor [weak self, pipeline] in
+                await pipeline.waitUntilReady()
+                self?.logPipelineReadyState()
+            }
+        case .ready, .fallback:
+            logPipelineReadyState()
+        }
+    }
+
+    private func logPipelineReadyState() {
         if pipeline.usingFallbackEmbedder {
             log(
                 "ArcFace unavailable (\(pipeline.fallbackReason ?? "unknown reason")) — using Vision Feature Print instead."
@@ -154,6 +168,9 @@ final class FaceLabController {
         defer { isProcessingFrame = false }
 
         let pipeline = self.pipeline
+        if pipeline.loadState == .loading {
+            await pipeline.waitUntilReady()
+        }
         do {
             let (result, livenessFrame) = try await Task.detached(priority: .userInitiated) {
                 let result = try pipeline.recognize(in: cameraFrame)
@@ -226,19 +243,19 @@ final class FaceLabController {
     func startFullOnboarding() {
         camera.stop()
         log("Starting the full onboarding flow.")
-        OnboardingController.startFlow()
+        OnboardingController.startFlow(pipeline: pipeline)
     }
 
     func startAddIdentity() {
         camera.stop()
         log("Starting guided enrollment for a new identity.")
-        OnboardingController.startAddIdentity()
+        OnboardingController.startAddIdentity(pipeline: pipeline)
     }
 
     func startRecapture(of identity: FaceIdentity) {
         camera.stop()
         log("Starting guided re-capture of \"\(identity.name)\".")
-        OnboardingController.startRecapture(of: identity)
+        OnboardingController.startRecapture(of: identity, pipeline: pipeline)
     }
 
     static func qualityLabel(_ quality: Float?) -> String {

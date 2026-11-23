@@ -8,6 +8,7 @@
 import CoreGraphics
 import Foundation
 import Observation
+import os
 
 nonisolated struct FaceRecognitionResult {
     let embedding: [Float]
@@ -30,34 +31,153 @@ nonisolated enum FaceRecognitionPipelineError: LocalizedError {
     }
 }
 
-/// `@Observable` so the debug UI can surface which embedder is active.
+/// `@Observable` so Settings and Face Lab can observe model load progress and which embedder is active.
 @Observable
 @MainActor
 final class FaceRecognitionPipeline {
-    nonisolated let embedder: FaceEmbedder
+    nonisolated enum LoadState: Equatable, Sendable {
+        case loading
+        case ready
+        case fallback(String)
+    }
+
+    private struct PipelineState: Sendable {
+        var embedder: FaceEmbedder
+        var usingFallbackEmbedder: Bool
+        var fallbackReason: String?
+        var loadState: LoadState
+        var loadTask: Task<Void, Never>?
+    }
+
+    @ObservationIgnored
+    private nonisolated let stateLock: OSAllocatedUnfairLock<PipelineState>
+
+    nonisolated var loadState: LoadState {
+        access(keyPath: \.loadState)
+        return stateLock.withLock { $0.loadState }
+    }
+
+    nonisolated var embedder: FaceEmbedder {
+        access(keyPath: \.loadState)
+        return currentEmbedder()
+    }
 
     /// Set when ArcFace failed to load (see tools/convert_arcface.py) and the weaker Vision feature-print embedder is in use instead.
-    nonisolated let usingFallbackEmbedder: Bool
-    nonisolated let fallbackReason: String?
+    nonisolated var usingFallbackEmbedder: Bool {
+        access(keyPath: \.loadState)
+        return stateLock.withLock { $0.usingFallbackEmbedder }
+    }
 
-    /// True only when a face-discriminative model (not the Vision fallback) is active and eligible to gate unlock.
+    nonisolated var fallbackReason: String? {
+        access(keyPath: \.loadState)
+        return stateLock.withLock { $0.fallbackReason }
+    }
+
+    /// True only when loading finished and a face-discriminative model (not the Vision fallback) is active and eligible to gate unlock.
     nonisolated var isUnlockCapable: Bool {
-        !usingFallbackEmbedder && embedder.isUnlockCapable
+        access(keyPath: \.loadState)
+        return stateLock.withLock { state in
+            state.loadState == .ready && !state.usingFallbackEmbedder && state.embedder.isUnlockCapable
+        }
     }
 
-    init(embedder: FaceEmbedder, usingFallbackEmbedder: Bool, fallbackReason: String?) {
-        self.embedder = embedder
-        self.usingFallbackEmbedder = usingFallbackEmbedder
-        self.fallbackReason = fallbackReason
+    nonisolated func currentEmbedder() -> FaceEmbedder {
+        stateLock.withLock { $0.embedder }
     }
 
-    convenience init() {
-        do {
-            self.init(embedder: try ArcFaceEmbedder(), usingFallbackEmbedder: false, fallbackReason: nil)
-        } catch {
-            self.init(
-                embedder: VisionFeaturePrintEmbedder(), usingFallbackEmbedder: true,
-                fallbackReason: error.localizedDescription)
+    /// Suspends until any background model load finishes; safe for multiple concurrent callers.
+    nonisolated func waitUntilReady() async {
+        let task = stateLock.withLock { $0.loadTask }
+        await task?.value
+    }
+
+    private init(
+        embedder: FaceEmbedder,
+        usingFallbackEmbedder: Bool,
+        fallbackReason: String?,
+        initialLoadState: LoadState
+    ) {
+        self.stateLock = OSAllocatedUnfairLock(
+            initialState: PipelineState(
+                embedder: embedder,
+                usingFallbackEmbedder: usingFallbackEmbedder,
+                fallbackReason: fallbackReason,
+                loadState: initialLoadState,
+                loadTask: nil
+            )
+        )
+    }
+
+    convenience init(embedder: FaceEmbedder, usingFallbackEmbedder: Bool, fallbackReason: String?) {
+        let resolvedState: LoadState = usingFallbackEmbedder ? .fallback(fallbackReason ?? "Fallback") : .ready
+        self.init(
+            embedder: embedder,
+            usingFallbackEmbedder: usingFallbackEmbedder,
+            fallbackReason: fallbackReason,
+            initialLoadState: resolvedState
+        )
+    }
+
+    convenience init(
+        asyncLoad: Bool = true,
+        loader: @escaping @Sendable () throws -> FaceEmbedder = { try ArcFaceEmbedder() }
+    ) {
+        if !asyncLoad {
+            do {
+                let loaded = try loader()
+                self.init(embedder: loaded, usingFallbackEmbedder: false, fallbackReason: nil)
+            } catch {
+                self.init(
+                    embedder: VisionFeaturePrintEmbedder(),
+                    usingFallbackEmbedder: true,
+                    fallbackReason: error.localizedDescription
+                )
+            }
+            return
+        }
+
+        // Fail closed while ArcFace compiles/loads off `@MainActor`.
+        self.init(
+            embedder: VisionFeaturePrintEmbedder(),
+            usingFallbackEmbedder: true,
+            fallbackReason: "Face recognition model is still loading.",
+            initialLoadState: .loading
+        )
+
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome: (embedder: FaceEmbedder, usingFallback: Bool, reason: String?, loadState: LoadState)
+            do {
+                let loaded = try loader()
+                outcome = (loaded, false, nil, .ready)
+            } catch {
+                let reason = error.localizedDescription
+                outcome = (VisionFeaturePrintEmbedder(), true, reason, .fallback(reason))
+            }
+            guard let self else { return }
+            await self.finishAsyncLoad(
+                embedder: outcome.embedder,
+                usingFallbackEmbedder: outcome.usingFallback,
+                fallbackReason: outcome.reason,
+                loadState: outcome.loadState
+            )
+        }
+        stateLock.withLock { $0.loadTask = task }
+    }
+
+    private nonisolated func finishAsyncLoad(
+        embedder: FaceEmbedder,
+        usingFallbackEmbedder: Bool,
+        fallbackReason: String?,
+        loadState: LoadState
+    ) async {
+        stateLock.withLock { state in
+            state.embedder = embedder
+            state.usingFallbackEmbedder = usingFallbackEmbedder
+            state.fallbackReason = fallbackReason
+            state.loadState = loadState
+        }
+        await MainActor.run { [weak self] in
+            self?.withMutation(keyPath: \.loadState) {}
         }
     }
 
@@ -138,9 +258,11 @@ final class FaceRecognitionPipeline {
 
     /// Aligns and embeds an already-chosen face; enrollment uses this to bypass the prominence filter so a too-small face reads as "move closer" rather than "nobody there".
     nonisolated func recognize(_ face: DetectedFace, in frame: CGImage) throws -> FaceRecognitionResult {
+        // Snapshot the embedder once so alignment and inference always match the same model.
+        let activeEmbedder = currentEmbedder()
         let inputImage: CGImage
         let tier: AlignmentTier
-        if embedder.requiresAlignment {
+        if activeEmbedder.requiresAlignment {
             guard let aligned = FaceAligner.align(face, from: frame) else {
                 throw FaceRecognitionPipelineError.alignmentFailed
             }
@@ -154,7 +276,7 @@ final class FaceRecognitionPipeline {
             tier = .paddedCrop
         }
 
-        let embedding = try embedder.embedding(for: inputImage)
+        let embedding = try activeEmbedder.embedding(for: inputImage)
         return FaceRecognitionResult(
             embedding: embedding, alignedImage: inputImage, alignmentTier: tier, quality: face.quality, face: face)
     }
@@ -301,9 +423,17 @@ extension FaceRecognitionPipeline {
 
     /// Shared by Face Lab and FaceUnlockCoordinator so tuning stays consistent. No runner-up margin check: the same person can be enrolled multiple times under different appearances, so two of their own profiles legitimately score close together — a margin check can't tell that apart from two different people colliding.
     nonisolated func bestMatch(in scored: [ScoredIdentity], threshold: Float) -> ScoredIdentity? {
-        guard isUnlockCapable else { return nil }
+        let snapshot = stateLock.withLock { state in
+            (
+                isUnlockCapable: state.loadState == .ready
+                    && !state.usingFallbackEmbedder
+                    && state.embedder.isUnlockCapable,
+                embedder: state.embedder
+            )
+        }
+        guard snapshot.isUnlockCapable else { return nil }
         return scored.first { candidate in
-            !candidate.identity.isStale(comparedTo: embedder)
+            !candidate.identity.isStale(comparedTo: snapshot.embedder)
                 && candidate.centroidSimilarity >= threshold
                 && candidate.maxSampleSimilarity >= threshold
         }

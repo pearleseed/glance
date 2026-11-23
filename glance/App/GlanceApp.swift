@@ -203,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.setActivationPolicy(.accessory)
         OnboardingController.startFlow(
+            pipeline: environment.recognitionPipeline,
             resumingAt: GlanceSettings.shared.onboardingResumeStep,
             onFirstRunComplete: { [weak self] in
                 // First time Settings should appear, which also brings the Dock icon back.

@@ -26,8 +26,8 @@ struct SudoSettingsPage: View {
     private static let uninstallCommand = "sudo bash sudo-support/uninstall.sh"
 
     private var hasUnlockCapableEmbedder: Bool {
-        let pipeline = environment.faceUnlockCoordinator.pipeline
-        return !pipeline.usingFallbackEmbedder && pipeline.embedder.isUnlockCapable
+        let pipeline = environment.recognitionPipeline
+        return pipeline.loadState == .loading || pipeline.isUnlockCapable
     }
 
     var body: some View {

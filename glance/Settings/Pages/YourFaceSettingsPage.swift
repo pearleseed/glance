@@ -142,7 +142,7 @@ struct YourFaceSettingsPage: View {
             message: "Face enrollment",
             buttonTitle: "Set up Face Unlock",
             isButtonEnabled: !enrollmentFlowIsRunning,
-            action: { OnboardingController.startEnrollmentOnly() }
+            action: { OnboardingController.startEnrollmentOnly(pipeline: environment.recognitionPipeline) }
         )
     }
 
@@ -157,12 +157,15 @@ struct YourFaceSettingsPage: View {
             ForEach(store.identities) { identity in
                 IdentityCard(
                     identity: identity,
-                    // Face Lab is a debug-only, lazily-created tool. The live unlock
-                    // pipeline is the authoritative embedder for this normal Settings check.
-                    isStale: identity.isStale(comparedTo: environment.faceUnlockCoordinator.pipeline.embedder),
+                    // Face Lab is a debug-only, lazily-created tool. The shared app-wide
+                    // pipeline is the authoritative embedder once ready.
+                    isStale: environment.recognitionPipeline.loadState == .ready
+                        && identity.isStale(comparedTo: environment.recognitionPipeline.embedder),
                     canStartFlow: !enrollmentFlowIsRunning,
                     isEnabled: enabledBinding(for: identity),
-                    recapture: { OnboardingController.startRecapture(of: identity) },
+                    recapture: {
+                        OnboardingController.startRecapture(of: identity, pipeline: environment.recognitionPipeline)
+                    },
                     delete: { identityPendingDeletion = identity }
                 )
             }
@@ -213,7 +216,7 @@ struct YourFaceSettingsPage: View {
             SettingsSectionTitle(text: "Identities")
 
             Button {
-                OnboardingController.startAddIdentity()
+                OnboardingController.startAddIdentity(pipeline: environment.recognitionPipeline)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))

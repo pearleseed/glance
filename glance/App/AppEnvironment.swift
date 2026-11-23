@@ -12,6 +12,8 @@ import Observation
 @Observable
 @MainActor
 final class AppEnvironment {
+    /// Single shared recognition pipeline across the entire app, loading ArcFace off `@MainActor`.
+    let recognitionPipeline = FaceRecognitionPipeline()
     let pocController = POCController()
     let faceUnlockCoordinator: FaceUnlockCoordinator
     /// Held, not just constructed — owns a repeating timer that would silently stop enforcing auto-lock if deallocated.
@@ -40,10 +42,10 @@ final class AppEnvironment {
     @ObservationIgnored private let observerBox = NotificationObserverBox()
 
     init() {
-        faceUnlockCoordinator = FaceUnlockCoordinator(pocController: pocController)
+        faceUnlockCoordinator = FaceUnlockCoordinator(pocController: pocController, pipeline: recognitionPipeline)
         sessionAutoLocker = SessionAutoLocker(pocController: pocController)
-        appLockCoordinator = AppLockCoordinator(pipeline: faceUnlockCoordinator.pipeline)
-        sudoFaceAuthenticator = SudoFaceAuthenticator(pipeline: faceUnlockCoordinator.pipeline)
+        appLockCoordinator = AppLockCoordinator(pipeline: recognitionPipeline)
+        sudoFaceAuthenticator = SudoFaceAuthenticator(pipeline: recognitionPipeline)
 
         registerTerminationObserver()
         observeSudoSettings()

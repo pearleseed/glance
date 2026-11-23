@@ -58,19 +58,17 @@ final class SudoFaceAuthenticator {
             Self.log.info("Rejecting concurrent sudo face authentication request.")
             return false
         }
-        guard canAuthenticateNow(), NotchOverlayController.shared.phase != .scanning else {
-            return false
-        }
 
         isAuthenticating = true
         scanGeneration &+= 1
         let generation = scanGeneration
-        let showsUI = GlanceSettings.shared.showUnlockAnimation
+        let totalDeadline = ContinuousClock.now + totalBudget
         var didPresentOverlay = false
+        var didStartCamera = false
 
         defer {
             isAuthenticating = false
-            if generation == scanGeneration {
+            if didStartCamera && generation == scanGeneration {
                 camera.stop()
             }
             if didPresentOverlay
@@ -81,9 +79,23 @@ final class SudoFaceAuthenticator {
             }
         }
 
+        if pipeline.loadState == .loading {
+            await pipeline.waitUntilReady()
+            guard !Task.isCancelled, generation == scanGeneration else {
+                return false
+            }
+        }
+
+        guard canAuthenticateNow(), NotchOverlayController.shared.phase != .scanning else {
+            return false
+        }
+
+        didStartCamera = true
+        let showsUI = GlanceSettings.shared.showUnlockAnimation
         return await runAttemptLoop(
             generation: generation,
             showsUI: showsUI,
+            totalDeadline: totalDeadline,
             didPresentOverlay: &didPresentOverlay
         )
     }
@@ -91,9 +103,9 @@ final class SudoFaceAuthenticator {
     private func runAttemptLoop(
         generation: UInt64,
         showsUI: Bool,
+        totalDeadline: ContinuousClock.Instant,
         didPresentOverlay: inout Bool
     ) async -> Bool {
-        let totalDeadline = ContinuousClock.now + totalBudget
         let retryGate = RetryGate()
         var didAutoRetry = false
         var needsPresent = true

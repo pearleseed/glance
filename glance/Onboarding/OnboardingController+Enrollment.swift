@@ -107,26 +107,42 @@ extension OnboardingController {
         passwordError = nil
     }
 
-    func beginEnrollment() {
-        guard step == .enroll else { return }
+    func beginEnrollment() async {
+        guard step == .enroll, shouldObserveFrames else { return }
         guideVisible = true
         cameraPreviewVisible = true
         showCheckmark = false
-        poseStartedAt = .now
-        captureReadyAt = .now + initialCaptureDelay
         clearMatchProgress()
         excessiveTurn = nil
         sweepWindow.present(for: self)
-        Task { await camera.start() }
+
+        async let cameraStart: Void = camera.start()
+        await pipeline?.waitUntilReady()
+        _ = await cameraStart
+
+        guard step == .enroll, shouldObserveFrames else { return }
+        poseStartedAt = .now
+        captureReadyAt = .now + initialCaptureDelay
+        observeFramesIfNeeded()
+    }
+
+    private func observeFramesIfNeeded() {
+        guard markFrameObservationStartedIfNeeded() else { return }
+        observeFrames()
     }
 
     func observeFrames() {
+        guard shouldObserveFrames else {
+            resetFrameObservationFlag()
+            return
+        }
         withObservationTracking {
             _ = camera.currentFrame
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.observeFrames()
-                await self?.processEnrollFrame()
+                guard let self, self.shouldObserveFrames else { return }
+                self.observeFrames()
+                await self.processEnrollFrame()
             }
         }
     }
@@ -135,12 +151,13 @@ extension OnboardingController {
 
     private func processEnrollFrame() async {
         guard step == .enroll, !enrollmentComplete, !isProcessingFrame,
+            let pipeline = self.pipeline,
+            pipeline.loadState != .loading,
             let cameraFrame = camera.currentFrame
         else { return }
         isProcessingFrame = true
         defer { isProcessingFrame = false }
 
-        let pipeline = self.pipeline
         let minimumWidth = enrollmentMinimumFaceWidth
         let outcome = await Task.detached(priority: .userInitiated) {
             do {
@@ -338,7 +355,7 @@ extension OnboardingController {
         let remaining = max(OnboardingMetrics.cameraCompleteToNameDelay - elapsed, 0)
         try? await Task.sleep(for: .seconds(remaining))
 
-        camera.stop()
+        stopCameraIfCreated()
         navDirection = .forward
         withAnimation(OnboardingMetrics.stepAnimation) { step = .name }
     }

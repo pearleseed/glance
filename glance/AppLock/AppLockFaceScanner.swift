@@ -103,6 +103,14 @@ final class AppLockFaceScanner {
         challengeID: UUID,
         onStatus: @escaping (String) -> Void
     ) async -> ScanOutcome {
+        if pipeline.loadState == .loading {
+            onStatus("Preparing face recognition…")
+            await pipeline.waitUntilReady()
+            guard isScanActive(generation: generation, challengeID: challengeID) else {
+                return .cancelled
+            }
+        }
+
         if let gateFailure = preflightGateFailure() {
             return .failed(gateFailure, canRetry: false)
         }

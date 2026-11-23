@@ -27,6 +27,26 @@ extension FaceUnlockCoordinator {
             return
         }
 
+        if pipeline.loadState == .loading {
+            await pipeline.waitUntilReady()
+            // Bail without side effects if superseded or cancelled while awaiting model readiness.
+            guard generation == scanGeneration, !Task.isCancelled else { return }
+        }
+
+        guard pipeline.isUnlockCapable else {
+            statusMessage = "Face unlock unavailable — the discriminative face model could not be loaded."
+            stopPrewarmedCamera()
+            sceneIlluminator.end()
+            NotchOverlayController.shared.disarm()
+            return
+        }
+
+        guard canArmOrScan else {
+            stopPrewarmedCamera()
+            sceneIlluminator.end()
+            return
+        }
+
         guard await prepareCamera(for: generation) else { return }
 
         let showsUI = self.showsUI

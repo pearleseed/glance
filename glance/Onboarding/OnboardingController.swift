@@ -52,10 +52,19 @@ final class OnboardingController {
         case ready(FaceRecognitionResult)
     }
 
-    let camera = CameraManager()
-    let pipeline = FaceRecognitionPipeline()
+    @ObservationIgnored private var _camera: CameraManager?
+    /// Lazily constructed only when `.enroll` actually runs so password-only and security-notice flows never touch AVFoundation.
+    var camera: CameraManager {
+        if let _camera { return _camera }
+        let manager = CameraManager()
+        _camera = manager
+        return manager
+    }
+    let pipeline: FaceRecognitionPipeline?
     let store = FaceEnrollmentStore.shared
     let sweepWindow = EnrollmentSweepWindowController()
+    @ObservationIgnored private var isObservingFrames = false
+    @ObservationIgnored private var isTornDown = false
 
     /// Persists the resume point for a true first-run flow on every step change, so
     /// `AppDelegate` can drop a relaunched, mid-onboarding user back where they left off.
@@ -188,20 +197,21 @@ final class OnboardingController {
     var panelBottomRadius: CGFloat { OnboardingMetrics.panelBottomRadius(for: step) }
 
     init(
+        pipeline: FaceRecognitionPipeline?,
         isEnrollmentOnly: Bool = false,
         isPasswordOnly: Bool = false,
         isPostUpdateNotice: Bool = false,
         enrollmentTarget: EnrollmentTarget = .newIdentity
     ) {
+        self.pipeline = pipeline
         self.isEnrollmentOnly = isEnrollmentOnly
         self.isPasswordOnly = isPasswordOnly
         self.isPostUpdateNotice = isPostUpdateNotice
         self.enrollmentTarget = enrollmentTarget
-        observeFrames()
         if isEnrollmentOnly {
             step = .enroll
             // Deferred a tick for the same reason `advance()` defers it.
-            Task { @MainActor [weak self] in self?.beginEnrollment() }
+            Task { @MainActor [weak self] in await self?.beginEnrollment() }
         } else if isPasswordOnly {
             step = .password
         } else if isPostUpdateNotice {
@@ -220,15 +230,38 @@ final class OnboardingController {
     /// Tears down everything onboarding spun up: camera, sweep overlay,
     /// and permissions polling. Idempotent.
     func teardown() {
+        isTornDown = true
         stopPermissionsPolling()
-        camera.stop()
+        stopCameraIfCreated()
         sweepWindow.dismiss()
+    }
+
+    func stopCameraIfCreated() {
+        _camera?.stop()
+    }
+
+    var shouldObserveFrames: Bool {
+        !isTornDown
+    }
+
+    func markFrameObservationStartedIfNeeded() -> Bool {
+        guard !isObservingFrames else { return false }
+        isObservingFrames = true
+        return true
+    }
+
+    func resetFrameObservationFlag() {
+        isObservingFrames = false
     }
 
     // MARK: - Entry points
 
-    static func startFlow(resumingAt step: OnboardingStep? = nil, onFirstRunComplete: (() -> Void)? = nil) {
-        let controller = OnboardingController()
+    static func startFlow(
+        pipeline: FaceRecognitionPipeline,
+        resumingAt step: OnboardingStep? = nil,
+        onFirstRunComplete: (() -> Void)? = nil
+    ) {
+        let controller = OnboardingController(pipeline: pipeline)
         controller.pendingName = defaultName
         controller.onFirstRunComplete = onFirstRunComplete
         if let step, step != .intro {
@@ -240,44 +273,48 @@ final class OnboardingController {
         NotchOverlayController.shared.presentOnboarding(controller)
     }
 
-    static func startEnrollmentOnly() {
+    static func startEnrollmentOnly(pipeline: FaceRecognitionPipeline) {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "Authenticate to re-enroll your face") else { return }
+            await pipeline.waitUntilReady()
             let store = FaceEnrollmentStore.shared
             store.reloadIfUnlocked()
             let existing = store.identities.first
             present(
+                pipeline: pipeline,
                 target: existing.map { .replacing($0.id) } ?? .newIdentity,
                 prefillName: existing?.name ?? defaultName
             )
         }
     }
 
-    static func startAddIdentity() {
+    static func startAddIdentity(pipeline: FaceRecognitionPipeline) {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "Authenticate to enroll another face") else { return }
+            await pipeline.waitUntilReady()
             FaceEnrollmentStore.shared.reloadIfUnlocked()
-            present(target: .newIdentity, prefillName: "")
+            present(pipeline: pipeline, target: .newIdentity, prefillName: "")
         }
     }
 
-    static func startRecapture(of identity: FaceIdentity) {
+    static func startRecapture(of identity: FaceIdentity, pipeline: FaceRecognitionPipeline) {
         Task { @MainActor in
             guard await unlockForEnrollment(reason: "Authenticate to re-enroll this face") else { return }
+            await pipeline.waitUntilReady()
             FaceEnrollmentStore.shared.reloadIfUnlocked()
-            present(target: .replacing(identity.id), prefillName: identity.name)
+            present(pipeline: pipeline, target: .replacing(identity.id), prefillName: identity.name)
         }
     }
 
     static func startPasswordOnly() {
         Task { @MainActor in
-            let controller = OnboardingController(isPasswordOnly: true)
+            let controller = OnboardingController(pipeline: nil, isPasswordOnly: true)
             NotchOverlayController.shared.presentOnboarding(controller)
         }
     }
 
     static func startPostUpdateNotice(onComplete: (() -> Void)? = nil) {
-        let controller = OnboardingController(isPostUpdateNotice: true)
+        let controller = OnboardingController(pipeline: nil, isPostUpdateNotice: true)
         controller.onFirstRunComplete = onComplete
         NotchOverlayController.shared.presentOnboarding(controller)
     }
@@ -292,8 +329,16 @@ final class OnboardingController {
         }
     }
 
-    private static func present(target: EnrollmentTarget, prefillName: String) {
-        let controller = OnboardingController(isEnrollmentOnly: true, enrollmentTarget: target)
+    private static func present(
+        pipeline: FaceRecognitionPipeline,
+        target: EnrollmentTarget,
+        prefillName: String
+    ) {
+        let controller = OnboardingController(
+            pipeline: pipeline,
+            isEnrollmentOnly: true,
+            enrollmentTarget: target
+        )
         controller.pendingName = prefillName
         NotchOverlayController.shared.presentOnboarding(controller)
     }

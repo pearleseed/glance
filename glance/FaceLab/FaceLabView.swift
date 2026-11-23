@@ -80,12 +80,25 @@ struct FaceLabView: View {
 
     private var modelStatusSection: some View {
         HStack {
-            Circle()
-                .fill(controller.pipeline.usingFallbackEmbedder ? .orange : .green)
-                .frame(width: 8, height: 8)
-            Text("Embedder: \(controller.pipeline.embedder.name)")
-                .font(.caption)
-            if controller.pipeline.usingFallbackEmbedder {
+            switch controller.pipeline.loadState {
+            case .loading:
+                Circle()
+                    .fill(.yellow)
+                    .frame(width: 8, height: 8)
+                Text("Embedder: Loading ArcFace…")
+                    .font(.caption)
+            case .ready:
+                Circle()
+                    .fill(.green)
+                    .frame(width: 8, height: 8)
+                Text("Embedder: \(controller.pipeline.embedder.name)")
+                    .font(.caption)
+            case .fallback:
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 8, height: 8)
+                Text("Embedder: \(controller.pipeline.embedder.name)")
+                    .font(.caption)
                 Text("(ArcFace unavailable — see log)")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -227,7 +240,9 @@ struct FaceLabView: View {
                             Text("\(identity.samples.count) sample\(identity.samples.count == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            if identity.isStale(comparedTo: controller.pipeline.embedder) {
+                            if controller.pipeline.loadState != .loading
+                                && identity.isStale(comparedTo: controller.pipeline.embedder)
+                            {
                                 Text("stale")
                                     .font(.caption2.bold())
                                     .foregroundStyle(.orange)
@@ -275,7 +290,8 @@ struct FaceLabView: View {
                     ForEach(controller.store.identities) { identity in
                         FaceLabIdentityRow(
                             identity: identity,
-                            isStale: identity.isStale(comparedTo: controller.pipeline.embedder),
+                            isStale: controller.pipeline.loadState != .loading
+                                && identity.isStale(comparedTo: controller.pipeline.embedder),
                             lowQualityCount: controller.lowQualityCount(in: identity),
                             canStartFlow: !enrollmentFlowIsRunning,
                             recapture: { controller.startRecapture(of: identity) },
@@ -313,5 +329,13 @@ struct FaceLabView: View {
 }
 
 #Preview {
-    FaceLabView(controller: FaceLabController())
+    FaceLabView(
+        controller: FaceLabController(
+            pipeline: FaceRecognitionPipeline(
+                embedder: VisionFeaturePrintEmbedder(),
+                usingFallbackEmbedder: true,
+                fallbackReason: "Xcode Preview"
+            )
+        )
+    )
 }

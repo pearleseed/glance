@@ -37,7 +37,7 @@ extension OnboardingController {
         case .enroll:
             // Deferred a tick so the heavy camera start doesn't land in the same runloop
             // turn as the panel-resize transition, stealing frames from the spring animation.
-            Task { @MainActor [weak self] in self?.beginEnrollment() }
+            Task { @MainActor [weak self] in await self?.beginEnrollment() }
         case .complete where isPostUpdateNotice:
             GlanceSettings.shared.hasAcknowledgedSecurityNotice = true
             scheduleCompletionDismiss()
@@ -66,7 +66,7 @@ extension OnboardingController {
             cancelOnboarding()
         case .enroll:
             resetEnrollmentState()
-            camera.stop()
+            stopCameraIfCreated()
             sweepWindow.dismiss()
             withAnimation(OnboardingMetrics.stepAnimation) { step = .selectCamera }
         case .password:
@@ -177,6 +177,9 @@ extension OnboardingController {
     }
 
     private func commitEnrollment(name: String) throws {
+        guard let pipeline else {
+            throw OnboardingEnrollmentError.pipelineUnavailable
+        }
         let samples = collectedSamples.map {
             FaceSample(embedding: $0.embedding, pose: $0.pose.name, capturedAt: $0.capturedAt, quality: $0.quality)
         }
@@ -184,7 +187,7 @@ extension OnboardingController {
             replacing: enrollmentTarget.identityID,
             name: name,
             samples: samples,
-            embedder: pipeline.embedder
+            embedder: pipeline.currentEmbedder()
         )
     }
 
@@ -265,6 +268,17 @@ extension OnboardingController {
             if shouldFireCompletion {
                 onComplete?()
             }
+        }
+    }
+}
+
+private enum OnboardingEnrollmentError: LocalizedError {
+    case pipelineUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .pipelineUnavailable:
+            return "Face recognition pipeline is unavailable."
         }
     }
 }
