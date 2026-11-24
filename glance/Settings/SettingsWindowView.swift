@@ -113,26 +113,27 @@ struct SettingsWindowView: View {
         .onDisappear { selection = .general }
     }
 
-    /// The header and tab bar float over the scroll content as overlays so
-    /// scrolled rows pass underneath them rather than being pushed aside.
+    /// The header and tab bar float over the scroll content so scrolled rows
+    /// pass underneath them rather than being pushed aside.
     private var contentPage: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            pageBody
-                .padding(.horizontal, SettingsMetrics.contentHorizontalPadding)
-                .padding(.top, SettingsMetrics.headerHeight + 4)
-                .padding(.bottom, SettingsMetrics.pageBottomInset)
-                // Without an explicit top alignment the scroll view
-                // centers short pages vertically, leaving a large gap
-                // between the header and the first row.
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .overlay(alignment: .top) {
-            // Blur first, header content on top — so it fades whatever
-            // scrolls beneath both without ever softening the buttons
-            // themselves.
-            ZStack(alignment: .top) {
-                ProgressiveHeaderBlur(height: SettingsMetrics.headerBlurHeight)
-                header
+        Group {
+            if #available(macOS 26, *) {
+                scrollContent(topPadding: 4)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        header
+                    }
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+            } else {
+                scrollContent(topPadding: SettingsMetrics.headerHeight + 4)
+                    .overlay(alignment: .top) {
+                        // Blur first, header content on top — so it fades whatever
+                        // scrolls beneath both without ever softening the buttons
+                        // themselves.
+                        ZStack(alignment: .top) {
+                            ProgressiveHeaderBlur(height: SettingsMetrics.headerBlurHeight)
+                            header
+                        }
+                    }
             }
         }
         .overlay(alignment: .bottom) {
@@ -144,6 +145,19 @@ struct SettingsWindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onPreferenceChange(HeaderTrailingActionKey.self) { headerTrailingAction = $0 }
+    }
+
+    private func scrollContent(topPadding: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            pageBody
+                .padding(.horizontal, SettingsMetrics.contentHorizontalPadding)
+                .padding(.top, topPadding)
+                .padding(.bottom, SettingsMetrics.pageBottomInset)
+                // Without an explicit top alignment the scroll view
+                // centers short pages vertically, leaving a large gap
+                // between the header and the first row.
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
     }
 
     /// Leading side stays empty — the window's real traffic lights are drawn

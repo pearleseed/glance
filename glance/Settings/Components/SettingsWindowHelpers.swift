@@ -7,72 +7,32 @@
 //
 
 import AppKit
-import CoreImage
 import SwiftUI
 
 /// Wraps an `NSVisualEffectView` for the window's background blur.
 ///
 /// `.sidebar`, not `.hudWindow` — Apple's own purpose-built material for
-/// this element (Finder/Mail/Xcode sidebars), reading as a properly light,
-/// neutral glass panel on its own. Both materials still desaturate heavily
-/// against real wallpaper, though, which is what `saturationFilter` restores.
+/// this element (Finder/Mail/Xcode sidebars), keeping compositing on
+/// WindowServer's hardware fast-path during scrolling without CoreImage
+/// layer filters.
 struct VisualEffectView: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .sidebar
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
 
-    /// `CALayer.filters` is the property that actually reaches this view's
-    /// rendered content (confirmed empirically — `.backgroundFilters` moved
-    /// saturation by far less). 1.75/1.2 (light/dark) are the boosts that
-    /// empirically matched a reference app's tinted sidebar against real
-    /// desktop wallpaper — re-measure if the backdrop or material changes.
-    private static let lightSaturationFilter: CIFilter = {
-        let filter = CIFilter(name: "CIColorControls")!
-        filter.setValue(1.75, forKey: "inputSaturation")
-        return filter
-    }()
-
-    private static let darkSaturationFilter: CIFilter = {
-        let filter = CIFilter(name: "CIColorControls")!
-        filter.setValue(1.2, forKey: "inputSaturation")
-        return filter
-    }()
-
-    func makeNSView(context: Context) -> AppearanceAdaptiveVisualEffectView {
-        let view = AppearanceAdaptiveVisualEffectView()
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
         view.material = material
         view.blendingMode = blendingMode
         // `.followsWindowActiveState`, not `.active` — `.active` pins the
         // material on permanently, so the window stays translucent even
         // when it's neither key nor main.
         view.state = .followsWindowActiveState
-        view.wantsLayer = true
-        view.lightFilter = Self.lightSaturationFilter
-        view.darkFilter = Self.darkSaturationFilter
-        view.applyFilterForCurrentAppearance()
         return view
     }
 
-    func updateNSView(_ nsView: AppearanceAdaptiveVisualEffectView, context: Context) {
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
-    }
-}
-
-/// Swaps between `VisualEffectView`'s light/dark saturation filters live,
-/// reacting to the user toggling System Settings' appearance while open.
-final class AppearanceAdaptiveVisualEffectView: NSVisualEffectView {
-    var lightFilter: CIFilter?
-    var darkFilter: CIFilter?
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyFilterForCurrentAppearance()
-    }
-
-    func applyFilterForCurrentAppearance() {
-        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        let filter = isDark ? darkFilter : lightFilter
-        layer?.filters = filter.map { [$0] }
     }
 }
 

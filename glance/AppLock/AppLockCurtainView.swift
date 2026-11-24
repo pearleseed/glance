@@ -183,13 +183,8 @@ private struct CurtainBackdropView: View {
     var body: some View {
         ZStack {
             ActiveBehindWindowBlurView()
-            Rectangle()
-                .fill(SettingsMetrics.windowTintColor)
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .opacity(0.65)
             Color(nsColor: .windowBackgroundColor)
-                .opacity(0.58)
+                .opacity(0.68)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
