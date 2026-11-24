@@ -35,6 +35,7 @@ struct SettingsWindowView: View {
     let environment: AppEnvironment
     @State private var selection: SettingsTab = .general
     @State private var headerTrailingAction: HeaderAction?
+    @State private var isWindowVisible = true
     @Environment(\.dismissWindow) private var dismissWindow
 
     /// Defense-in-depth, not the primary gate: Settings is `.suppressed` at
@@ -59,10 +60,28 @@ struct SettingsWindowView: View {
     }
 
     private var settingsContent: some View {
-        ZStack {
-            VisualEffectView()
-            SettingsMetrics.windowTintColor
-            contentPage
+        Group {
+            if isWindowVisible {
+                ZStack {
+                    VisualEffectView()
+                    SettingsMetrics.windowTintColor
+                    contentPage
+                }
+                // Cascades to every native control so nothing falls back to the
+                // system accent. Only takes effect because the window can become
+                // key; see WindowConfiguringView.configure.
+                .tint(GlanceTheme.accent)
+                // A native swipe-event monitor observes the hosting window so it
+                // recognizes two-finger trackpad swipes across the full Settings UI,
+                // including the header, page content, and tab bar.
+                .background(
+                    SettingsTabSwipeRecognizer { direction in
+                        selectAdjacentTab(for: direction)
+                    }
+                )
+            } else {
+                Color.clear
+            }
         }
         // No `.clipShape`, manual stroke, or `.shadow` on the outer window —
         // deliberately: the window keeps its native background (see
@@ -75,23 +94,23 @@ struct SettingsWindowView: View {
         // band to the window height.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
-        .background(WindowConfigurator())
-        // Cascades to every native control so nothing falls back to the
-        // system accent. Only takes effect because the window can become
-        // key; see WindowConfiguringView.configure.
-        .tint(GlanceTheme.accent)
+        // Kept outside `if isWindowVisible` so the configurator stays attached to the
+        // singleton NSWindow after close and immediately restores `isWindowVisible` on reopen.
+        .background(
+            WindowConfigurator { visible in
+                if isWindowVisible != visible {
+                    isWindowVisible = visible
+                }
+                if !visible {
+                    selection = .general
+                    headerTrailingAction = nil
+                }
+            }
+        )
         // `Window` is a singleton scene — closing it only orders the
         // NSWindow out, keeping `@State` alive, so without this `selection`
         // would remember the last tab instead of resetting to General.
         .onDisappear { selection = .general }
-        // A native swipe-event monitor observes the hosting window so it
-        // recognizes two-finger trackpad swipes across the full Settings UI,
-        // including the header, page content, and tab bar.
-        .background(
-            SettingsTabSwipeRecognizer { direction in
-                selectAdjacentTab(for: direction)
-            }
-        )
     }
 
     /// The header and tab bar float over the scroll content as overlays so
@@ -270,6 +289,8 @@ private struct SettingsTabSwipeRecognizer: NSViewRepresentable {
 private final class SwipeHostingView: NSView {
     var onSwipe: (SettingsTabSwipeDirection) -> Void
     private var eventMonitor: Any?
+    private var observerBox: NotificationObserverBox?
+    private weak var observedWindow: NSWindow?
     private var accumulatedHorizontalScroll: CGFloat = 0
     private var accumulatedVerticalScroll: CGFloat = 0
     private var didNavigateThisGesture = false
@@ -289,11 +310,21 @@ private final class SwipeHostingView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        guard let window else {
+            removeEventMonitor()
+            observerBox = nil
+            observedWindow = nil
+            return
+        }
+
+        if observedWindow !== window {
+            installWindowCloseObserver(for: window)
+        }
         installEventMonitorIfNeeded()
     }
 
     func installEventMonitorIfNeeded() {
-        guard eventMonitor == nil else { return }
+        guard window != nil, eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === self.window, event.hasPreciseScrollingDeltas else {
                 return event
@@ -301,6 +332,25 @@ private final class SwipeHostingView: NSView {
             self.handleTrackpadScroll(event)
             return event
         }
+    }
+
+    private func installWindowCloseObserver(for window: NSWindow) {
+        let box = NotificationObserverBox()
+        observedWindow = window
+        box.observe(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.removeEventMonitor()
+            }
+        }
+        observerBox = box
+    }
+
+    private func removeEventMonitor() {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+        resetSwipeTracking()
     }
 
     private func handleTrackpadScroll(_ event: NSEvent) {

@@ -80,11 +80,17 @@ final class AppearanceAdaptiveVisualEffectView: NSVisualEffectView {
 /// borderless (see `WindowConfiguringView` for why), fixed-size, and
 /// background-draggable since there's no title bar to grab.
 struct WindowConfigurator: NSViewRepresentable {
+    var onVisibilityChange: ((Bool) -> Void)?
+
     func makeNSView(context: Context) -> WindowConfiguringView {
-        WindowConfiguringView()
+        let view = WindowConfiguringView()
+        view.onVisibilityChange = onVisibilityChange
+        return view
     }
 
-    func updateNSView(_ nsView: WindowConfiguringView, context: Context) {}
+    func updateNSView(_ nsView: WindowConfiguringView, context: Context) {
+        nsView.onVisibilityChange = onVisibilityChange
+    }
 }
 
 /// Makes the hosting window an ordinary macOS window that simply doesn't
@@ -94,20 +100,64 @@ struct WindowConfigurator: NSViewRepresentable {
 /// SwiftUI's resize-to-fit-content pass in a mutual invalidation loop and
 /// can crash. Size is set exactly once, here.
 final class WindowConfiguringView: NSView {
+    var onVisibilityChange: ((Bool) -> Void)?
     private var hasConfigured = false
+    private var observerBox: NotificationObserverBox?
+    private weak var observedWindow: NSWindow?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard let window, !hasConfigured else { return }
-        hasConfigured = true
+        guard let window else {
+            observerBox = nil
+            observedWindow = nil
+            return
+        }
+
+        if observedWindow !== window {
+            installWindowObservers(for: window)
+        }
+
+        let needsConfigure = !hasConfigured
+        if needsConfigure {
+            hasConfigured = true
+        }
 
         // Deferred by one runloop turn — mutating the window synchronously
         // here (mid SwiftUI render pass) corrupts an AppKit-internal lock
         // and hard-crashes in `_NSSetBoolValueAndNotify`.
-        DispatchQueue.main.async { [weak window] in
-            guard let window else { return }
-            Self.configure(window)
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            if needsConfigure {
+                Self.configure(window)
+            }
+            self.onVisibilityChange?(window.isVisible)
         }
+    }
+
+    private func installWindowObservers(for window: NSWindow) {
+        let box = NotificationObserverBox()
+        observedWindow = window
+
+        box.observe(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.onVisibilityChange?(false)
+            }
+        }
+
+        for name in [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didBecomeMainNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ] {
+            box.observe(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                MainActor.assumeIsolated {
+                    guard let window, window.isVisible else { return }
+                    self?.onVisibilityChange?(true)
+                }
+            }
+        }
+
+        observerBox = box
     }
 
     private static func configure(_ window: NSWindow) {

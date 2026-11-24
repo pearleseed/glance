@@ -30,7 +30,6 @@ final class IlluminationPanel: IlluminationPresenting {
 
         let panel = panelIfNeeded(for: targetFrame)
         panel.setFrame(targetFrame, display: true)
-        panel.contentView?.needsDisplay = true
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
@@ -63,6 +62,8 @@ final class IlluminationPanel: IlluminationPresenting {
             isSkyLightDelegated = false
         }
         panel.orderOut(nil)
+        panel.close()
+        self.panel = nil
     }
 
     private func panelIfNeeded(for frame: NSRect) -> WarmIlluminationPanel {
@@ -111,18 +112,35 @@ private final class WarmIlluminationPanel: NSPanel {
 }
 
 private final class WarmIlluminationView: NSView {
-    private static let warmGradient = NSGradient(
-        colorsAndLocations: (NSColor(srgbRed: 1.0, green: 0.94, blue: 0.83, alpha: 0.88), 0.0),
-        (NSColor(srgbRed: 1.0, green: 0.92, blue: 0.79, alpha: 0.72), 0.45),
-        (NSColor(srgbRed: 1.0, green: 0.90, blue: 0.75, alpha: 0.28), 0.80),
-        (NSColor(srgbRed: 1.0, green: 0.89, blue: 0.72, alpha: 0.0), 1.0)
-    )
+    private static let warmColors: [CGColor] = [
+        CGColor(srgbRed: 1.0, green: 0.94, blue: 0.83, alpha: 0.88),
+        CGColor(srgbRed: 1.0, green: 0.92, blue: 0.79, alpha: 0.72),
+        CGColor(srgbRed: 1.0, green: 0.90, blue: 0.75, alpha: 0.28),
+        CGColor(srgbRed: 1.0, green: 0.89, blue: 0.72, alpha: 0.0),
+    ]
+    private static let warmLocations: [NSNumber] = [0.0, 0.45, 0.80, 1.0]
 
     override var isOpaque: Bool { false }
+    override var wantsUpdateLayer: Bool { true }
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.clear.setFill()
-        bounds.fill()
-        Self.warmGradient?.draw(in: bounds, angle: 270)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .never
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        let gradientLayer = CAGradientLayer()
+        gradientLayer.type = .axial
+        gradientLayer.colors = Self.warmColors
+        gradientLayer.locations = Self.warmLocations
+        // Non-flipped AppKit/CoreAnimation coordinates: (0.5, 1.0) is top, (0.5, 0.0) is bottom.
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
+        return gradientLayer
     }
 }
