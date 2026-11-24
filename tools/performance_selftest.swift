@@ -13,10 +13,15 @@
 //    8. `PendingCameraFrameState` preview-only (`publishesFrames: false`) & `isConsumerBusy` backpressure gating
 //    9. `ObservationWaiter` & `ObservationSignal` event-driven `@Observable` waiting, timeout, and cancellation
 //   10. Task 5: native crop edge landmark remapping, cached `FaceIdentity.template`, glare integer pre-filter, `GeometryLiveness` early-exit, and zero-alloc homography equivalence
+//   11. Task 8: direct `Contents/Info.plist` app metadata parsing (`InstalledApps.readAppMetadata(at:)`) & TTL `refreshIfNeeded(maxAge:)`
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/performance_selftest \
 //        glance/Core/ObservationWaiter.swift \
+//        glance/AppLock/RelockPolicy.swift \
+//        glance/AppLock/AppLockBlacklist.swift \
+//        glance/AppLock/LockedApp.swift \
+//        glance/AppLock/InstalledApps.swift \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Liveness/GeometryLiveness.swift \
 //        glance/Liveness/GlareCue.swift \
@@ -101,6 +106,7 @@ struct PerformanceSelfTest {
         testGlareIntegerPrefilterMatchesReference()
         await testGeometryLivenessEarlyExitWhenStill()
         testZeroAllocHomographyNumericalEquivalence()
+        try await testInfoPlistAppMetadataReadsSystemAndUserApp()
         print("\nAll performance self-tests passed.")
     }
 
@@ -1377,5 +1383,147 @@ struct PerformanceSelfTest {
         )
 
         print("PASS: zero-alloc flat-buffer homography matches reference (< 1e-6)")
+    }
+
+    // MARK: - Task 8 Tests
+
+    @MainActor
+    private static func testInfoPlistAppMetadataReadsSystemAndUserApp() async throws {
+        let fm = FileManager.default
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("glance-infoplist-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        func makeAppBundle(name: String, plist: [String: Any]) throws -> URL {
+            let appURL = tempRoot.appendingPathComponent("\(name).app", isDirectory: true)
+            let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+            try fm.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+            let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            try data.write(to: contentsURL.appendingPathComponent("Info.plist", isDirectory: false))
+            return appURL
+        }
+
+        // 1. Normal app with CFBundleIdentifier + CFBundleDisplayName
+        let normalURL = try makeAppBundle(
+            name: "SampleApp",
+            plist: [
+                "CFBundleIdentifier": "  com.example.SampleApp  ",
+                "CFBundleDisplayName": "Sample Display Name",
+                "CFBundleName": "Sample Bundle Name",
+            ]
+        )
+        let normalMeta = InstalledApps.readAppMetadata(at: normalURL)
+        precondition(normalMeta != nil, "FAIL: expected non-nil metadata for normal app")
+        precondition(
+            normalMeta?.bundleIdentifier == "com.example.SampleApp",
+            "FAIL: unexpected bundleIdentifier \(String(describing: normalMeta?.bundleIdentifier))"
+        )
+        precondition(
+            normalMeta?.name == "Sample Display Name",
+            "FAIL: expected CFBundleDisplayName, got \(String(describing: normalMeta?.name))"
+        )
+        precondition(
+            normalMeta?.path == normalURL.path,
+            "FAIL: expected path \(normalURL.path), got \(String(describing: normalMeta?.path))"
+        )
+
+        // 2. Fallback display names: CFBundleName -> .app filename
+        let bundleNameURL = try makeAppBundle(
+            name: "RawFileName",
+            plist: [
+                "CFBundleIdentifier": "com.example.BundleNameOnly",
+                "CFBundleName": "Fallback Bundle Name",
+            ]
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: bundleNameURL)?.name == "Fallback Bundle Name",
+            "FAIL: expected fallback to CFBundleName"
+        )
+
+        let filenameOnlyURL = try makeAppBundle(
+            name: "FilenameFallbackApp",
+            plist: [
+                "CFBundleIdentifier": "com.example.FilenameOnly",
+            ]
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: filenameOnlyURL)?.name == "FilenameFallbackApp",
+            "FAIL: expected fallback to .app filename"
+        )
+
+        // 3. Agent / background apps rejected
+        let agentURL = try makeAppBundle(
+            name: "AgentApp",
+            plist: [
+                "CFBundleIdentifier": "com.example.AgentApp",
+                "CFBundleDisplayName": "Agent",
+                "LSUIElement": true,
+            ]
+        )
+        precondition(InstalledApps.readAppMetadata(at: agentURL) == nil, "FAIL: LSUIElement app must return nil")
+
+        let bgURL = try makeAppBundle(
+            name: "BackgroundApp",
+            plist: [
+                "CFBundleIdentifier": "com.example.BackgroundApp",
+                "CFBundleDisplayName": "Background",
+                "LSBackgroundOnly": "1",
+            ]
+        )
+        precondition(InstalledApps.readAppMetadata(at: bgURL) == nil, "FAIL: LSBackgroundOnly app must return nil")
+
+        // 4. Blacklisted apps rejected (self bundle ID & system recovery app)
+        let selfBlacklistedURL = try makeAppBundle(
+            name: "GlanceCopy",
+            plist: [
+                "CFBundleIdentifier": "com.pearleseed.glance",
+                "CFBundleDisplayName": "Glance",
+            ]
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: selfBlacklistedURL) == nil,
+            "FAIL: blacklisted com.pearleseed.glance must return nil"
+        )
+
+        let terminalBlacklistedURL = try makeAppBundle(
+            name: "TerminalCopy",
+            plist: [
+                "CFBundleIdentifier": "com.apple.Terminal",
+                "CFBundleDisplayName": "Terminal",
+            ]
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: terminalBlacklistedURL) == nil,
+            "FAIL: blacklisted com.apple.Terminal must return nil"
+        )
+
+        // 5. Real /Applications/Glance.app on disk (if present) must be rejected by blacklist
+        let systemGlanceURL = URL(fileURLWithPath: "/Applications/Glance.app")
+        if fm.fileExists(atPath: systemGlanceURL.path) {
+            precondition(
+                InstalledApps.readAppMetadata(at: systemGlanceURL) == nil,
+                "FAIL: /Applications/Glance.app must return nil"
+            )
+        }
+
+        // 6. TTL refreshIfNeeded skips redundant rescan within maxAge
+        let store = InstalledApps()
+        await store.refreshIfNeeded(maxAge: 60)
+        let countAfterInitial = store.apps.count
+        let clock = ContinuousClock()
+        let secondStart = clock.now
+        await store.refreshIfNeeded(maxAge: 60)
+        let secondElapsed = clock.now - secondStart
+        precondition(
+            store.apps.count == countAfterInitial,
+            "FAIL: refreshIfNeeded within TTL altered apps count"
+        )
+        precondition(
+            secondElapsed < .milliseconds(5),
+            "FAIL: refreshIfNeeded within TTL should skip disk scan, took \(secondElapsed)"
+        )
+
+        print("PASS: InstalledApps Info.plist metadata parsing & TTL refreshIfNeeded")
     }
 }

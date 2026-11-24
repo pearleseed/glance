@@ -5,7 +5,6 @@
 //  Asynchronously discovers lockable macOS applications for instant picker search.
 //
 
-import AppKit
 import Foundation
 import Observation
 
@@ -32,8 +31,20 @@ final class InstalledApps {
     private(set) var apps: [InstalledApp] = []
     private(set) var isScanning = false
     private var scanGeneration: UInt64 = 0
+    private var lastRefreshedAt: ContinuousClock.Instant?
 
     init() {}
+
+    /// Refreshes the discovered app list only when empty, unscanned, or older than `maxAge`.
+    func refreshIfNeeded(maxAge: TimeInterval = 60) async {
+        if !apps.isEmpty,
+            let lastRefreshedAt,
+            ContinuousClock.now - lastRefreshedAt < .seconds(maxAge)
+        {
+            return
+        }
+        await refresh()
+    }
 
     /// Rescans `/Applications`, `/System/Applications`, and `~/Applications` off the main actor.
     func refresh() async {
@@ -47,6 +58,7 @@ final class InstalledApps {
 
         guard token == scanGeneration else { return }
         apps = discovered
+        lastRefreshedAt = ContinuousClock.now
         isScanning = false
     }
 
@@ -58,6 +70,23 @@ final class InstalledApps {
             $0.name.localizedCaseInsensitiveContains(trimmed)
                 || $0.bundleIdentifier.localizedCaseInsensitiveContains(trimmed)
         }
+    }
+
+    /// Reads app metadata directly from `Contents/Info.plist` without allocating a `Bundle(url:)`.
+    nonisolated static func readAppMetadata(at url: URL) -> InstalledApp? {
+        guard let info = LockedApp.infoDictionary(at: url),
+            let rawBundleID = (info["CFBundleIdentifier"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            LockedApp.canLock(bundleIdentifier: rawBundleID),
+            !isBackgroundOnlyOrAgent(info)
+        else { return nil }
+
+        let name = LockedApp.displayName(from: info, url: url)
+        return InstalledApp(
+            bundleIdentifier: rawBundleID,
+            name: name,
+            path: url.path
+        )
     }
 
     nonisolated private static func scanInstalledApplications() -> [InstalledApp] {
@@ -81,23 +110,13 @@ final class InstalledApps {
             else { continue }
 
             while let url = enumerator.nextObject() as? URL {
-                guard url.pathExtension.caseInsensitiveCompare("app") == .orderedSame else { continue }
-                let resolvedURL = url.resolvingSymlinksInPath()
-                guard let bundle = Bundle(url: resolvedURL) ?? Bundle(url: url),
-                    let rawBundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
-                    LockedApp.canLock(bundleIdentifier: rawBundleID),
-                    !isBackgroundOnlyOrAgent(bundle)
+                guard url.pathExtension.caseInsensitiveCompare("app") == .orderedSame,
+                    let app = readAppMetadata(at: url)
                 else { continue }
 
-                let dedupKey = rawBundleID.lowercased()
+                let dedupKey = app.bundleIdentifier.lowercased()
                 if byLowerBundleID[dedupKey] != nil { continue }
-
-                let name = LockedApp.displayName(for: bundle, url: url)
-                byLowerBundleID[dedupKey] = InstalledApp(
-                    bundleIdentifier: rawBundleID,
-                    name: name,
-                    path: url.path
-                )
+                byLowerBundleID[dedupKey] = app
             }
         }
 
@@ -110,9 +129,8 @@ final class InstalledApps {
         }
     }
 
-    nonisolated private static func isBackgroundOnlyOrAgent(_ bundle: Bundle) -> Bool {
-        guard let info = bundle.infoDictionary else { return false }
-        return isTruthyPlistFlag(info["LSBackgroundOnly"]) || isTruthyPlistFlag(info["LSUIElement"])
+    nonisolated private static func isBackgroundOnlyOrAgent(_ info: [String: Any]) -> Bool {
+        isTruthyPlistFlag(info["LSBackgroundOnly"]) || isTruthyPlistFlag(info["LSUIElement"])
     }
 
     nonisolated private static func isTruthyPlistFlag(_ value: Any?) -> Bool {

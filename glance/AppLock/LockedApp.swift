@@ -31,6 +31,9 @@ nonisolated struct LockedApp: Codable, Identifiable, Equatable, Hashable, Sendab
     static func canLock(bundleIdentifier: String) -> Bool {
         let trimmed = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if trimmed.caseInsensitiveCompare("com.pearleseed.glance") == .orderedSame {
+            return false
+        }
         return !AppLockBlacklist.isProtected(trimmed)
     }
 
@@ -38,27 +41,45 @@ nonisolated struct LockedApp: Codable, Identifiable, Equatable, Hashable, Sendab
         AppLockBlacklist.isCautionApp(bundleIdentifier)
     }
 
-    /// Reads bundle metadata from an `.app` URL, returning `nil` if the bundle lacks an ID or is protected.
+    /// Reads bundle metadata from an `.app` URL via `Contents/Info.plist`, returning `nil` if invalid or protected.
     static func fromBundle(at url: URL) -> LockedApp? {
-        let resolvedURL = url.resolvingSymlinksInPath()
-        guard let bundle = Bundle(url: resolvedURL) ?? Bundle(url: url),
-            let bundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
-            canLock(bundleIdentifier: bundleID)
+        guard let info = infoDictionary(at: url),
+            let rawID = info["CFBundleIdentifier"] as? String
         else { return nil }
+        let bundleID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canLock(bundleIdentifier: bundleID) else { return nil }
 
-        let displayName = displayName(for: bundle, url: url)
+        let displayName = displayName(from: info, url: url)
         return LockedApp(bundleIdentifier: bundleID, name: displayName, path: url.path)
     }
 
-    static func displayName(for bundle: Bundle, url: URL) -> String {
-        let info = bundle.infoDictionary
-        if let localized = bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String, !localized.isEmpty {
-            return localized
+    /// Reads `Contents/Info.plist` directly via `PropertyListSerialization` to avoid `Bundle(url:)` cache retention.
+    static func infoDictionary(at url: URL) -> [String: Any]? {
+        let resolvedURL = url.resolvingSymlinksInPath()
+        let candidates = resolvedURL == url ? [url] : [resolvedURL, url]
+        for baseURL in candidates {
+            let plistURL = baseURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Info.plist", isDirectory: false)
+            if let data = try? Data(contentsOf: plistURL),
+                let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+                let dict = plist as? [String: Any]
+            {
+                return dict
+            }
         }
-        if let display = info?["CFBundleDisplayName"] as? String, !display.isEmpty {
+        return nil
+    }
+
+    static func displayName(from info: [String: Any], url: URL) -> String {
+        if let display = (info["CFBundleDisplayName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !display.isEmpty
+        {
             return display
         }
-        if let name = info?["CFBundleName"] as? String, !name.isEmpty {
+        if let name = (info["CFBundleName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !name.isEmpty
+        {
             return name
         }
         return url.deletingPathExtension().lastPathComponent

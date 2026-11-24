@@ -278,11 +278,11 @@ private struct LockedAppRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: app.resolvedIcon())
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: 24, height: 24)
+            AppIconThumbnail(
+                path: app.path,
+                bundleIdentifier: app.bundleIdentifier,
+                size: 24
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {

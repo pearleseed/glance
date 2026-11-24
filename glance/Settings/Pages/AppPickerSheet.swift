@@ -46,7 +46,7 @@ struct AppPickerSheet: View {
         .frame(width: 440, height: 470)
         .background(SettingsMetrics.windowTintColor)
         .task {
-            await installedApps.refresh()
+            await installedApps.refreshIfNeeded()
         }
     }
 
@@ -200,16 +200,16 @@ struct AppPickerSheet: View {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let resolvedURL = url.resolvingSymlinksInPath()
-        guard let bundle = Bundle(url: resolvedURL) ?? Bundle(url: url),
-            let rawBundleID = bundle.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let info = LockedApp.infoDictionary(at: url),
+            let rawBundleID = (info["CFBundleIdentifier"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
             !rawBundleID.isEmpty
         else {
             pickerError = "Selected item does not have a valid bundle identifier."
             return
         }
 
-        let name = LockedApp.displayName(for: bundle, url: url)
+        let name = LockedApp.displayName(from: info, url: url)
         guard LockedApp.canLock(bundleIdentifier: rawBundleID) else {
             pickerError = "\(name) cannot be locked because it is protected for macOS or Glance recovery."
             return
@@ -231,11 +231,11 @@ private struct InstalledAppPickerRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: 26, height: 26)
+            AppIconThumbnail(
+                path: app.path,
+                bundleIdentifier: app.bundleIdentifier,
+                size: 26
+            )
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {

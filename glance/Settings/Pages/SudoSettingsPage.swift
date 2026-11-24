@@ -16,7 +16,8 @@ struct SudoSettingsPage: View {
     @Bindable private var settings = GlanceSettings.shared
     @Bindable private var enrollmentStore = FaceEnrollmentStore.shared
 
-    @State private var pamStatus = SudoPAMStatus.probe()
+    @State private var pamStatus: SudoPAMStatus?
+    @State private var probeGeneration: UInt64 = 0
     @State private var isAuthenticating = false
     @State private var authError: String?
     @State private var copiedCommandID: String?
@@ -55,7 +56,7 @@ struct SudoSettingsPage: View {
                 SettingsCaption(text: "Socket listener error: \(serverError)")
             }
 
-            if pamStatus.trustedBinary == .wrongCasing {
+            if pamStatus?.trustedBinary == .wrongCasing {
                 SettingsCaption(
                     text:
                         "Bundle path casing mismatch: pam_glance.so requires the exact path "
@@ -85,8 +86,8 @@ struct SudoSettingsPage: View {
                 SudoStatusRow(
                     title: "PAM module",
                     path: SudoPAMStatus.pamModulePath,
-                    badgeText: pamStatus.module.label,
-                    badgeColor: pamStatus.module.color
+                    badgeText: pamStatus?.module.label ?? "Checking…",
+                    badgeColor: pamStatus?.module.color ?? SettingsMetrics.textTertiary
                 )
 
                 SettingsGroupDivider()
@@ -94,8 +95,8 @@ struct SudoSettingsPage: View {
                 SudoStatusRow(
                     title: "PAM configuration",
                     path: SudoPAMStatus.pamConfigPath,
-                    badgeText: pamStatus.config.label,
-                    badgeColor: pamStatus.config.color
+                    badgeText: pamStatus?.config.label ?? "Checking…",
+                    badgeColor: pamStatus?.config.color ?? SettingsMetrics.textTertiary
                 )
 
                 SettingsGroupDivider()
@@ -103,8 +104,8 @@ struct SudoSettingsPage: View {
                 SudoStatusRow(
                     title: "Trusted app binary",
                     path: SudoPAMStatus.trustedExecutablePath,
-                    badgeText: pamStatus.trustedBinary.label,
-                    badgeColor: pamStatus.trustedBinary.color
+                    badgeText: pamStatus?.trustedBinary.label ?? "Checking…",
+                    badgeColor: pamStatus?.trustedBinary.color ?? SettingsMetrics.textTertiary
                 )
 
                 SettingsGroupDivider()
@@ -163,13 +164,15 @@ struct SudoSettingsPage: View {
         .onAppear {
             environment.pocController.refreshCredentialStatus()
             enrollmentStore.reloadIfUnlocked()
-            refreshStatus()
+        }
+        .task {
+            await refreshStatus()
         }
         .onDisappear {
             authError = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            refreshStatus()
+            triggerRefreshStatus()
         }
     }
 
@@ -178,7 +181,7 @@ struct SudoSettingsPage: View {
             SettingsSectionTitle(text: "System Status")
 
             Button {
-                refreshStatus()
+                triggerRefreshStatus()
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -236,9 +239,23 @@ struct SudoSettingsPage: View {
         return SettingsMetrics.textTertiary
     }
 
-    private func refreshStatus() {
-        pamStatus = SudoPAMStatus.probe()
+    private func triggerRefreshStatus() {
+        Task {
+            await refreshStatus()
+        }
+    }
+
+    private func refreshStatus() async {
+        probeGeneration &+= 1
+        let token = probeGeneration
         environment.syncSudoAuthServer()
+
+        let probed = await Task.detached(priority: .utility) {
+            SudoPAMStatus.probe()
+        }.value
+
+        guard !Task.isCancelled, token == probeGeneration else { return }
+        pamStatus = probed
     }
 
     private func handleToggleChange(_ enable: Bool) {
