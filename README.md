@@ -294,10 +294,18 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Debug CODE_SI
 xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
   -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+# Full signed dual-architecture release + Sparkle appcast.xml (arm64 + x86_64 DMGs, SHA256SUMS.txt, appcast.xml)
+./tools/build_release.sh
 ```
 
 > [!NOTE]
 > Keep `sudo-support/` in the source tree — Xcode's **Bundle Sudo PAM Support** build phase compiles `sudo-support/pam_glance.c` into `Contents/Helpers/pam_glance.so` (`arm64` + `x86_64`) and embeds `sudo-support/glance-sudo-setup.sh` into `Contents/Resources/` so distributed `.dmg` builds are completely self-contained.
+>
+> **Publishing a GitHub Release with Sparkle auto-updates:**
+> 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `glance.xcodeproj/project.pbxproj` (and fallback strings in `AboutSettingsPage.swift`).
+> 2. Run `./tools/build_release.sh` — it builds and signs both `arm64` and `x86_64` `.dmg` files, cross-checks your Keychain EdDSA key (`--account com.pearleseed.glance`) against `SUPublicEDKey` in `glance/Info.plist`, and generates a verified `build/release/appcast.xml`.
+> 3. Upload **all 4 files** (`Glance-<ver>-arm64.dmg`, `Glance-<ver>-x86_64.dmg`, `SHA256SUMS.txt`, and **`appcast.xml`**) to the GitHub Release so `SUFeedURL` (`https://github.com/pearleseed/glance/releases/latest/download/appcast.xml`) resolves cleanly.
 
 ### Code Style, Linting & Offline Self-Tests
 
@@ -321,6 +329,7 @@ Glance includes **10 standalone, camera-free Swift self-test suites** under `too
 | `tools/applock_selftest.swift` | `AppLockEngine` v2 state machine, monotonic `RelockPolicy`, deadline timers, system blacklist & Touch ID fallback |
 | `tools/sudo_installer_selftest.swift` | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
 | `tools/sudo_protocol_selftest.swift` | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
+| `tools/test_generate_appcast.py` | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
 
 ---
 

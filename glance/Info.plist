@@ -5,7 +5,7 @@
 	<key>SUFeedURL</key>
 	<string>https://github.com/pearleseed/glance/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>o9uQmlzKzh7NZvFtVktVh/wqw4Ie6WshX8K8NFDweWY=</string>
+	<string>Pfr4hYy0nvcSZTROlTVE+SQGn25zk0U/FH0cLatDg30=</string>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableInstallerLauncherService</key>
