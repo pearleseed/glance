@@ -5,7 +5,8 @@
 //  Offline end-to-end self-test for `sudo-support/glance-sudo-setup.sh`.
 //
 //  Compile and run from repo root:
-//      swiftc -parse-as-library -O -o /tmp/sudo_installer_selftest \
+//      swiftc -O -o /tmp/sudo_installer_selftest \
+//        glance/SudoAuth/SudoPAMCommandBuilder.swift \
 //        tools/sudo_installer_selftest.swift \
 //      && /tmp/sudo_installer_selftest
 //
@@ -19,8 +20,286 @@ struct SudoInstallerSelfTest {
     private static let expectedPAMLine = "auth       sufficient     /usr/local/lib/pam/pam_glance.so"
 
     static func main() {
+        testCommandBuilderAndErrorClassification()
         testSetupScriptEndToEnd()
-        print("PASS: glance-sudo-setup.sh end-to-end self-tests passed.")
+        print("PASS: glance-sudo-setup.sh and SudoPAMCommandBuilder self-tests passed.")
+    }
+
+    private static func testCommandBuilderAndErrorClassification() {
+        testShellSingleQuoting()
+        testAppleScriptStringLiteral()
+        testInstallAndUninstallShellCommands()
+        testAdminAppleScriptBuildAndSyntax()
+        testClassifyAppleScriptError()
+        testManualCommands()
+    }
+
+    private static func testShellSingleQuoting() {
+        require(
+            SudoPAMCommandBuilder.shellSingleQuote("/Applications/Glance.app") == "'/Applications/Glance.app'",
+            "FAIL [quote]: plain path mismatch"
+        )
+        require(
+            SudoPAMCommandBuilder.shellSingleQuote("/Users/Jane Doe/Downloads/Glance (1).app")
+                == "'/Users/Jane Doe/Downloads/Glance (1).app'",
+            "FAIL [quote]: spaces/parens mismatch"
+        )
+        require(
+            SudoPAMCommandBuilder.shellSingleQuote("/Users/O'Brien/Glance.app")
+                == "'/Users/O'\\''Brien/Glance.app'",
+            "FAIL [quote]: apostrophe mismatch"
+        )
+
+        let metacharacters = #"/Users/O'Brien/$(rm -rf /) `id` $HOME; echo hi "double" \slash"#
+        let quoted = SudoPAMCommandBuilder.shellSingleQuote(metacharacters)
+        let echoResult = runShellCommand("printf '%s' \(quoted)")
+        require(echoResult.status == 0, "FAIL [quote]: bash printf failed: \(echoResult.stderr)")
+        require(
+            echoResult.stdout == metacharacters,
+            "FAIL [quote]: round-trip mismatch: got \(echoResult.stdout), want \(metacharacters)"
+        )
+    }
+
+    private static func testAppleScriptStringLiteral() {
+        let escaped = try! SudoPAMCommandBuilder.appleScriptStringLiteral(#"C:\Program Files\"Glance""#)
+        require(
+            escaped == #""C:\\Program Files\\\"Glance\"""#,
+            "FAIL [asLiteral]: backslash/quote escaping mismatch: \(escaped)"
+        )
+
+        let metachars = try! SudoPAMCommandBuilder.appleScriptStringLiteral(#"O'Brien $(id) `uname`"#)
+        require(
+            metachars == #""O'Brien $(id) `uname`""#,
+            "FAIL [asLiteral]: metacharacters unexpected modification: \(metachars)"
+        )
+
+        for bad in ["line1\nline2", "line1\rline2", "line1\r\nline2", "bad\0null"] {
+            do {
+                _ = try SudoPAMCommandBuilder.appleScriptStringLiteral(bad)
+                require(false, "FAIL [asLiteral]: expected invalidControlCharacter for \(bad.debugDescription)")
+            } catch let error as SudoPAMCommandBuilderError {
+                require(
+                    error == .invalidControlCharacter,
+                    "FAIL [asLiteral]: unexpected error \(error)"
+                )
+            } catch {
+                require(false, "FAIL [asLiteral]: unexpected error type \(error)")
+            }
+        }
+    }
+
+    private static func testInstallAndUninstallShellCommands() {
+        let script = "/Users/O'Brien/Downloads/Glance (1)/Glance.app/Contents/Resources/glance-sudo-setup.sh"
+        let pam = "/Users/O'Brien/Downloads/Glance (1)/Glance.app/Contents/Helpers/pam_glance.so"
+        let app = "/Users/O'Brien/Downloads/Glance (1)/Glance.app"
+
+        let withoutApp = SudoPAMCommandBuilder.buildInstallShellCommand(
+            scriptPath: script,
+            pamSourcePath: pam,
+            appSourcePath: nil
+        )
+        let expectedWithoutApp =
+            "/bin/bash '/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+            + "install --pam-source "
+            + "'/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Helpers/pam_glance.so'"
+        require(withoutApp == expectedWithoutApp, "FAIL [installCmd]: withoutApp mismatch: \(withoutApp)")
+        require(!withoutApp.contains("--app-source"), "FAIL [installCmd]: unexpected --app-source")
+
+        let withApp = SudoPAMCommandBuilder.buildInstallShellCommand(
+            scriptPath: script,
+            pamSourcePath: pam,
+            appSourcePath: app
+        )
+        let expectedWithApp =
+            expectedWithoutApp
+            + " --app-source '/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app'"
+        require(withApp == expectedWithApp, "FAIL [installCmd]: withApp mismatch: \(withApp)")
+
+        let uninstallPlain = SudoPAMCommandBuilder.buildUninstallShellCommand(
+            scriptPath: "/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh",
+            restoreOwner: nil
+        )
+        require(
+            uninstallPlain
+                == "/bin/bash '/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh' uninstall",
+            "FAIL [uninstallCmd]: plain mismatch: \(uninstallPlain)"
+        )
+
+        let uninstallRestore = SudoPAMCommandBuilder.buildUninstallShellCommand(
+            scriptPath: "/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh",
+            restoreOwner: "501:20"
+        )
+        require(
+            uninstallRestore
+                == "/bin/bash '/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+                + "uninstall --restore-owner '501:20'",
+            "FAIL [uninstallCmd]: restore mismatch: \(uninstallRestore)"
+        )
+    }
+
+    private static func testAdminAppleScriptBuildAndSyntax() {
+        let shellCmd = SudoPAMCommandBuilder.buildInstallShellCommand(
+            scriptPath: #"/Users/O'Brien/$(test) "q"/Glance.app/Contents/Resources/glance-sudo-setup.sh"#,
+            pamSourcePath: #"/Users/O'Brien/$(test) "q"/Glance.app/Contents/Helpers/pam_glance.so"#,
+            appSourcePath: #"/Users/O'Brien/$(test) "q"/Glance.app"#
+        )
+        let prompt = #"Glance needs administrator permission to install "Face for sudo" (O'Brien)."#
+        let appleScript = try! SudoPAMCommandBuilder.buildAdminAppleScript(
+            shellCommand: shellCmd,
+            prompt: prompt
+        )
+        require(
+            appleScript.hasPrefix("do shell script ")
+                && appleScript.contains(" with administrator privileges with prompt "),
+            "FAIL [appleScript]: unexpected structure: \(appleScript)"
+        )
+
+        // Verify invalid control chars are rejected in both shellCommand and prompt
+        for bad in ["echo\nhello", "echo\rhello", "echo\0hello"] {
+            do {
+                _ = try SudoPAMCommandBuilder.buildAdminAppleScript(shellCommand: bad, prompt: "Prompt")
+                require(false, "FAIL [appleScript]: expected throw for bad shellCommand")
+            } catch SudoPAMCommandBuilderError.invalidControlCharacter {
+                // Expected
+            } catch {
+                require(false, "FAIL [appleScript]: unexpected error \(error)")
+            }
+
+            do {
+                _ = try SudoPAMCommandBuilder.buildAdminAppleScript(shellCommand: "/bin/true", prompt: bad)
+                require(false, "FAIL [appleScript]: expected throw for bad prompt")
+            } catch SudoPAMCommandBuilderError.invalidControlCharacter {
+                // Expected
+            } catch {
+                require(false, "FAIL [appleScript]: unexpected error \(error)")
+            }
+        }
+
+        // Verify AppleScript compiles cleanly with /usr/bin/osacompile (offline, no UI prompt)
+        let tmpDir = makeTempDir(prefix: "glance-osacompile")
+        defer { removeItemIfExists(tmpDir) }
+        let scptOut = tmpDir.appendingPathComponent("test.scpt")
+        let compileResult = runExecutable(
+            "/usr/bin/osacompile",
+            arguments: ["-o", scptOut.path, "-e", appleScript]
+        )
+        require(
+            compileResult.status == 0,
+            "FAIL [osacompile]: AppleScript syntax check failed (\(compileResult.status)): \(compileResult.stderr)"
+        )
+    }
+
+    private static func testClassifyAppleScriptError() {
+        require(
+            SudoPAMCommandBuilder.classifyAppleScriptError(
+                errorNumber: -128,
+                briefMessage: "User canceled.",
+                fullMessage: "User canceled."
+            ) == .cancelled,
+            "FAIL [classify]: -128 must map to .cancelled"
+        )
+
+        let tccApp = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 1,
+            briefMessage: "mv: /Applications/Glance.app: Operation not permitted",
+            fullMessage: "full details"
+        )
+        guard case .needsAppManagementPermission = tccApp else {
+            require(false, "FAIL [classify]: expected .needsAppManagementPermission, got \(tccApp)")
+            return
+        }
+
+        let tccCaseInsensitiveSplit = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 1,
+            briefMessage: "Command failed",
+            fullMessage: "cannot replace glance.app: operation not permitted"
+        )
+        guard case .needsAppManagementPermission = tccCaseInsensitiveSplit else {
+            require(
+                false,
+                "FAIL [classify]: expected case-insensitive split .needsAppManagementPermission, got \(tccCaseInsensitiveSplit)"
+            )
+            return
+        }
+
+        let unrelatedPerm = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 1,
+            briefMessage: "cp: /etc/pam.d/sudo_local: Operation not permitted",
+            fullMessage: "verbose full message"
+        )
+        require(
+            unrelatedPerm == .failed("cp: /etc/pam.d/sudo_local: Operation not permitted"),
+            "FAIL [classify]: unrelated Operation not permitted should be .failed with briefMessage, got \(unrelatedPerm)"
+        )
+
+        let briefPreferred = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 2,
+            briefMessage: "Short error",
+            fullMessage: "Very long verbose AppleScript message"
+        )
+        require(
+            briefPreferred == .failed("Short error"),
+            "FAIL [classify]: should prefer briefMessage, got \(briefPreferred)"
+        )
+
+        let fallbackFull = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 2,
+            briefMessage: "   \n ",
+            fullMessage: "Full fallback message"
+        )
+        require(
+            fallbackFull == .failed("Full fallback message"),
+            "FAIL [classify]: should fall back to fullMessage, got \(fallbackFull)"
+        )
+
+        let fallbackEmpty = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: 42,
+            briefMessage: nil,
+            fullMessage: ""
+        )
+        if case .failed(let msg) = fallbackEmpty {
+            require(!msg.isEmpty, "FAIL [classify]: fallback message must be non-empty")
+        } else {
+            require(false, "FAIL [classify]: expected .failed fallback, got \(fallbackEmpty)")
+        }
+    }
+
+    private static func testManualCommands() {
+        let externalBundle = "/Users/O'Brien/Downloads/Glance (1)/Glance.app"
+
+        let noReloc = SudoPAMCommandBuilder.manualInstallCommand(
+            bundlePath: externalBundle,
+            requiresRelocation: false
+        )
+        require(
+            noReloc
+                == "sudo /bin/bash '/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+                + "install --pam-source '/Applications/Glance.app/Contents/Helpers/pam_glance.so'",
+            "FAIL [manualInstall]: requiresRelocation=false mismatch: \(noReloc)"
+        )
+
+        let withReloc = SudoPAMCommandBuilder.manualInstallCommand(
+            bundlePath: externalBundle,
+            requiresRelocation: true
+        )
+        require(
+            withReloc
+                == "sudo /bin/bash "
+                + "'/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+                + "install --pam-source "
+                + "'/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Helpers/pam_glance.so' "
+                + "--app-source '/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app'",
+            "FAIL [manualInstall]: requiresRelocation=true mismatch: \(withReloc)"
+        )
+
+        let uninstall = SudoPAMCommandBuilder.manualUninstallCommand(bundlePath: externalBundle)
+        require(
+            uninstall
+                == "sudo /bin/bash "
+                + "'/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+                + #"uninstall --restore-owner "$(id -u):$(id -g)""#,
+            "FAIL [manualUninstall]: mismatch: \(uninstall)"
+        )
     }
 
     private static func testSetupScriptEndToEnd() {
@@ -907,9 +1186,20 @@ struct SudoInstallerSelfTest {
         scriptPath: String,
         arguments: [String]
     ) -> (status: Int32, stdout: String, stderr: String) {
+        runExecutable("/bin/bash", arguments: [scriptPath] + arguments)
+    }
+
+    private static func runShellCommand(_ command: String) -> (status: Int32, stdout: String, stderr: String) {
+        runExecutable("/bin/bash", arguments: ["-c", command])
+    }
+
+    private static func runExecutable(
+        _ executablePath: String,
+        arguments: [String]
+    ) -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [scriptPath] + arguments
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
 
         let outPipe = Pipe()
         let errPipe = Pipe()
