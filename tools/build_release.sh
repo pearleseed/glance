@@ -18,12 +18,14 @@ KEY_MIGRATION_BUILD="${KEY_MIGRATION_BUILD:-7}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 ED_KEY_FILE="${ED_KEY_FILE:-}"
 RELEASE_NOTES="${RELEASE_NOTES:-}"
+CLEAN_BUILD=0
 
 usage() {
     cat <<'EOF'
 Usage: tools/build_release.sh [options]
 
 Options:
+  --clean                      Remove previous DerivedData and build/release artifacts before building
   --output-dir <dir>           Output directory (default: build/release)
   --sign-identity <identity>   codesign identity (default: '-' for ad-hoc)
   --sparkle-account <account>  Keychain account for Sparkle EdDSA key (default: com.pearleseed.glance)
@@ -37,6 +39,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --clean) CLEAN_BUILD=1; shift ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
         --sparkle-account) SPARKLE_ACCOUNT="$2"; shift 2 ;;
@@ -82,6 +85,11 @@ echo "==> Building Glance v${VERSION} (build ${BUILD}, ${BUNDLE_ID})"
 echo "    Feed URL: ${CONFIGURED_FEED_URL}"
 echo "    EdDSA Key: ${EXPECTED_PUB_KEY}"
 echo "    Output: ${OUTPUT_DIR}"
+
+if [[ "${CLEAN_BUILD}" -eq 1 ]]; then
+    echo "==> Cleaning previous build outputs and DerivedData..."
+    rm -rf "${OUTPUT_DIR}" "${REPO_ROOT}/build/DerivedData-arm64" "${REPO_ROOT}/build/DerivedData-x86_64"
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 

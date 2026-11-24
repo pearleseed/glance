@@ -60,7 +60,8 @@ struct SettingsWindowView: View {
     }
 
     private var settingsContent: some View {
-        Group {
+        ZStack {
+            Color.clear
             if isWindowVisible {
                 ZStack {
                     VisualEffectView()
@@ -79,8 +80,6 @@ struct SettingsWindowView: View {
                         selectAdjacentTab(for: direction)
                     }
                 )
-            } else {
-                Color.clear
             }
         }
         // No `.clipShape`, manual stroke, or `.shadow` on the outer window —
@@ -94,8 +93,10 @@ struct SettingsWindowView: View {
         // band to the window height.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
-        // Kept outside `if isWindowVisible` so the configurator stays attached to the
-        // singleton NSWindow after close and immediately restores `isWindowVisible` on reopen.
+        // Outer `ZStack` (not `Group`) gives `WindowConfigurator` a single stable
+        // structural identity across `isWindowVisible` toggles: `Group` forwards
+        // modifiers into each conditional branch, destroying and recreating
+        // `WindowConfiguringView` on every close/reopen.
         .background(
             WindowConfigurator { visible in
                 if isWindowVisible != visible {

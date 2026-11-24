@@ -58,68 +58,76 @@ struct WindowConfigurator: NSViewRepresentable {
 ///
 /// Note: no `setFrame`/`setContentSize` on every layout pass — that fights
 /// SwiftUI's resize-to-fit-content pass in a mutual invalidation loop and
-/// can crash. Size is set exactly once, here.
+/// can crash. Size and chrome are applied once per `NSWindow` instance, and
+/// this view never orders a closed window back on screen (window presentation
+/// belongs solely to `AppDelegate.revealSettingsWindow()`).
 final class WindowConfiguringView: NSView {
+    /// Tracks `NSWindow` instances already configured so even if SwiftUI ever
+    /// recreates this view, one-shot chrome/frame setup never re-runs on the
+    /// same window.
+    private static let configuredWindows = NSHashTable<NSWindow>.weakObjects()
+
     var onVisibilityChange: ((Bool) -> Void)?
-    private var hasConfigured = false
-    private var observerBox: NotificationObserverBox?
+    private var visibilityObservation: NSKeyValueObservation?
     private weak var observedWindow: NSWindow?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else {
-            observerBox = nil
+            visibilityObservation?.invalidate()
+            visibilityObservation = nil
             observedWindow = nil
             return
         }
 
         if observedWindow !== window {
-            installWindowObservers(for: window)
-        }
-
-        let needsConfigure = !hasConfigured
-        if needsConfigure {
-            hasConfigured = true
+            installVisibilityObserver(for: window)
         }
 
         // Deferred by one runloop turn — mutating the window synchronously
         // here (mid SwiftUI render pass) corrupts an AppKit-internal lock
         // and hard-crashes in `_NSSetBoolValueAndNotify`.
         DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.window === window else { return }
-            if needsConfigure {
-                Self.configure(window)
+            guard let self, let window, self.window === window, window.isVisible else { return }
+            self.configureIfNeeded(window)
+            self.onVisibilityChange?(true)
+        }
+    }
+
+    private func installVisibilityObserver(for window: NSWindow) {
+        visibilityObservation?.invalidate()
+        observedWindow = window
+
+        // KVO on `NSWindow.isVisible` fires strictly on real on-screen / off-screen
+        // transitions — no noisy callbacks on focus/occlusion churn and no missed
+        // reopens when the window orders front before the app becomes key.
+        visibilityObservation = window.observe(\.isVisible, options: [.new]) { [weak self] window, _ in
+            let handleChange: @MainActor () -> Void = { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                if window.isVisible {
+                    if !Self.configuredWindows.contains(window) {
+                        DispatchQueue.main.async { [weak self, weak window] in
+                            guard let self, let window, self.window === window, window.isVisible else { return }
+                            self.configureIfNeeded(window)
+                        }
+                    }
+                    self.onVisibilityChange?(true)
+                } else if !window.isMiniaturized {
+                    self.onVisibilityChange?(false)
+                }
             }
-            if window.isVisible {
-                self.onVisibilityChange?(true)
+            if Thread.isMainThread {
+                MainActor.assumeIsolated(handleChange)
+            } else {
+                Task { @MainActor in handleChange() }
             }
         }
     }
 
-    private func installWindowObservers(for window: NSWindow) {
-        let box = NotificationObserverBox()
-        observedWindow = window
-
-        box.observe(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.onVisibilityChange?(false)
-            }
-        }
-
-        for name in [
-            NSWindow.didBecomeKeyNotification,
-            NSWindow.didBecomeMainNotification,
-            NSWindow.didChangeOcclusionStateNotification
-        ] {
-            box.observe(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
-                MainActor.assumeIsolated {
-                    guard let window, window.isVisible else { return }
-                    self?.onVisibilityChange?(true)
-                }
-            }
-        }
-
-        observerBox = box
+    private func configureIfNeeded(_ window: NSWindow) {
+        guard !Self.configuredWindows.contains(window) else { return }
+        Self.configuredWindows.add(window)
+        Self.configure(window)
     }
 
     private static func configure(_ window: NSWindow) {
@@ -160,7 +168,7 @@ final class WindowConfiguringView: NSView {
         var frame = window.frame
         frame.origin.y += frame.height - target.height  // keep the top edge fixed
         frame.size = NSSize(width: target.width, height: target.height)
-        window.setFrame(frame, display: true)
+        window.setFrame(frame, display: window.isVisible)
 
         // Belt-and-suspenders non-resizability alongside the absent
         // `.resizable` style flag — pinning min == max forecloses other
@@ -168,12 +176,9 @@ final class WindowConfiguringView: NSView {
         window.minSize = target
         window.maxSize = target
 
-        // `ignoringOtherApps` covers the automatic post-onboarding path
-        // (window created after an `.accessory` stretch, no click in the
-        // activation chain) — otherwise the window opens in the inactive
-        // look until the user Cmd-Tabs.
+        // Restores opacity in case `SuppressedWindowHider` dimmed the window
+        // before its first intentional reveal. Deliberately does NOT call
+        // `makeKeyAndOrderFront` — presentation is owned by `AppDelegate`.
         window.alphaValue = 1
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
     }
 }

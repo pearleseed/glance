@@ -329,6 +329,7 @@ Glance includes **10 standalone, camera-free Swift self-test suites** under `too
 | `tools/applock_selftest.swift` | `AppLockEngine` v2 state machine, monotonic `RelockPolicy`, deadline timers, system blacklist & Touch ID fallback |
 | `tools/sudo_installer_selftest.swift` | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
 | `tools/sudo_protocol_selftest.swift` | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
+| `tools/settings_window_selftest.swift` | Settings window close/reopen/minimize lifecycle, stable `WindowConfiguringView` identity, and one-shot chrome configuration |
 | `tools/test_generate_appcast.py` | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
 
 ---

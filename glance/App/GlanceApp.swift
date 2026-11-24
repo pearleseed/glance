@@ -105,6 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// starting an already-started `SPUUpdater` is a safe no-op.
     private var hasStartedUpdater = false
     private var pendingOpenSettingsWindow = false
+    /// Monotonic token incremented on every intentional reveal and invalidated on window close so
+    /// deferred `orderSettingsFront()` hops can never resurrect a Settings window the user just closed.
+    private var settingsPresentationToken: UInt64 = 0
 
     /// Accessory before the Dock binds this launch to a persistent tile — starting `.regular` made the pinned icon bounce and
     /// get replaced by a Recents tile the moment the Dock icon was later hidden/shown.
@@ -254,6 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// windows like the lock-screen notch overlay, and backs off while Sparkle's update window is showing.
     @objc private func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow, closingWindow.canBecomeMain else { return }
+        settingsPresentationToken &+= 1
         guard !environment.updater.isPresentingUpdateUI else { return }
         let stillOpen = NSApp.windows.contains { $0 !== closingWindow && $0.canBecomeMain && $0.isVisible }
         guard !stillOpen else { return }
@@ -368,16 +372,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Two runloop hops: `openWindow(id:)` hasn't created the `NSWindow` on this turn, and `WindowConfiguringView` configures it
     /// on the next — waiting one extra cycle orders front after the window actually exists.
     private func makeSettingsKeyAndActive() {
+        settingsPresentationToken &+= 1
+        let token = settingsPresentationToken
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in
-            self?.orderSettingsFront()
+            self?.orderSettingsFront(expectedToken: token)
             DispatchQueue.main.async {
-                self?.orderSettingsFront()
+                self?.orderSettingsFront(expectedToken: token)
             }
         }
     }
 
-    private func orderSettingsFront() {
+    private func orderSettingsFront(expectedToken: UInt64) {
+        guard settingsPresentationToken == expectedToken else { return }
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
             window.makeKeyAndOrderFront(nil)
