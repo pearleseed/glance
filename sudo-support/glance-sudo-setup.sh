@@ -432,6 +432,8 @@ validate_install_destinations() {
     if [[ -e "${PAM_DIR}" && ! -d "${PAM_DIR}" ]]; then
         die "PAM module path exists and is not a directory: ${PAM_DIR}"
     fi
+    [[ ! -L "${PAM_DEST}" ]] || die "Refusing symlinked PAM module destination: ${PAM_DEST}"
+    [[ ! -d "${PAM_DEST}" ]] || die "Unexpected directory at PAM destination: ${PAM_DEST}"
     [[ ! -L "${PAM_CONF_DIR}" ]] || die "Refusing symlinked PAM configuration directory: ${PAM_CONF_DIR}"
     if [[ -e "${PAM_CONF_DIR}" && ! -d "${PAM_CONF_DIR}" ]]; then
         die "PAM configuration path exists and is not a directory: ${PAM_CONF_DIR}"
@@ -457,9 +459,11 @@ perform_uninstall() {
         fi
     fi
 
+    [[ ! -L "${PAM_CONF_DIR}" ]] || die "Refusing symlinked PAM configuration directory: ${PAM_CONF_DIR}"
     if [[ -L "${PAM_CONF}" ]]; then
         die "Refusing symlinked PAM configuration file: ${PAM_CONF}"
     fi
+    [[ ! -L "${PAM_DIR}" ]] || die "Refusing symlinked PAM module directory: ${PAM_DIR}"
 
     local restore_target=""
     if [[ "${RESTORE_OWNER_SET}" -eq 1 && -d "${APPS_DIR}" && ! -L "${APPS_DIR}" ]]; then

@@ -64,17 +64,21 @@ struct SudoInstallerSelfTest {
     }
 
     private static func testAppleScriptStringLiteral() {
-        let escaped = try! SudoPAMCommandBuilder.appleScriptStringLiteral(#"C:\Program Files\"Glance""#)
-        require(
-            escaped == #""C:\\Program Files\\\"Glance\"""#,
-            "FAIL [asLiteral]: backslash/quote escaping mismatch: \(escaped)"
-        )
+        do {
+            let escaped = try SudoPAMCommandBuilder.appleScriptStringLiteral(#"C:\Program Files\"Glance""#)
+            require(
+                escaped == #""C:\\Program Files\\\"Glance\"""#,
+                "FAIL [asLiteral]: backslash/quote escaping mismatch: \(escaped)"
+            )
 
-        let metachars = try! SudoPAMCommandBuilder.appleScriptStringLiteral(#"O'Brien $(id) `uname`"#)
-        require(
-            metachars == #""O'Brien $(id) `uname`""#,
-            "FAIL [asLiteral]: metacharacters unexpected modification: \(metachars)"
-        )
+            let metachars = try SudoPAMCommandBuilder.appleScriptStringLiteral(#"O'Brien $(id) `uname`"#)
+            require(
+                metachars == #""O'Brien $(id) `uname`""#,
+                "FAIL [asLiteral]: metacharacters unexpected modification: \(metachars)"
+            )
+        } catch {
+            require(false, "FAIL [asLiteral]: unexpected error for valid literal: \(error)")
+        }
 
         for bad in ["line1\nline2", "line1\rline2", "line1\r\nline2", "bad\0null"] {
             do {
@@ -147,10 +151,16 @@ struct SudoInstallerSelfTest {
             appSourcePath: #"/Users/O'Brien/$(test) "q"/Glance.app"#
         )
         let prompt = #"Glance needs administrator permission to install "Face for sudo" (O'Brien)."#
-        let appleScript = try! SudoPAMCommandBuilder.buildAdminAppleScript(
-            shellCommand: shellCmd,
-            prompt: prompt
-        )
+        let appleScript: String
+        do {
+            appleScript = try SudoPAMCommandBuilder.buildAdminAppleScript(
+                shellCommand: shellCmd,
+                prompt: prompt
+            )
+        } catch {
+            require(false, "FAIL [appleScript]: unexpected error for valid input: \(error)")
+            return
+        }
         require(
             appleScript.hasPrefix("do shell script ")
                 && appleScript.contains(" with administrator privileges with prompt "),
@@ -265,6 +275,16 @@ struct SudoInstallerSelfTest {
         } else {
             require(false, "FAIL [classify]: expected .failed fallback, got \(fallbackEmpty)")
         }
+
+        let allNil = SudoPAMCommandBuilder.classifyAppleScriptError(
+            errorNumber: nil,
+            briefMessage: nil,
+            fullMessage: nil
+        )
+        require(
+            allNil == .failed("Administrator command failed."),
+            "FAIL [classify]: all-nil inputs must return default message, got \(allNil)"
+        )
     }
 
     private static func testManualCommands() {
@@ -303,6 +323,41 @@ struct SudoInstallerSelfTest {
                 + #"uninstall --restore-owner "$(id -u):$(id -g)""#,
             "FAIL [manualUninstall]: mismatch: \(uninstall)"
         )
+
+        let trailingSlashBundle = "  \(externalBundle)///  "
+        require(
+            SudoPAMCommandBuilder.manualInstallCommand(
+                bundlePath: trailingSlashBundle,
+                requiresRelocation: true
+            ) == withReloc,
+            "FAIL [manualInstall]: trailing slashes/whitespace were not normalized"
+        )
+        require(
+            SudoPAMCommandBuilder.manualUninstallCommand(bundlePath: trailingSlashBundle) == uninstall,
+            "FAIL [manualUninstall]: trailing slashes/whitespace were not normalized"
+        )
+
+        let trustedInstallWithReloc =
+            "sudo /bin/bash '/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
+            + "install --pam-source '/Applications/Glance.app/Contents/Helpers/pam_glance.so' "
+            + "--app-source '/Applications/Glance.app'"
+        let trustedUninstall =
+            #"sudo /bin/bash '/Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh' "#
+            + #"uninstall --restore-owner "$(id -u):$(id -g)""#
+
+        for emptyPath in ["", "   \n "] {
+            require(
+                SudoPAMCommandBuilder.manualInstallCommand(
+                    bundlePath: emptyPath,
+                    requiresRelocation: true
+                ) == trustedInstallWithReloc,
+                "FAIL [manualInstall]: empty path must fall back to /Applications/Glance.app"
+            )
+            require(
+                SudoPAMCommandBuilder.manualUninstallCommand(bundlePath: emptyPath) == trustedUninstall,
+                "FAIL [manualUninstall]: empty path must fall back to /Applications/Glance.app"
+            )
+        }
     }
 
     // MARK: - SudoPAMStatus probe tests
@@ -1277,6 +1332,53 @@ struct SudoInstallerSelfTest {
             )
             require(res2.status != 0, "FAIL [5c]: symlinked Contents/MacOS/glance must be rejected")
         }
+
+        // 5d. Symlinked PAM destination and directory at PAM destination during install
+        do {
+            let root = makeTempDir(prefix: "glance-setup-case5d")
+            defer { removeItemIfExists(root) }
+            let srcDir = makeTempDir(prefix: "glance-src-case5d")
+            defer { removeItemIfExists(srcDir) }
+
+            let app = srcDir.appendingPathComponent("Glance.app", isDirectory: true)
+            createFakeGlanceApp(at: app, pamHelperBytes: Data("pam".utf8))
+            let pamSource = app.appendingPathComponent("Contents/Helpers/pam_glance.so")
+
+            let pamDir = root.appendingPathComponent("usr/local/lib/pam", isDirectory: true)
+            try! FileManager.default.createDirectory(at: pamDir, withIntermediateDirectories: true)
+            let pamDest = pamDir.appendingPathComponent("pam_glance.so")
+            let victim = srcDir.appendingPathComponent("victim.so")
+            try! Data("keep".utf8).write(to: victim)
+            try! FileManager.default.createSymbolicLink(at: pamDest, withDestinationURL: victim)
+
+            let linkRes = runSetupScript(
+                scriptPath: scriptPath,
+                arguments: [
+                    "install",
+                    "--pam-source", pamSource.path,
+                    "--app-source", app.path,
+                    "--test-root", root.path
+                ]
+            )
+            require(linkRes.status != 0, "FAIL [5d]: symlinked PAM_DEST must be rejected")
+            require(
+                !FileManager.default.fileExists(atPath: root.appendingPathComponent("Applications/Glance.app").path),
+                "FAIL [5d]: Glance.app installed despite symlinked PAM_DEST"
+            )
+
+            removeItemIfExists(pamDest)
+            try! FileManager.default.createDirectory(at: pamDest, withIntermediateDirectories: true)
+            let dirRes = runSetupScript(
+                scriptPath: scriptPath,
+                arguments: [
+                    "install",
+                    "--pam-source", pamSource.path,
+                    "--app-source", app.path,
+                    "--test-root", root.path
+                ]
+            )
+            require(dirRes.status != 0, "FAIL [5d]: directory at PAM_DEST must be rejected")
+        }
     }
 
     // MARK: - Case 6: Uninstall & --restore-owner validation
@@ -1419,6 +1521,52 @@ struct SudoInstallerSelfTest {
             require(
                 lstat(targetMarker.path, &targetStat) == 0 && (targetStat.st_mode & 0o777) == 0o444,
                 "FAIL [6]: symlink target permissions were mutated during uninstall"
+            )
+        }
+
+        // Uninstall must refuse symlinked PAM_CONF_DIR and symlinked PAM_DIR without mutating targets
+        do {
+            let symRoot = makeTempDir(prefix: "glance-setup-case6sym")
+            defer { removeItemIfExists(symRoot) }
+            let outsideDir = makeTempDir(prefix: "glance-setup-case6outside")
+            defer { removeItemIfExists(outsideDir) }
+
+            let outsideConf = outsideDir.appendingPathComponent("sudo_local")
+            try! "auth       sufficient     /usr/local/lib/pam/pam_glance.so\n"
+                .write(to: outsideConf, atomically: true, encoding: .utf8)
+            let etcDir = symRoot.appendingPathComponent("etc", isDirectory: true)
+            try! FileManager.default.createDirectory(at: etcDir, withIntermediateDirectories: true)
+            try! FileManager.default.createSymbolicLink(
+                at: etcDir.appendingPathComponent("pam.d"),
+                withDestinationURL: outsideDir
+            )
+            let confDirRes = runSetupScript(
+                scriptPath: scriptPath,
+                arguments: ["uninstall", "--test-root", symRoot.path]
+            )
+            require(confDirRes.status != 0, "FAIL [6]: uninstall with symlinked PAM_CONF_DIR must fail")
+            require(
+                (try! String(contentsOf: outsideConf, encoding: .utf8)).contains("pam_glance.so"),
+                "FAIL [6]: symlinked PAM_CONF_DIR target was mutated"
+            )
+
+            removeItemIfExists(etcDir.appendingPathComponent("pam.d"))
+            let outsidePAM = outsideDir.appendingPathComponent("pam_glance.so")
+            try! Data("keep".utf8).write(to: outsidePAM)
+            let libDir = symRoot.appendingPathComponent("usr/local/lib", isDirectory: true)
+            try! FileManager.default.createDirectory(at: libDir, withIntermediateDirectories: true)
+            try! FileManager.default.createSymbolicLink(
+                at: libDir.appendingPathComponent("pam"),
+                withDestinationURL: outsideDir
+            )
+            let pamDirRes = runSetupScript(
+                scriptPath: scriptPath,
+                arguments: ["uninstall", "--test-root", symRoot.path]
+            )
+            require(pamDirRes.status != 0, "FAIL [6]: uninstall with symlinked PAM_DIR must fail")
+            require(
+                FileManager.default.fileExists(atPath: outsidePAM.path),
+                "FAIL [6]: file inside symlinked PAM_DIR was deleted"
             )
         }
     }
@@ -1564,9 +1712,13 @@ struct SudoInstallerSelfTest {
 
     private static func setQuarantineXattr(on url: URL) {
         let value = "0081;65555555;Safari;00000000-0000-0000-0000-000000000000"
-        _ = value.withCString { ptr in
+        let rc = value.withCString { ptr in
             setxattr(url.path, "com.apple.quarantine", ptr, strlen(ptr), 0, XATTR_NOFOLLOW)
         }
+        require(
+            rc == 0,
+            "FAIL [xattr]: setxattr failed on \(url.path): \(String(cString: strerror(errno)))"
+        )
     }
 
     private static func assertQuarantineRemoved(on url: URL, label: String) {

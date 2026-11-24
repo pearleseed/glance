@@ -137,6 +137,16 @@ extension SudoPAMStatus.BinaryState {
     }
 }
 
+extension SudoPAMInstaller.ProgressPhase {
+    var label: String {
+        switch self {
+        case .preparing: return "Preparing…"
+        case .awaitingAuthorization: return "Waiting for permission…"
+        case .restarting: return "Restarting…"
+        }
+    }
+}
+
 struct SudoSecondaryButton: View {
     let title: String
     var isEnabled: Bool = true
@@ -281,10 +291,12 @@ struct SudoSystemStatusSection: View {
 struct SudoManualCommandsSection: View {
     @Binding var isExpanded: Bool
     let requiresRelocation: Bool
-    let installCommand: String
-    let uninstallCommand: String
+    let installCommand: () -> String
+    let uninstallCommand: () -> String
     let copiedCommandID: String?
     let onCopy: (String, String) -> Void
+
+    @State private var cachedCommands: (install: String, uninstall: String)?
 
     private var installTitle: String {
         requiresRelocation ? "Install Glance & PAM module" : "Install PAM module"
@@ -322,13 +334,15 @@ struct SudoManualCommandsSection: View {
             .buttonStyle(.plain)
 
             if isExpanded {
+                let install = cachedCommands?.install ?? installCommand()
+                let uninstall = cachedCommands?.uninstall ?? uninstallCommand()
                 SettingsGroup {
                     SudoCommandRow(
                         title: installTitle,
                         subtitle: installSubtitle,
-                        command: installCommand,
+                        command: install,
                         isCopied: copiedCommandID == "install",
-                        onCopy: { onCopy(installCommand, "install") }
+                        onCopy: { onCopy(install, "install") }
                     )
                     SettingsGroupDivider()
                     SudoCommandRow(
@@ -336,92 +350,20 @@ struct SudoManualCommandsSection: View {
                         subtitle:
                             "Removes pam_glance.so, cleans /etc/pam.d/sudo_local, "
                             + "and restores normal ownership on Glance.app.",
-                        command: uninstallCommand,
+                        command: uninstall,
                         isCopied: copiedCommandID == "uninstall",
-                        onCopy: { onCopy(uninstallCommand, "uninstall") }
+                        onCopy: { onCopy(uninstall, "uninstall") }
                     )
                 }
+                .onAppear {
+                    if cachedCommands == nil {
+                        cachedCommands = (install, uninstall)
+                    }
+                }
+                .onDisappear {
+                    cachedCommands = nil
+                }
             }
-        }
-    }
-}
-
-struct SudoSetupDescriptor {
-    enum TrailingContent {
-        case primaryButton(title: String, isSetupAction: Bool)
-        case symbol(name: String, color: Color)
-    }
-
-    let title: String
-    let subtitle: String
-    let trailing: TrailingContent
-
-    static func resolve(
-        status: SudoPAMStatus,
-        isSessionUnlocked: Bool,
-        isUnlockingSession: Bool,
-        hasActiveIdentities: Bool,
-        sudoFaceAuthEnabled: Bool
-    ) -> SudoSetupDescriptor {
-        switch status.setupAction {
-        case .installAndRelocate:
-            return SudoSetupDescriptor(
-                title: "Install Glance & Set Up Sudo",
-                subtitle:
-                    "Copies Glance to /Applications/Glance.app, installs the PAM module, "
-                    + "configures sudo_local, and restarts Glance.",
-                trailing: .primaryButton(title: "Set Up", isSetupAction: true)
-            )
-        case .install:
-            return SudoSetupDescriptor(
-                title: "Automatic Setup",
-                subtitle:
-                    "Installs the PAM module, configures /etc/pam.d/sudo_local, "
-                    + "and secures /Applications/Glance.app.",
-                trailing: .primaryButton(title: "Set Up", isSetupAction: true)
-            )
-        case .repair:
-            return SudoSetupDescriptor(
-                title: "Repair Sudo Setup",
-                subtitle: "Restores root ownership, PAM configuration order, and safe permissions.",
-                trailing: .primaryButton(title: "Repair", isSetupAction: true)
-            )
-        case .update:
-            return SudoSetupDescriptor(
-                title: "Update PAM Module",
-                subtitle: "Updates /usr/local/lib/pam/pam_glance.so to match this version of Glance.",
-                trailing: .primaryButton(title: "Update", isSetupAction: true)
-            )
-        case .ready:
-            if !isSessionUnlocked {
-                return SudoSetupDescriptor(
-                    title: "System setup complete",
-                    subtitle: "Unlock your Glance session to start using Face for sudo.",
-                    trailing: .primaryButton(
-                        title: isUnlockingSession ? "Authenticating…" : "Unlock",
-                        isSetupAction: false
-                    )
-                )
-            }
-            if !hasActiveIdentities {
-                return SudoSetupDescriptor(
-                    title: "System setup complete",
-                    subtitle: "Enroll or enable a face on the Face tab before testing sudo.",
-                    trailing: .symbol(name: "info.circle.fill", color: SettingsMetrics.textTertiary)
-                )
-            }
-            if !sudoFaceAuthEnabled {
-                return SudoSetupDescriptor(
-                    title: "System setup complete",
-                    subtitle: "Turn on Face authentication for sudo above, then run sudo -v in Terminal.",
-                    trailing: .symbol(name: "checkmark.circle.fill", color: SettingsMetrics.textSecondary)
-                )
-            }
-            return SudoSetupDescriptor(
-                title: "Ready for sudo",
-                subtitle: "Everything is installed and active. Open Terminal and run sudo -v to test.",
-                trailing: .symbol(name: "checkmark.circle.fill", color: SettingsMetrics.qualityGoodColor)
-            )
         }
     }
 }

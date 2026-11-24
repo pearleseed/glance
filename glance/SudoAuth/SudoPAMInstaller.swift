@@ -108,9 +108,9 @@ enum SudoPAMInstaller {
         return await runPreparedCommand(preparation, onPhase: onPhase)
     }
 
-    /// Terminates other Glance instances, schedules relaunch of `/Applications/Glance.app`
-    /// once running PIDs exit, and terminates the current process. Returns `false` if launching
-    /// the detached helper fails so callers can show manual guidance instead of quitting.
+    /// Schedules relaunch of `/Applications/Glance.app` once running PIDs exit, then terminates
+    /// other Glance instances and the current process. Returns `false` if launching the detached
+    /// helper fails so callers can show manual guidance instead of quitting.
     static func relaunchInstalledApp(openTab: SettingsTab = .sudo) -> Bool {
         guard FileManager.default.fileExists(atPath: SudoPAMStatus.trustedBundlePath) else {
             return false
@@ -120,10 +120,6 @@ enum SudoPAMInstaller {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         let otherApplications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
             .filter { $0.processIdentifier > 0 && $0.processIdentifier != currentPID }
-
-        for application in otherApplications {
-            application.terminate()
-        }
 
         let waitPIDs = [currentPID] + otherApplications.map(\.processIdentifier)
         let relaunchScript = """
@@ -153,6 +149,9 @@ enum SudoPAMInstaller {
             return false
         }
 
+        for application in otherApplications {
+            application.terminate()
+        }
         NSApp.terminate(nil)
         return true
     }
@@ -414,13 +413,12 @@ nonisolated private enum InstallerSupport {
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
-        let stderrText =
-            String(bytes: stderrData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let decodedStderr = String(bytes: stderrData, encoding: .utf8)
+        let stderrText = decodedStderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !stderrText.isEmpty {
             throw StagingFailure(message: "Failed to stage Glance.app: \(stderrText)")
         }
-        if !stderrData.isEmpty {
+        if decodedStderr == nil {
             throw StagingFailure(message: "Failed to stage Glance.app (ditto reported unreadable error output).")
         }
         if process.terminationStatus != 0 {

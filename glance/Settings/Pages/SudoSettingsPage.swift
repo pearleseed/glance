@@ -54,6 +54,28 @@ private struct SudoStatusWarningCaptions: View {
     }
 }
 
+private struct SudoSecurityNoticeView: View {
+    var body: some View {
+        SudoNoticeBanner(
+            systemImage: "exclamationmark.triangle.fill",
+            iconColor: SettingsMetrics.qualityFairColor,
+            text:
+                "2D Camera Security Warning: Glance uses a standard 2D RGB webcam rather than infrared "
+                + "depth hardware. Even with Heavy Liveness enforced, a 2D camera cannot reliably defeat "
+                + "a high-resolution video replay attack. Leave Face-for-sudo off unless you accept this "
+                + "risk for local convenience."
+        )
+
+        SettingsCaption(
+            text:
+                "Heavy Liveness is always enforced for sudo regardless of your Recognition settings. "
+                + "SSH/remote sessions and root (uid 0) are always refused, and sudo falls back "
+                + "automatically to Touch ID or password whenever face verification does not pass."
+        )
+        .padding(.top, 2)
+    }
+}
+
 struct SudoSettingsPage: View {
     let environment: AppEnvironment
     @Bindable private var settings = GlanceSettings.shared
@@ -73,6 +95,7 @@ struct SudoSettingsPage: View {
     @State private var copiedCommandID: String?
 
     private var isRunningAction: Bool { runningAction != nil }
+    private var isBusy: Bool { isRunningAction || isAuthenticating || isUnlockingSession }
 
     private var hasUnlockCapableEmbedder: Bool {
         let pipeline = environment.recognitionPipeline
@@ -94,9 +117,9 @@ struct SudoSettingsPage: View {
 
             SudoSystemStatusSection(
                 pamStatus: pamStatus,
-                listenerStatusLabel: listenerStatusLabel,
-                listenerStatusColor: listenerStatusColor,
-                isRefreshDisabled: isRunningAction,
+                listenerStatusLabel: listenerStatus.label,
+                listenerStatusColor: listenerStatus.color,
+                isRefreshDisabled: isBusy,
                 onRefresh: triggerRefreshStatus
             )
 
@@ -115,29 +138,13 @@ struct SudoSettingsPage: View {
             SudoManualCommandsSection(
                 isExpanded: $showManualCommands,
                 requiresRelocation: pamStatus?.requiresRelocation == true,
-                installCommand: SudoPAMInstaller.manualInstallCommand(),
-                uninstallCommand: SudoPAMInstaller.manualUninstallCommand(),
+                installCommand: SudoPAMInstaller.manualInstallCommand,
+                uninstallCommand: SudoPAMInstaller.manualUninstallCommand,
                 copiedCommandID: copiedCommandID,
                 onCopy: copyCommand
             )
 
-            SudoNoticeBanner(
-                systemImage: "exclamationmark.triangle.fill",
-                iconColor: SettingsMetrics.qualityFairColor,
-                text:
-                    "2D Camera Security Warning: Glance uses a standard 2D RGB webcam rather than infrared "
-                    + "depth hardware. Even with Heavy Liveness enforced, a 2D camera cannot reliably defeat "
-                    + "a high-resolution video replay attack. Leave Face-for-sudo off unless you accept this "
-                    + "risk for local convenience."
-            )
-
-            SettingsCaption(
-                text:
-                    "Heavy Liveness is always enforced for sudo regardless of your Recognition settings. "
-                    + "SSH/remote sessions and root (uid 0) are always refused, and sudo falls back "
-                    + "automatically to Touch ID or password whenever face verification does not pass."
-            )
-            .padding(.top, 2)
+            SudoSecurityNoticeView()
         }
         .onAppear {
             environment.pocController.refreshCredentialStatus()
@@ -150,7 +157,7 @@ struct SudoSettingsPage: View {
         }
         .onDisappear { authError = nil }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            guard !isRunningAction else { return }
+            guard !isBusy else { return }
             environment.pocController.refreshCredentialStatus()
             triggerRefreshStatus()
         }
@@ -170,7 +177,7 @@ struct SudoSettingsPage: View {
                         set: { handleToggleChange($0) }
                     )
                 )
-                .disabled(isRunningAction || isAuthenticating)
+                .disabled(isBusy)
             }
         }
     }
@@ -197,11 +204,14 @@ struct SudoSettingsPage: View {
 
     private func primarySetupRow(for status: SudoPAMStatus) -> some View {
         let descriptor = SudoSetupDescriptor.resolve(
-            status: status,
-            isSessionUnlocked: environment.pocController.isSessionUnlocked,
-            isUnlockingSession: isUnlockingSession,
-            hasActiveIdentities: !enrollmentStore.activeIdentities.isEmpty,
-            sudoFaceAuthEnabled: settings.sudoFaceAuthEnabled
+            for: SudoSetupDescriptor.Context(
+                status: status,
+                isSessionUnlocked: environment.pocController.isSessionUnlocked,
+                isUnlockingSession: isUnlockingSession,
+                hasActiveIdentities: !enrollmentStore.activeIdentities.isEmpty,
+                hasUnlockCapableEmbedder: hasUnlockCapableEmbedder,
+                sudoFaceAuthEnabled: settings.sudoFaceAuthEnabled
+            )
         )
 
         return SettingsRowContent(
@@ -219,15 +229,13 @@ struct SudoSettingsPage: View {
         hasBundledHelpers: Bool
     ) -> some View {
         if runningAction == .installOrRepair {
-            SudoPhaseProgressView(label: phaseLabel)
+            SudoPhaseProgressView(label: activePhase?.label ?? "Preparing…")
         } else {
             switch descriptor.trailing {
             case .primaryButton(let title, let isSetupAction):
                 SettingsPrimaryButton(
                     title: title,
-                    isEnabled: isSetupAction
-                        ? (!isRunningAction && hasBundledHelpers)
-                        : (!isRunningAction && !isUnlockingSession),
+                    isEnabled: isSetupAction ? (!isBusy && hasBundledHelpers) : !isBusy,
                     compact: true
                 ) {
                     if isSetupAction {
@@ -253,37 +261,25 @@ struct SudoSettingsPage: View {
             subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
         ) {
             if runningAction == .uninstall {
-                SudoPhaseProgressView(label: phaseLabel)
+                SudoPhaseProgressView(label: activePhase?.label ?? "Preparing…")
             } else {
-                SudoSecondaryButton(title: "Uninstall", isEnabled: !isRunningAction, action: runUninstall)
+                SudoSecondaryButton(title: "Uninstall", isEnabled: !isBusy, action: runUninstall)
             }
         }
     }
 
-    private var phaseLabel: String {
-        switch activePhase {
-        case .preparing, .none: return "Preparing…"
-        case .awaitingAuthorization: return "Waiting for permission…"
-        case .restarting: return "Restarting…"
+    private var listenerStatus: (label: String, color: Color) {
+        if environment.isSudoServerListening {
+            return ("Listening", SettingsMetrics.qualityGoodColor)
         }
-    }
-
-    private var listenerStatusLabel: String {
-        if environment.isSudoServerListening { return "Listening" }
-        if settings.sudoFaceAuthEnabled && environment.sudoServerError != nil { return "Error" }
-        return "Off"
-    }
-
-    private var listenerStatusColor: Color {
-        if environment.isSudoServerListening { return SettingsMetrics.qualityGoodColor }
         if settings.sudoFaceAuthEnabled && environment.sudoServerError != nil {
-            return SettingsMetrics.qualityPoorColor
+            return ("Error", SettingsMetrics.qualityPoorColor)
         }
-        return SettingsMetrics.textTertiary
+        return ("Off", SettingsMetrics.textTertiary)
     }
 
     private func triggerRefreshStatus() {
-        guard !isRunningAction else { return }
+        guard !isBusy else { return }
         Task { await refreshStatus() }
     }
 
@@ -293,10 +289,14 @@ struct SudoSettingsPage: View {
         environment.syncSudoAuthServer()
         let probed = await Task.detached(priority: .utility) { SudoPAMStatus.probe() }.value
         guard !Task.isCancelled, token == probeGeneration else { return }
+        let previousStatus = pamStatus
         pamStatus = probed
-        if probed.setupAction == .ready && needsAppManagementPermission {
+        if probed.setupAction == .ready {
             needsAppManagementPermission = false
             actionError = nil
+        }
+        if let previousStatus, probed != previousStatus {
+            actionMessage = nil
         }
     }
 
@@ -318,7 +318,7 @@ struct SudoSettingsPage: View {
         _ action: SudoRunningAction,
         operation: @escaping @MainActor () async -> Void
     ) {
-        guard !isRunningAction else { return }
+        guard !isBusy else { return }
         runningAction = action
         activePhase = .preparing
         actionMessage = nil
@@ -360,7 +360,6 @@ struct SudoSettingsPage: View {
             hasUnlockCapableEmbedder
         {
             settings.sudoFaceAuthEnabled = true
-            environment.syncSudoAuthServer()
         }
 
         if requiresRelaunch {
@@ -368,12 +367,14 @@ struct SudoSettingsPage: View {
             if SudoPAMInstaller.relaunchInstalledApp(openTab: .sudo) {
                 return
             }
+            environment.syncSudoAuthServer()
             await refreshStatus()
             finishAction()
             actionMessage = "Setup complete. Quit this copy and open /Applications/Glance.app to finish."
             return
         }
 
+        environment.syncSudoAuthServer()
         await refreshStatus()
         finishAction()
         actionMessage = "Face-for-sudo is installed and ready."
@@ -385,7 +386,7 @@ struct SudoSettingsPage: View {
     }
 
     private func unlockSessionForSudo() {
-        guard !isUnlockingSession, !isRunningAction else { return }
+        guard !isBusy else { return }
         isUnlockingSession = true
         actionError = nil
         Task {
@@ -400,7 +401,7 @@ struct SudoSettingsPage: View {
     }
 
     private func handleToggleChange(_ enable: Bool) {
-        guard !isRunningAction else { return }
+        guard !isBusy else { return }
         authError = nil
         if !enable {
             settings.sudoFaceAuthEnabled = false
@@ -408,7 +409,6 @@ struct SudoSettingsPage: View {
             return
         }
 
-        guard !isAuthenticating else { return }
         isAuthenticating = true
         Task {
             let outcome = await SystemAuthentication.authenticate(
