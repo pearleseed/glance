@@ -80,8 +80,6 @@ final class AppLockCoordinator {
 
         if enabled && !policies.isEmpty {
             reconcileWorkspace()
-        } else {
-            scheduleNextReconcileTimer()
         }
     }
 
@@ -153,7 +151,10 @@ final class AppLockCoordinator {
     // MARK: - Workspace Handling
 
     private func handleAppActivated(pid: pid_t?) {
-        guard isEffectivelyEnabled else { return }
+        guard isEffectivelyEnabled else {
+            scheduleNextReconcileTimer()
+            return
+        }
         guard !LockMonitor.isScreenActuallyLocked() else {
             lockAllSessions()
             return

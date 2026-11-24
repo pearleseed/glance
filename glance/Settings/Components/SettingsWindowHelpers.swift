@@ -90,7 +90,9 @@ final class WindowConfiguringView: NSView {
             if needsConfigure {
                 Self.configure(window)
             }
-            self.onVisibilityChange?(window.isVisible)
+            if window.isVisible {
+                self.onVisibilityChange?(true)
+            }
         }
     }
 

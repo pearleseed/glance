@@ -182,8 +182,10 @@ final class AppLockCurtainController {
         observerBox.observe(center: workspaceCenter, forName: NSWorkspace.didLaunchApplicationNotification) {
             [weak self] notification in
             let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            guard app?.bundleIdentifier == Self.dockBundleIdentifier else { return }
-            let pid = app?.processIdentifier
+            guard app?.bundleIdentifier == Self.dockBundleIdentifier,
+                let pid = app?.processIdentifier,
+                pid > 0
+            else { return }
             Task { @MainActor [weak self] in
                 self?.cachedDockPID = pid
             }

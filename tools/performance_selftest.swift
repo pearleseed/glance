@@ -1546,7 +1546,42 @@ struct PerformanceSelfTest {
             "FAIL: blacklisted com.apple.Terminal must return nil"
         )
 
-        // 5. Real /Applications/Glance.app on disk (if present) must be rejected by blacklist
+        // 5. Symlinked .app preserves symlink path; missing or corrupt Info.plist returns nil
+        let symlinkURL = tempRoot.appendingPathComponent("SymlinkedSampleApp.app", isDirectory: true)
+        try fm.createSymbolicLink(at: symlinkURL, withDestinationURL: normalURL)
+        let symlinkMeta = InstalledApps.readAppMetadata(at: symlinkURL)
+        precondition(symlinkMeta != nil, "FAIL: expected non-nil metadata for symlinked .app")
+        precondition(
+            symlinkMeta?.bundleIdentifier == "com.example.SampleApp",
+            "FAIL: unexpected symlinked bundleIdentifier \(String(describing: symlinkMeta?.bundleIdentifier))"
+        )
+        precondition(
+            symlinkMeta?.path == symlinkURL.path,
+            "FAIL: symlinked .app must preserve symlink path \(symlinkURL.path), got \(String(describing: symlinkMeta?.path))"
+        )
+
+        let missingPlistURL = tempRoot.appendingPathComponent("MissingPlist.app", isDirectory: true)
+        try fm.createDirectory(
+            at: missingPlistURL.appendingPathComponent("Contents", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: missingPlistURL) == nil,
+            "FAIL: .app missing Contents/Info.plist must return nil"
+        )
+
+        let corruptPlistURL = tempRoot.appendingPathComponent("CorruptPlist.app", isDirectory: true)
+        let corruptContentsURL = corruptPlistURL.appendingPathComponent("Contents", isDirectory: true)
+        try fm.createDirectory(at: corruptContentsURL, withIntermediateDirectories: true)
+        try Data("not a valid property list <<<".utf8).write(
+            to: corruptContentsURL.appendingPathComponent("Info.plist", isDirectory: false)
+        )
+        precondition(
+            InstalledApps.readAppMetadata(at: corruptPlistURL) == nil,
+            "FAIL: .app with corrupt Contents/Info.plist must return nil"
+        )
+
+        // 6. Real /Applications/Glance.app on disk (if present) must be rejected by blacklist
         let systemGlanceURL = URL(fileURLWithPath: "/Applications/Glance.app")
         if fm.fileExists(atPath: systemGlanceURL.path) {
             precondition(
@@ -1555,7 +1590,7 @@ struct PerformanceSelfTest {
             )
         }
 
-        // 6. TTL refreshIfNeeded skips redundant rescan within maxAge
+        // 7. TTL refreshIfNeeded skips redundant rescan within maxAge and coalesces concurrent calls
         let store = InstalledApps()
         await store.refreshIfNeeded(maxAge: 60)
         let countAfterInitial = store.apps.count
@@ -1570,6 +1605,15 @@ struct PerformanceSelfTest {
         precondition(
             secondElapsed < .milliseconds(5),
             "FAIL: refreshIfNeeded within TTL should skip disk scan, took \(secondElapsed)"
+        )
+
+        let concurrentStore = InstalledApps()
+        async let r1: Void = concurrentStore.refreshIfNeeded(maxAge: 60)
+        async let r2: Void = concurrentStore.refreshIfNeeded(maxAge: 60)
+        _ = await (r1, r2)
+        precondition(
+            !concurrentStore.isScanning && concurrentStore.apps.count == countAfterInitial,
+            "FAIL: concurrent refreshIfNeeded did not coalesce cleanly"
         )
 
         print("PASS: InstalledApps Info.plist metadata parsing & TTL refreshIfNeeded")
@@ -1737,12 +1781,20 @@ struct PerformanceSelfTest {
         }
 
         // Zero bottom radius edge case
-        let sharpRect = CGRect(x: 0, y: 0, width: 180, height: 60)
-        let sharpPath = NotchShape(topRadius: 10, bottomRadius: 0, style: .notch).path(in: sharpRect)
-        precondition(
-            abs(sharpPath.boundingRect.width - 180) < 0.5 && abs(sharpPath.boundingRect.height - 60) < 0.5,
-            "FAIL: zero bottom radius boundingRect mismatch: \(sharpPath.boundingRect)"
-        )
+        for sharpRect in [
+            CGRect(x: 0, y: 0, width: 180, height: 60),
+            CGRect(x: 12, y: 8, width: 180, height: 60),
+        ] {
+            let sharpPath = NotchShape(topRadius: 10, bottomRadius: 0, style: .notch).path(in: sharpRect)
+            let sharpBounds = sharpPath.boundingRect
+            precondition(
+                abs(sharpBounds.minX - sharpRect.minX) < 0.5
+                    && abs(sharpBounds.minY - sharpRect.minY) < 0.5
+                    && abs(sharpBounds.width - sharpRect.width) < 0.5
+                    && abs(sharpBounds.height - sharpRect.height) < 0.5,
+                "FAIL: zero bottom radius boundingRect mismatch: \(sharpBounds) vs \(sharpRect)"
+            )
+        }
 
         print("PASS: NotchShape cached continuous-corner fast path & clamped fallback match reference (< 0.5 pt)")
     }

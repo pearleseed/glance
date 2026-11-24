@@ -107,9 +107,8 @@ struct SettingsWindowView: View {
                 }
             }
         )
-        // `Window` is a singleton scene — closing it only orders the
-        // NSWindow out, keeping `@State` alive, so without this `selection`
-        // would remember the last tab instead of resetting to General.
+        // Backup reset if `settingsContent` unmounts (e.g. onboarding/presentation guard);
+        // normal window close resets `selection` via `WindowConfigurator` since `Window` keeps `@State` alive.
         .onDisappear { selection = .general }
     }
 
@@ -162,7 +161,9 @@ struct SettingsWindowView: View {
 
     /// Leading side stays empty — the window's real traffic lights are drawn
     /// there by AppKit (see WindowConfiguringView). No background of its
-    /// own; `ProgressiveHeaderBlur` sits behind it in `contentPage`.
+    /// own; on macOS 14–15 `ProgressiveHeaderBlur` sits behind it in
+    /// `contentPage`, while macOS 26+ uses native `.safeAreaInset(edge: .top)`
+    /// + `.scrollEdgeEffectStyle(.soft, for: .top)`.
     private var header: some View {
         HStack(spacing: 8) {
             Spacer()

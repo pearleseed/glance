@@ -66,6 +66,8 @@ nonisolated enum UnlockAnimationColor: String, CaseIterable, Identifiable, Senda
 }
 
 nonisolated enum AnimationTint {
+    private static let log = Logger(subsystem: "com.pearleseed.glance", category: "AnimationTint")
+
     private struct StillCacheKey: Hashable, Sendable {
         let color: UnlockAnimationColor
         let compact: Bool
@@ -172,8 +174,9 @@ nonisolated enum AnimationTint {
         let vectors = colorMatrixVectors(for: rgb)
 
         if #available(macOS 26.0, *) {
-            guard
-                let base = try? await AVVideoComposition(
+            let base: AVVideoComposition
+            do {
+                base = try await AVVideoComposition(
                     applyingFiltersTo: asset,
                     applier: { params in
                         AVCIImageFilteringResult(
@@ -182,7 +185,12 @@ nonisolated enum AnimationTint {
                         )
                     }
                 )
-            else {
+            } catch {
+                if !(error is CancellationError), !Task.isCancelled {
+                    log.error(
+                        "Failed to build tinted video composition: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
                 return nil
             }
             let config = AVVideoComposition.Configuration(
@@ -210,7 +218,12 @@ nonisolated enum AnimationTint {
                             context: linearContext
                         )
                     },
-                    completionHandler: { composition, _ in
+                    completionHandler: { composition, error in
+                        if let error, !(error is CancellationError), !Task.isCancelled {
+                            log.error(
+                                "Failed to build tinted video composition: \(error.localizedDescription, privacy: .public)"
+                            )
+                        }
                         continuation.resume(returning: composition)
                     }
                 )

@@ -74,9 +74,11 @@ struct EnrollmentDirectionSweep: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .onAppear {
-            if startDate == nil {
-                startDate = .now
-            }
+            startDate = .now
+            isPaused = false
+        }
+        .onDisappear {
+            isPaused = true
         }
         .onChange(of: direction) { _, _ in
             startDate = .now
@@ -110,9 +112,10 @@ struct EnrollmentDirectionSweep: View {
 
         for spec in Self.specs {
             let rawU = (elapsed - spec.delay) / spec.duration
-            guard rawU > 0, rawU < spec.fadeOutAt else { continue }
+            guard rawU > 0, rawU < 1 else { continue }
 
             let progress = Self.sweepTimingCurve(min(max(rawU, 0), 1))
+            guard progress < spec.fadeOutAt else { continue }
             let streakOpacity = Self.streakOpacity(
                 at: progress,
                 peak: spec.peakOpacity,

@@ -133,16 +133,19 @@ struct AppIconThumbnail: View {
     let size: CGFloat
 
     @State private var icon: NSImage?
+    @State private var loadedTaskID: String?
 
     private var taskID: String {
         "\(bundleIdentifier)|\(path ?? "")"
     }
 
     var body: some View {
-        let displayedIcon = icon ?? AppIconCache.shared.cachedIcon(
-            forPath: path,
-            bundleIdentifier: bundleIdentifier
-        )
+        let displayedIcon =
+            (loadedTaskID == taskID ? icon : nil)
+            ?? AppIconCache.shared.cachedIcon(
+                forPath: path,
+                bundleIdentifier: bundleIdentifier
+            )
 
         Group {
             if let displayedIcon {
@@ -162,17 +165,23 @@ struct AppIconThumbnail: View {
         }
         .frame(width: size, height: size)
         .task(id: taskID) {
+            let expectedID = taskID
             if let cached = AppIconCache.shared.cachedIcon(
                 forPath: path,
                 bundleIdentifier: bundleIdentifier
             ) {
                 icon = cached
+                loadedTaskID = expectedID
             } else {
                 icon = nil
-                icon = await AppIconCache.shared.loadIcon(
+                loadedTaskID = nil
+                let loaded = await AppIconCache.shared.loadIcon(
                     forPath: path ?? "",
                     bundleIdentifier: bundleIdentifier
                 )
+                guard !Task.isCancelled, expectedID == taskID else { return }
+                icon = loaded
+                loadedTaskID = expectedID
             }
         }
     }

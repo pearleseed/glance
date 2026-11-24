@@ -141,8 +141,14 @@ final class NotchWindowController {
     private func updateCursorPolling() {
         let shouldPoll = wantsInteractive && !isSkyLightDelegated && (window?.isVisible ?? false)
         if shouldPoll, cursorPollTimer == nil {
-            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateMousePassthrough() }
+            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        timer.invalidate()
+                        return
+                    }
+                    self.updateMousePassthrough()
+                }
             }
             timer.tolerance = 0.01
             RunLoop.main.add(timer, forMode: .common)

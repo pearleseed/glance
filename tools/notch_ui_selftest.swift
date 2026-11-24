@@ -1,10 +1,11 @@
+import AVFoundation
 import Foundation
 import AppKit
 import CoreImage
 
 @main
 struct NotchUISelfTest {
-    static func main() {
+    static func main() async {
         // 1. Verify color resolution semantics across all 3 modes
         let b2gIdle = UnlockAnimationColor.blueToGreen.resolvedTintRGB(for: .idle)
         let b2gFail = UnlockAnimationColor.blueToGreen.resolvedTintRGB(for: .failure)
@@ -66,5 +67,57 @@ struct NotchUISelfTest {
         precondition(clampedFloor.width == 80 && clampedFloor.height == 1, "FAIL: safe floor failed: \(clampedFloor)")
 
         print("PASS: NotchGeometry.adjustedPhysicalNotchSize & safe floor verified.")
+
+        // 5. Verify AnimationTint.cachedStill does not crash and returns nil or valid image
+        for color in UnlockAnimationColor.allCases {
+            for compact in [false, true] {
+                if let still = AnimationTint.cachedStill(for: color, compact: compact) {
+                    precondition(
+                        still.size.width > 0 && still.size.height > 0,
+                        "FAIL: cachedStill(\(color), compact: \(compact)) returned empty image"
+                    )
+                }
+            }
+        }
+
+        // 6. Exercise AnimationTint.makeVideoComposition against glance/Resources/unlockanimation.mp4
+        let videoURL = URL(fileURLWithPath: "glance/Resources/unlockanimation.mp4")
+        if FileManager.default.fileExists(atPath: videoURL.path) {
+            let asset = AVURLAsset(url: videoURL)
+            let nilComp = await AnimationTint.makeVideoComposition(for: asset, rgb: nil)
+            precondition(nilComp == nil, "FAIL: nil tint RGB must return nil video composition")
+
+            let greenComp = await AnimationTint.makeVideoComposition(for: asset, rgb: .systemGreen)
+            precondition(
+                greenComp != nil,
+                "FAIL: systemGreen tint must produce non-nil AVVideoComposition for unlockanimation.mp4"
+            )
+            if let greenComp {
+                precondition(
+                    greenComp.renderSize.width > 0 && greenComp.renderSize.height > 0,
+                    "FAIL: tinted video composition must have positive renderSize: \(greenComp.renderSize)"
+                )
+                if #available(macOS 26.0, *) {
+                    precondition(
+                        greenComp.colorPrimaries == AVVideoColorPrimaries_ITU_R_709_2
+                            && greenComp.colorTransferFunction == AVVideoTransferFunction_ITU_R_709_2
+                            && greenComp.colorYCbCrMatrix == AVVideoYCbCrMatrix_ITU_R_709_2,
+                        "FAIL: tinted video composition must preserve Rec.709 color tags"
+                    )
+                }
+            }
+
+            if let track = try? await asset.loadTracks(withMediaType: .video).first,
+                let formatDescriptions = try? await track.load(.formatDescriptions),
+                let desc = formatDescriptions.first,
+                let extensions = CMFormatDescriptionGetExtensions(desc) as? [String: Any],
+                let primaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
+            {
+                precondition(!primaries.isEmpty, "FAIL: unlockanimation.mp4 color primaries must be non-empty")
+            }
+            print("PASS: AnimationTint.makeVideoComposition & cachedStill verified against unlockanimation.mp4.")
+        } else {
+            print("PASS: AnimationTint.cachedStill verified (unlockanimation.mp4 not present at relative path).")
+        }
     }
 }

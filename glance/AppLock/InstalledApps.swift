@@ -32,6 +32,7 @@ final class InstalledApps {
     private(set) var isScanning = false
     private var scanGeneration: UInt64 = 0
     private var lastRefreshedAt: ContinuousClock.Instant?
+    private var inFlightRefreshTask: Task<Void, Never>?
 
     init() {}
 
@@ -43,6 +44,12 @@ final class InstalledApps {
         {
             return
         }
+        if inFlightRefreshTask != nil {
+            while let inFlight = inFlightRefreshTask {
+                await inFlight.value
+            }
+            return
+        }
         await refresh()
     }
 
@@ -52,14 +59,19 @@ final class InstalledApps {
         let token = scanGeneration
         isScanning = true
 
-        let discovered = await Task.detached(priority: .userInitiated) {
-            Self.scanInstalledApplications()
-        }.value
+        let task = Task { @MainActor [weak self] in
+            let discovered = await Task.detached(priority: .userInitiated) {
+                Self.scanInstalledApplications()
+            }.value
 
-        guard token == scanGeneration else { return }
-        apps = discovered
-        lastRefreshedAt = ContinuousClock.now
-        isScanning = false
+            guard let self, token == self.scanGeneration else { return }
+            self.apps = discovered
+            self.lastRefreshedAt = ContinuousClock.now
+            self.isScanning = false
+            self.inFlightRefreshTask = nil
+        }
+        inFlightRefreshTask = task
+        await task.value
     }
 
     /// Filters discovered applications by localized name or bundle identifier.
