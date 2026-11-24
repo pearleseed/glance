@@ -18,7 +18,21 @@ Glance uses a standard 2D RGB webcam, not a hardware depth/infrared sensor like 
 
 ## Install
 
-Requires Xcode Command Line Tools (`clang`) and a root-owned copy of Glance in `/Applications/Glance.app`.
+### 1-Click In-App Setup (Recommended — No Source Code or Xcode CLT Needed)
+
+`Glance.app` bundles a pre-compiled universal `pam_glance.so` (`Contents/Helpers/pam_glance.so`) and a self-contained setup helper (`Contents/Resources/glance-sudo-setup.sh`) that uses only standard macOS system tools:
+
+1. Open **Glance → Settings → Sudo** and click **Set Up** (or **Repair** / **Update** if already partially configured).
+2. Enter your macOS administrator password once when prompted. Glance automatically:
+   - Installs or renames the app to `/Applications/Glance.app` if launched from another folder, `.dmg`, or wrong casing (and relaunches directly back to **Settings → Sudo**).
+   - Installs `/usr/local/lib/pam/pam_glance.so` (`root:wheel`, `0755`).
+   - Inserts `pam_glance.so` before `pam_tid.so` in `/etc/pam.d/sudo_local` while preserving existing rules.
+   - Applies `root:wheel` ownership and safe non-group/world-writable permissions on `/Applications/Glance.app`.
+3. If macOS denies replacing an existing `/Applications/Glance.app`, use the **Open App Management Settings** button shown in **Settings → Sudo** (or copy the command under **Manual Terminal commands**).
+
+### Manual Source-Build CLI (Requires Xcode Command Line Tools / `clang`)
+
+If you are building from a local checkout and want to compile `pam_glance.c` directly:
 
 ```bash
 sudo chown -R root:wheel /Applications/Glance.app
@@ -29,8 +43,22 @@ Then open **Glance → Settings → Sudo** and enable **Face authentication for 
 
 ## Uninstall
 
+### 1-Click In-App Uninstall (Recommended)
+
+Open **Glance → Settings → Sudo** and click **Uninstall**. This removes `/usr/local/lib/pam/pam_glance.so`, strips `pam_glance.so` lines from `/etc/pam.d/sudo_local` (preserving `pam_tid.so` and all other rules), disables the in-app toggle, and restores your normal user ownership on `/Applications/Glance.app`.
+
+### Manual CLI Uninstall
+
+From an installed `Glance.app` (no source repository required):
+
+```bash
+sudo /bin/bash /Applications/Glance.app/Contents/Resources/glance-sudo-setup.sh uninstall --restore-owner "$(id -u):$(id -g)"
+```
+
+Or from the source repository:
+
 ```bash
 sudo bash sudo-support/uninstall.sh
 ```
 
-`uninstall.sh` removes `/usr/local/lib/pam/pam_glance.so` and strips `pam_glance.so` lines from `/etc/pam.d/sudo_local` while preserving all existing lines (such as `pam_tid.so`). `/etc/pam.d/sudo` is never modified.
+`/etc/pam.d/sudo` is never modified by either install or uninstall method.

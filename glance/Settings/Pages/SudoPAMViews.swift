@@ -136,3 +136,331 @@ extension SudoPAMStatus.BinaryState {
         }
     }
 }
+
+struct SudoSecondaryButton: View {
+    let title: String
+    var isEnabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SettingsMetrics.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(SettingsMetrics.neutralButtonFill)
+                .overlay(
+                    Capsule().strokeBorder(SettingsMetrics.rowBorder, lineWidth: SettingsMetrics.rowBorderWidth)
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+}
+
+struct SudoPhaseProgressView: View {
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(SettingsMetrics.textSecondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+struct SudoNoticeBanner<Footer: View>: View {
+    let systemImage: String
+    let iconColor: Color
+    let text: String
+    @ViewBuilder var footer: () -> Footer
+
+    init(
+        systemImage: String,
+        iconColor: Color,
+        text: String,
+        @ViewBuilder footer: @escaping () -> Footer = { EmptyView() }
+    ) {
+        self.systemImage = systemImage
+        self.iconColor = iconColor
+        self.text = text
+        self.footer = footer
+    }
+
+    var body: some View {
+        SettingsGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13))
+                        .foregroundStyle(iconColor)
+                        .padding(.top, 1)
+
+                    Text(text)
+                        .font(.system(size: 11))
+                        .foregroundStyle(SettingsMetrics.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                footer()
+            }
+            .padding(.horizontal, SettingsMetrics.rowHorizontalInset)
+            .padding(.vertical, 10)
+        }
+    }
+}
+
+struct SudoSystemStatusSection: View {
+    let pamStatus: SudoPAMStatus?
+    let listenerStatusLabel: String
+    let listenerStatusColor: Color
+    let isRefreshDisabled: Bool
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
+            HStack(spacing: 0) {
+                SettingsSectionTitle(text: "System Status")
+
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SettingsMetrics.textTertiary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRefreshDisabled)
+                .opacity(isRefreshDisabled ? 0.4 : 1)
+                .help("Refresh PAM status")
+                .padding(.trailing, SettingsMetrics.sectionTitleHorizontalInset)
+                .padding(.top, SettingsMetrics.sectionTitleVerticalPadding)
+            }
+            .padding(.bottom, -6)
+
+            SettingsGroup {
+                SudoStatusRow(
+                    title: "PAM module",
+                    path: SudoPAMStatus.pamModulePath,
+                    badgeText: pamStatus?.module.label ?? "Checking…",
+                    badgeColor: pamStatus?.module.color ?? SettingsMetrics.textTertiary
+                )
+                SettingsGroupDivider()
+                SudoStatusRow(
+                    title: "PAM configuration",
+                    path: SudoPAMStatus.pamConfigPath,
+                    badgeText: pamStatus?.config.label ?? "Checking…",
+                    badgeColor: pamStatus?.config.color ?? SettingsMetrics.textTertiary
+                )
+                SettingsGroupDivider()
+                SudoStatusRow(
+                    title: "Trusted app binary",
+                    path: SudoPAMStatus.trustedExecutablePath,
+                    badgeText: pamStatus?.trustedBinary.label ?? "Checking…",
+                    badgeColor: pamStatus?.trustedBinary.color ?? SettingsMetrics.textTertiary
+                )
+                SettingsGroupDivider()
+                SudoStatusRow(
+                    title: "Local socket listener",
+                    path: "~/Library/Application Support/glance-sudo/glance-sudo.sock",
+                    badgeText: listenerStatusLabel,
+                    badgeColor: listenerStatusColor
+                )
+            }
+        }
+    }
+}
+
+struct SudoManualCommandsSection: View {
+    @Binding var isExpanded: Bool
+    let requiresRelocation: Bool
+    let installCommand: String
+    let uninstallCommand: String
+    let copiedCommandID: String?
+    let onCopy: (String, String) -> Void
+
+    private var installTitle: String {
+        requiresRelocation ? "Install Glance & PAM module" : "Install PAM module"
+    }
+
+    private var installSubtitle: String {
+        if requiresRelocation {
+            return "Copies Glance to /Applications/Glance.app, installs pam_glance.so, "
+                + "and configures /etc/pam.d/sudo_local."
+        }
+        return "Installs pam_glance.so, configures /etc/pam.d/sudo_local, "
+            + "and secures /Applications/Glance.app."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text("Manual Terminal commands")
+                        .font(SettingsMetrics.sectionTitleFont)
+                    Spacer()
+                }
+                .foregroundStyle(SettingsMetrics.textTertiary)
+                .padding(.horizontal, SettingsMetrics.sectionTitleHorizontalInset)
+                .padding(.top, SettingsMetrics.sectionTitleVerticalPadding)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                SettingsGroup {
+                    SudoCommandRow(
+                        title: installTitle,
+                        subtitle: installSubtitle,
+                        command: installCommand,
+                        isCopied: copiedCommandID == "install",
+                        onCopy: { onCopy(installCommand, "install") }
+                    )
+                    SettingsGroupDivider()
+                    SudoCommandRow(
+                        title: "Uninstall PAM module",
+                        subtitle:
+                            "Removes pam_glance.so, cleans /etc/pam.d/sudo_local, "
+                            + "and restores normal ownership on Glance.app.",
+                        command: uninstallCommand,
+                        isCopied: copiedCommandID == "uninstall",
+                        onCopy: { onCopy(uninstallCommand, "uninstall") }
+                    )
+                }
+            }
+        }
+    }
+}
+
+struct SudoSetupDescriptor {
+    enum TrailingContent {
+        case primaryButton(title: String, isSetupAction: Bool)
+        case symbol(name: String, color: Color)
+    }
+
+    let title: String
+    let subtitle: String
+    let trailing: TrailingContent
+
+    static func resolve(
+        status: SudoPAMStatus,
+        isSessionUnlocked: Bool,
+        isUnlockingSession: Bool,
+        hasActiveIdentities: Bool,
+        sudoFaceAuthEnabled: Bool
+    ) -> SudoSetupDescriptor {
+        switch status.setupAction {
+        case .installAndRelocate:
+            return SudoSetupDescriptor(
+                title: "Install Glance & Set Up Sudo",
+                subtitle:
+                    "Copies Glance to /Applications/Glance.app, installs the PAM module, "
+                    + "configures sudo_local, and restarts Glance.",
+                trailing: .primaryButton(title: "Set Up", isSetupAction: true)
+            )
+        case .install:
+            return SudoSetupDescriptor(
+                title: "Automatic Setup",
+                subtitle:
+                    "Installs the PAM module, configures /etc/pam.d/sudo_local, "
+                    + "and secures /Applications/Glance.app.",
+                trailing: .primaryButton(title: "Set Up", isSetupAction: true)
+            )
+        case .repair:
+            return SudoSetupDescriptor(
+                title: "Repair Sudo Setup",
+                subtitle: "Restores root ownership, PAM configuration order, and safe permissions.",
+                trailing: .primaryButton(title: "Repair", isSetupAction: true)
+            )
+        case .update:
+            return SudoSetupDescriptor(
+                title: "Update PAM Module",
+                subtitle: "Updates /usr/local/lib/pam/pam_glance.so to match this version of Glance.",
+                trailing: .primaryButton(title: "Update", isSetupAction: true)
+            )
+        case .ready:
+            if !isSessionUnlocked {
+                return SudoSetupDescriptor(
+                    title: "System setup complete",
+                    subtitle: "Unlock your Glance session to start using Face for sudo.",
+                    trailing: .primaryButton(
+                        title: isUnlockingSession ? "Authenticating…" : "Unlock",
+                        isSetupAction: false
+                    )
+                )
+            }
+            if !hasActiveIdentities {
+                return SudoSetupDescriptor(
+                    title: "System setup complete",
+                    subtitle: "Enroll or enable a face on the Face tab before testing sudo.",
+                    trailing: .symbol(name: "info.circle.fill", color: SettingsMetrics.textTertiary)
+                )
+            }
+            if !sudoFaceAuthEnabled {
+                return SudoSetupDescriptor(
+                    title: "System setup complete",
+                    subtitle: "Turn on Face authentication for sudo above, then run sudo -v in Terminal.",
+                    trailing: .symbol(name: "checkmark.circle.fill", color: SettingsMetrics.textSecondary)
+                )
+            }
+            return SudoSetupDescriptor(
+                title: "Ready for sudo",
+                subtitle: "Everything is installed and active. Open Terminal and run sudo -v to test.",
+                trailing: .symbol(name: "checkmark.circle.fill", color: SettingsMetrics.qualityGoodColor)
+            )
+        }
+    }
+}
+
+struct SudoSetupFeedbackView: View {
+    let showMissingHelpersWarning: Bool
+    let needsAppManagementPermission: Bool
+    let actionError: String?
+    let actionMessage: String?
+    let onOpenAppManagement: () -> Void
+
+    var body: some View {
+        if showMissingHelpersWarning {
+            SettingsCaption(
+                text:
+                    "Bundled PAM helper files are missing from this Glance.app bundle. "
+                    + "Reinstall Glance or build from source using the commands in sudo-support/README.md."
+            )
+        }
+        if needsAppManagementPermission {
+            SudoNoticeBanner(
+                systemImage: "exclamationmark.shield.fill",
+                iconColor: SettingsMetrics.qualityFairColor,
+                text: actionError
+                    ?? "macOS denied permission to update /Applications/Glance.app. "
+                    + "Allow Glance under System Settings > Privacy & Security > App Management, "
+                    + "or use the manual Terminal commands below."
+            ) {
+                Button("Open App Management Settings", action: onOpenAppManagement)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(GlanceTheme.accent)
+                    .padding(.leading, 23)
+            }
+        } else if let actionError {
+            SettingsCaption(text: actionError)
+        }
+        if let actionMessage {
+            SettingsCaption(text: actionMessage)
+        }
+    }
+}

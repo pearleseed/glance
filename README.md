@@ -110,11 +110,12 @@ Guard individual macOS applications behind face recognition (found in **Settings
 
 Authenticate local `sudo` commands in Terminal with your face — cascading seamlessly **Face (Heavy Liveness) → Touch ID → Mac password** (found in **Settings → Sudo**, off by default):
 
-- **Zero password injection:** Uses a native universal (`arm64` + `x86_64`) OpenPAM module (`sudo-support/pam_glance.so`) installed strictly in `/etc/pam.d/sudo_local` (survives macOS updates; `/etc/pam.d/sudo` is never touched).
+- **1-click in-app setup (zero source code or Xcode CLT needed):** `Glance.app` bundles a pre-compiled universal `pam_glance.so` (`Contents/Helpers/pam_glance.so`) and self-contained setup helper (`Contents/Resources/glance-sudo-setup.sh`). Open **Glance → Settings → Sudo** and click **Set Up** — Glance installs `/Applications/Glance.app` if needed, installs `/usr/local/lib/pam/pam_glance.so`, configures `/etc/pam.d/sudo_local`, applies `root:wheel` ownership, and relaunches back to **Settings → Sudo**. Repairs, updates, **Uninstall** (restoring user ownership), and copyable bundled Terminal fallbacks are built into the same page.
+- **Zero password injection:** Uses a native universal (`arm64` + `x86_64`) OpenPAM module installed strictly in `/etc/pam.d/sudo_local` (survives macOS updates; `/etc/pam.d/sudo` is never touched).
 - **Hardened local-only verification:** Refuses remote/SSH/headless sessions (`PAM_RHOST` and macOS audit session flags via `getaudit_addr`) and `root` invocations; verifies peer UID (`getpeereid`), executable path (`LOCAL_PEERPID` + `proc_pidpath` == `/Applications/Glance.app/Contents/MacOS/glance`), root-owned non-writable binary (`lstat`), root-only socket clients (`uid == 0`), a `0700` socket directory, and a fresh **256-bit random nonce** (`arc4random_buf`) on every request.
 - **Heavy Liveness enforced:** Always runs Heavy liveness regardless of your lock-screen liveness setting. If Glance is closed, locked, disabled, or fails to match, `sudo` immediately falls through to Touch ID and password.
 
-See [sudo-support/README.md](sudo-support/README.md) for installation and uninstall steps:
+If you prefer compiling and installing manually from a source checkout (requires Xcode Command Line Tools `clang`), see [sudo-support/README.md](sudo-support/README.md):
 
 ```bash
 sudo chown -R root:wheel /Applications/Glance.app
@@ -185,7 +186,7 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Debug CODE_SI
 ```
 
 ### Offline Self-Tests
-Glance includes standalone, camera-free Swift self-test harnesses under `tools/` covering liveness, security contracts, glare contour masking, notch UI tinting, circular enrollment pose calibration, Night Boost, App Lock state machine, and the `sudo` PAM protocol:
+Glance includes standalone, camera-free Swift self-test harnesses under `tools/` covering liveness, security contracts, glare contour masking, notch UI tinting, circular enrollment pose calibration, Night Boost, App Lock state machine, and the `sudo` PAM installer & protocol:
 
 - `tools/liveness_selftest.swift`
 - `tools/security_selftest.swift`
@@ -194,6 +195,7 @@ Glance includes standalone, camera-free Swift self-test harnesses under `tools/`
 - `tools/enrollment_pose_selftest.swift`
 - `tools/night_boost_selftest.swift`
 - `tools/applock_selftest.swift`
+- `tools/sudo_installer_selftest.swift`
 - `tools/sudo_protocol_selftest.swift`
 
 Each file includes its exact `swiftc` compile-and-run command in its header comment.

@@ -4,12 +4,55 @@
 //
 //  Settings tab for opt-in Face-for-sudo PAM authentication: toggle (default false),
 //  live detection of /usr/local/lib/pam/pam_glance.so, /etc/pam.d/sudo_local, and the
-//  root-owned Glance binary, one-line install/uninstall commands, and 2D camera caveat.
+//  trusted Glance binary, 1-click setup/repair/update/uninstall, collapsed manual
+//  Terminal commands, and 2D camera security caveat.
 //
 
 import AppKit
-import Darwin
 import SwiftUI
+
+private enum SudoRunningAction {
+    case installOrRepair
+    case uninstall
+}
+
+private struct SudoStatusWarningCaptions: View {
+    let authError: String?
+    let sudoServerError: String?
+    let isWrongCasing: Bool
+    let isSessionUnlocked: Bool
+    let hasActiveIdentities: Bool
+    let hasUnlockCapableEmbedder: Bool
+
+    var body: some View {
+        if let authError {
+            SettingsCaption(text: authError)
+        } else if let sudoServerError {
+            SettingsCaption(text: "Socket listener error: \(sudoServerError)")
+        }
+        if isWrongCasing {
+            SettingsCaption(
+                text:
+                    "Bundle path casing mismatch: pam_glance.so requires the exact path "
+                    + "/Applications/Glance.app (capital G). Rename or install /Applications/glance.app "
+                    + "as /Applications/Glance.app."
+            )
+        }
+        if !isSessionUnlocked {
+            SettingsCaption(
+                text:
+                    "Glance session is locked — Face-for-sudo is paused until you unlock your session "
+                    + "on Face or Password. Touch ID and password still work in Terminal."
+            )
+        } else if !hasActiveIdentities {
+            SettingsCaption(
+                text: "No active enrolled face — enroll or enable a face on the Face tab before using Face-for-sudo."
+            )
+        } else if !hasUnlockCapableEmbedder {
+            SettingsCaption(text: "Discriminative face model unavailable — Face-for-sudo is disabled for safety.")
+        }
+    }
+}
 
 struct SudoSettingsPage: View {
     let environment: AppEnvironment
@@ -19,12 +62,17 @@ struct SudoSettingsPage: View {
     @State private var pamStatus: SudoPAMStatus?
     @State private var probeGeneration: UInt64 = 0
     @State private var isAuthenticating = false
+    @State private var isUnlockingSession = false
     @State private var authError: String?
+    @State private var runningAction: SudoRunningAction?
+    @State private var activePhase: SudoPAMInstaller.ProgressPhase?
+    @State private var actionMessage: String?
+    @State private var actionError: String?
+    @State private var needsAppManagementPermission = false
+    @State private var showManualCommands = false
     @State private var copiedCommandID: String?
 
-    private static let installCommand = "sudo bash sudo-support/install.sh"
-    private static let chownCommand = "sudo chown -R root:wheel /Applications/Glance.app"
-    private static let uninstallCommand = "sudo bash sudo-support/uninstall.sh"
+    private var isRunningAction: Bool { runningAction != nil }
 
     private var hasUnlockCapableEmbedder: Bool {
         let pipeline = environment.recognitionPipeline
@@ -33,125 +81,55 @@ struct SudoSettingsPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsMetrics.rowSpacing) {
-            SettingsGroup {
-                SettingsRowContent(
-                    title: "Face authentication for sudo",
-                    subtitle:
-                        "Authorize local sudo commands with your face and Heavy Liveness before Touch ID or password.",
-                    subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
-                ) {
-                    GlanceToggle(
-                        isOn: Binding(
-                            get: { settings.sudoFaceAuthEnabled },
-                            set: { newValue in
-                                handleToggleChange(newValue)
-                            }
-                        ))
-                }
-            }
+            toggleGroup
 
-            if let authError {
-                SettingsCaption(text: authError)
-            } else if let serverError = environment.sudoServerError {
-                SettingsCaption(text: "Socket listener error: \(serverError)")
-            }
+            SudoStatusWarningCaptions(
+                authError: authError,
+                sudoServerError: environment.sudoServerError,
+                isWrongCasing: pamStatus?.trustedBinary == .wrongCasing,
+                isSessionUnlocked: environment.pocController.isSessionUnlocked,
+                hasActiveIdentities: !enrollmentStore.activeIdentities.isEmpty,
+                hasUnlockCapableEmbedder: hasUnlockCapableEmbedder
+            )
 
-            if pamStatus?.trustedBinary == .wrongCasing {
-                SettingsCaption(
-                    text:
-                        "Bundle path casing mismatch: pam_glance.so requires the exact path "
-                        + "/Applications/Glance.app (capital G). Rename or install /Applications/glance.app "
-                        + "as /Applications/Glance.app."
-                )
-            }
+            SudoSystemStatusSection(
+                pamStatus: pamStatus,
+                listenerStatusLabel: listenerStatusLabel,
+                listenerStatusColor: listenerStatusColor,
+                isRefreshDisabled: isRunningAction,
+                onRefresh: triggerRefreshStatus
+            )
 
-            if !environment.pocController.isSessionUnlocked {
-                SettingsCaption(
-                    text:
-                        "Glance session is locked — Face-for-sudo is paused until you unlock your session "
-                        + "on Face or Password. Touch ID and password still work in Terminal."
-                )
-            } else if enrollmentStore.activeIdentities.isEmpty {
-                SettingsCaption(
-                    text:
-                        "No active enrolled face — enroll or enable a face on the Face tab before using Face-for-sudo.")
-            } else if !hasUnlockCapableEmbedder {
-                SettingsCaption(text: "Discriminative face model unavailable — Face-for-sudo is disabled for safety.")
-            }
-
-            statusHeader
+            SettingsSectionTitle(text: "Setup")
                 .padding(.bottom, -6)
+            setupGroup
 
-            SettingsGroup {
-                SudoStatusRow(
-                    title: "PAM module",
-                    path: SudoPAMStatus.pamModulePath,
-                    badgeText: pamStatus?.module.label ?? "Checking…",
-                    badgeColor: pamStatus?.module.color ?? SettingsMetrics.textTertiary
-                )
+            SudoSetupFeedbackView(
+                showMissingHelpersWarning: pamStatus.map { !$0.hasBundledHelpers && $0.setupAction != .ready } ?? false,
+                needsAppManagementPermission: needsAppManagementPermission,
+                actionError: actionError,
+                actionMessage: actionMessage,
+                onOpenAppManagement: SudoPAMInstaller.openAppManagementSettings
+            )
 
-                SettingsGroupDivider()
+            SudoManualCommandsSection(
+                isExpanded: $showManualCommands,
+                requiresRelocation: pamStatus?.requiresRelocation == true,
+                installCommand: SudoPAMInstaller.manualInstallCommand(),
+                uninstallCommand: SudoPAMInstaller.manualUninstallCommand(),
+                copiedCommandID: copiedCommandID,
+                onCopy: copyCommand
+            )
 
-                SudoStatusRow(
-                    title: "PAM configuration",
-                    path: SudoPAMStatus.pamConfigPath,
-                    badgeText: pamStatus?.config.label ?? "Checking…",
-                    badgeColor: pamStatus?.config.color ?? SettingsMetrics.textTertiary
-                )
-
-                SettingsGroupDivider()
-
-                SudoStatusRow(
-                    title: "Trusted app binary",
-                    path: SudoPAMStatus.trustedExecutablePath,
-                    badgeText: pamStatus?.trustedBinary.label ?? "Checking…",
-                    badgeColor: pamStatus?.trustedBinary.color ?? SettingsMetrics.textTertiary
-                )
-
-                SettingsGroupDivider()
-
-                SudoStatusRow(
-                    title: "Local socket listener",
-                    path: "~/Library/Application Support/glance-sudo/glance-sudo.sock",
-                    badgeText: listenerStatusLabel,
-                    badgeColor: listenerStatusColor
-                )
-            }
-
-            SettingsSectionTitle(text: "Setup Commands")
-                .padding(.bottom, -6)
-
-            SettingsGroup {
-                SudoCommandRow(
-                    title: "Install PAM module",
-                    subtitle: "Run from the Glance repository root to compile and configure /etc/pam.d/sudo_local.",
-                    command: Self.installCommand,
-                    isCopied: copiedCommandID == "install",
-                    onCopy: { copyCommand(Self.installCommand, id: "install") }
-                )
-
-                SettingsGroupDivider()
-
-                SudoCommandRow(
-                    title: "Grant root ownership to Glance.app",
-                    subtitle: "Required so pam_glance.so trusts /Applications/Glance.app/Contents/MacOS/glance.",
-                    command: Self.chownCommand,
-                    isCopied: copiedCommandID == "chown",
-                    onCopy: { copyCommand(Self.chownCommand, id: "chown") }
-                )
-
-                SettingsGroupDivider()
-
-                SudoCommandRow(
-                    title: "Uninstall PAM module",
-                    subtitle: "Removes pam_glance.so and cleans /etc/pam.d/sudo_local while preserving Touch ID.",
-                    command: Self.uninstallCommand,
-                    isCopied: copiedCommandID == "uninstall",
-                    onCopy: { copyCommand(Self.uninstallCommand, id: "uninstall") }
-                )
-            }
-
-            securityCaveatBanner
+            SudoNoticeBanner(
+                systemImage: "exclamationmark.triangle.fill",
+                iconColor: SettingsMetrics.qualityFairColor,
+                text:
+                    "2D Camera Security Warning: Glance uses a standard 2D RGB webcam rather than infrared "
+                    + "depth hardware. Even with Heavy Liveness enforced, a 2D camera cannot reliably defeat "
+                    + "a high-resolution video replay attack. Leave Face-for-sudo off unless you accept this "
+                    + "risk for local convenience."
+            )
 
             SettingsCaption(
                 text:
@@ -165,74 +143,139 @@ struct SudoSettingsPage: View {
             environment.pocController.refreshCredentialStatus()
             enrollmentStore.reloadIfUnlocked()
         }
-        .task {
-            await refreshStatus()
+        .task { await refreshStatus() }
+        .onChange(of: environment.pocController.isSessionUnlocked) { _, isUnlocked in
+            if isUnlocked { enrollmentStore.reloadIfUnlocked() }
+            environment.syncSudoAuthServer()
         }
-        .onDisappear {
-            authError = nil
-        }
+        .onDisappear { authError = nil }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !isRunningAction else { return }
+            environment.pocController.refreshCredentialStatus()
             triggerRefreshStatus()
         }
     }
 
-    private var statusHeader: some View {
-        HStack(spacing: 0) {
-            SettingsSectionTitle(text: "System Status")
-
-            Button {
-                triggerRefreshStatus()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SettingsMetrics.textTertiary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
+    private var toggleGroup: some View {
+        SettingsGroup {
+            SettingsRowContent(
+                title: "Face authentication for sudo",
+                subtitle:
+                    "Authorize local sudo commands with your face and Heavy Liveness before Touch ID or password.",
+                subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
+            ) {
+                GlanceToggle(
+                    isOn: Binding(
+                        get: { settings.sudoFaceAuthEnabled },
+                        set: { handleToggleChange($0) }
+                    )
+                )
+                .disabled(isRunningAction || isAuthenticating)
             }
-            .buttonStyle(.plain)
-            .help("Refresh PAM status")
-            .padding(.trailing, SettingsMetrics.sectionTitleHorizontalInset)
-            .padding(.top, SettingsMetrics.sectionTitleVerticalPadding)
         }
     }
 
-    private var securityCaveatBanner: some View {
+    private var setupGroup: some View {
         SettingsGroup {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(SettingsMetrics.qualityFairColor)
-                    .padding(.top, 1)
-
-                Text(
-                    "2D Camera Security Warning: Glance uses a standard 2D RGB webcam rather than infrared "
-                        + "depth hardware. Even with Heavy Liveness enforced, a 2D camera cannot reliably defeat "
-                        + "a high-resolution video replay attack. Leave Face-for-sudo off unless you accept this "
-                        + "risk for local convenience."
-                )
-                .font(.system(size: 11))
-                .foregroundStyle(SettingsMetrics.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let status = pamStatus {
+                primarySetupRow(for: status)
+                if status.canUninstall {
+                    SettingsGroupDivider()
+                    uninstallRow
+                }
+            } else {
+                SettingsRowContent(
+                    title: "Checking setup status…",
+                    subtitle: "Inspecting PAM module, configuration, and /Applications/Glance.app.",
+                    subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
+                ) {
+                    ProgressView().controlSize(.small)
+                }
             }
-            .padding(.horizontal, SettingsMetrics.rowHorizontalInset)
-            .padding(.vertical, 10)
+        }
+    }
+
+    private func primarySetupRow(for status: SudoPAMStatus) -> some View {
+        let descriptor = SudoSetupDescriptor.resolve(
+            status: status,
+            isSessionUnlocked: environment.pocController.isSessionUnlocked,
+            isUnlockingSession: isUnlockingSession,
+            hasActiveIdentities: !enrollmentStore.activeIdentities.isEmpty,
+            sudoFaceAuthEnabled: settings.sudoFaceAuthEnabled
+        )
+
+        return SettingsRowContent(
+            title: descriptor.title,
+            subtitle: descriptor.subtitle,
+            subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
+        ) {
+            primarySetupTrailing(for: descriptor, hasBundledHelpers: status.hasBundledHelpers)
+        }
+    }
+
+    @ViewBuilder
+    private func primarySetupTrailing(
+        for descriptor: SudoSetupDescriptor,
+        hasBundledHelpers: Bool
+    ) -> some View {
+        if runningAction == .installOrRepair {
+            SudoPhaseProgressView(label: phaseLabel)
+        } else {
+            switch descriptor.trailing {
+            case .primaryButton(let title, let isSetupAction):
+                SettingsPrimaryButton(
+                    title: title,
+                    isEnabled: isSetupAction
+                        ? (!isRunningAction && hasBundledHelpers)
+                        : (!isRunningAction && !isUnlockingSession),
+                    compact: true
+                ) {
+                    if isSetupAction {
+                        runInstallOrRepair()
+                    } else {
+                        unlockSessionForSudo()
+                    }
+                }
+            case .symbol(let name, let color):
+                Image(systemName: name)
+                    .font(.system(size: 16))
+                    .foregroundStyle(color)
+            }
+        }
+    }
+
+    private var uninstallRow: some View {
+        SettingsRowContent(
+            title: "Uninstall PAM module",
+            subtitle:
+                "Removes pam_glance.so, cleans /etc/pam.d/sudo_local, "
+                + "and restores normal ownership on Glance.app.",
+            subtitleMaxWidth: SettingsMetrics.rowSubtitleMaxWidth
+        ) {
+            if runningAction == .uninstall {
+                SudoPhaseProgressView(label: phaseLabel)
+            } else {
+                SudoSecondaryButton(title: "Uninstall", isEnabled: !isRunningAction, action: runUninstall)
+            }
+        }
+    }
+
+    private var phaseLabel: String {
+        switch activePhase {
+        case .preparing, .none: return "Preparing…"
+        case .awaitingAuthorization: return "Waiting for permission…"
+        case .restarting: return "Restarting…"
         }
     }
 
     private var listenerStatusLabel: String {
-        if environment.isSudoServerListening {
-            return "Listening"
-        }
-        if settings.sudoFaceAuthEnabled && environment.sudoServerError != nil {
-            return "Error"
-        }
+        if environment.isSudoServerListening { return "Listening" }
+        if settings.sudoFaceAuthEnabled && environment.sudoServerError != nil { return "Error" }
         return "Off"
     }
 
     private var listenerStatusColor: Color {
-        if environment.isSudoServerListening {
-            return SettingsMetrics.qualityGoodColor
-        }
+        if environment.isSudoServerListening { return SettingsMetrics.qualityGoodColor }
         if settings.sudoFaceAuthEnabled && environment.sudoServerError != nil {
             return SettingsMetrics.qualityPoorColor
         }
@@ -240,25 +283,124 @@ struct SudoSettingsPage: View {
     }
 
     private func triggerRefreshStatus() {
-        Task {
-            await refreshStatus()
-        }
+        guard !isRunningAction else { return }
+        Task { await refreshStatus() }
     }
 
     private func refreshStatus() async {
         probeGeneration &+= 1
         let token = probeGeneration
         environment.syncSudoAuthServer()
-
-        let probed = await Task.detached(priority: .utility) {
-            SudoPAMStatus.probe()
-        }.value
-
+        let probed = await Task.detached(priority: .utility) { SudoPAMStatus.probe() }.value
         guard !Task.isCancelled, token == probeGeneration else { return }
         pamStatus = probed
+        if probed.setupAction == .ready && needsAppManagementPermission {
+            needsAppManagementPermission = false
+            actionError = nil
+        }
+    }
+
+    private func runInstallOrRepair() {
+        runPrivilegedAction(.installOrRepair) {
+            let outcome = await SudoPAMInstaller.installOrRepair { activePhase = $0 }
+            await handleActionOutcome(outcome, isInstall: true)
+        }
+    }
+
+    private func runUninstall() {
+        runPrivilegedAction(.uninstall) {
+            let outcome = await SudoPAMInstaller.uninstall { activePhase = $0 }
+            await handleActionOutcome(outcome, isInstall: false)
+        }
+    }
+
+    private func runPrivilegedAction(
+        _ action: SudoRunningAction,
+        operation: @escaping @MainActor () async -> Void
+    ) {
+        guard !isRunningAction else { return }
+        runningAction = action
+        activePhase = .preparing
+        actionMessage = nil
+        actionError = nil
+        needsAppManagementPermission = false
+        Task { await operation() }
+    }
+
+    private func handleActionOutcome(_ outcome: SudoPAMInstallOutcome, isInstall: Bool) async {
+        switch outcome {
+        case .succeeded(let requiresRelaunch):
+            if isInstall {
+                await finishInstallSuccess(requiresRelaunch: requiresRelaunch)
+            } else {
+                settings.sudoFaceAuthEnabled = false
+                environment.syncSudoAuthServer()
+                await refreshStatus()
+                finishAction()
+                actionMessage = "Face-for-sudo PAM module removed."
+            }
+        case .cancelled:
+            finishAction()
+        case .needsAppManagementPermission(let detail):
+            await refreshStatus()
+            finishAction()
+            needsAppManagementPermission = true
+            actionError = detail
+            showManualCommands = true
+        case .failed(let detail):
+            await refreshStatus()
+            finishAction()
+            actionError = detail
+        }
+    }
+
+    private func finishInstallSuccess(requiresRelaunch: Bool) async {
+        if environment.pocController.isSessionUnlocked,
+            !enrollmentStore.activeIdentities.isEmpty,
+            hasUnlockCapableEmbedder
+        {
+            settings.sudoFaceAuthEnabled = true
+            environment.syncSudoAuthServer()
+        }
+
+        if requiresRelaunch {
+            activePhase = .restarting
+            if SudoPAMInstaller.relaunchInstalledApp(openTab: .sudo) {
+                return
+            }
+            await refreshStatus()
+            finishAction()
+            actionMessage = "Setup complete. Quit this copy and open /Applications/Glance.app to finish."
+            return
+        }
+
+        await refreshStatus()
+        finishAction()
+        actionMessage = "Face-for-sudo is installed and ready."
+    }
+
+    private func finishAction() {
+        runningAction = nil
+        activePhase = nil
+    }
+
+    private func unlockSessionForSudo() {
+        guard !isUnlockingSession, !isRunningAction else { return }
+        isUnlockingSession = true
+        actionError = nil
+        Task {
+            await environment.pocController.unlockSession()
+            enrollmentStore.reloadIfUnlocked()
+            environment.syncSudoAuthServer()
+            if let sessionError = environment.pocController.sessionError {
+                actionError = sessionError
+            }
+            isUnlockingSession = false
+        }
     }
 
     private func handleToggleChange(_ enable: Bool) {
+        guard !isRunningAction else { return }
         authError = nil
         if !enable {
             settings.sudoFaceAuthEnabled = false
@@ -292,9 +434,7 @@ struct SudoSettingsPage: View {
         copiedCommandID = id
         Task {
             try? await Task.sleep(for: .seconds(1.5))
-            if copiedCommandID == id {
-                copiedCommandID = nil
-            }
+            if copiedCommandID == id { copiedCommandID = nil }
         }
     }
 }
