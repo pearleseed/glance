@@ -130,7 +130,8 @@ final class CameraManager {
         until deadline: ContinuousClock.Instant
     ) async -> CameraFrame? {
         guard isRunning else { return nil }
-        return await frameWaiter.nextFrame(after: lastFrameID, until: deadline)
+        let epoch = frameWaiter.currentEpoch
+        return await frameWaiter.nextFrame(after: lastFrameID, until: deadline, expectedEpoch: epoch)
     }
 
     func publish(frame: CameraFrame) {

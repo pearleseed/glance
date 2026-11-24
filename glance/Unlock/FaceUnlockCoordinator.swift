@@ -123,6 +123,7 @@ final class FaceUnlockCoordinator {
         observeDisplayContextSettings()
         observeScreenParameters()
         observeToggleShortcut()
+        observePipelineLoadState()
         syncToggleHotKeyRegistration()
     }
 
@@ -184,6 +185,25 @@ final class FaceUnlockCoordinator {
                 self.syncToggleHotKeyRegistration()
             }
         }
+    }
+
+    private func observePipelineLoadState() {
+        withObservationTracking {
+            _ = pipeline.loadState
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observePipelineLoadState()
+                self.handlePipelineLoadStateChange()
+            }
+        }
+    }
+
+    private func handlePipelineLoadStateChange() {
+        if case .fallback = pipeline.loadState {
+            disarmOverlay()
+        }
+        updateSpaceMonitor()
     }
 
     private func syncToggleHotKeyRegistration() {

@@ -69,7 +69,9 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
         if session.isRunning {
             session.stopRunning()
         }
-        SharedCoreImageContext.clearCaches()
+        if framePublisher.publishesFrames {
+            SharedCoreImageContext.clearCaches()
+        }
     }
 
     private func ensureSession() -> AVCaptureSession {
@@ -190,6 +192,7 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
 /// coalesces to the latest unconsumed frame, and hops to `@MainActor` at most once per drain cycle.
 nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: CameraManager?
+    let publishesFrames: Bool
     /// Detection only needs a modest resolution; the live preview renders from the capture session directly and
     /// is unaffected. The undownscaled `source` is kept alongside for callers needing native pixels (`renderCrop`).
     private let maxLongEdge: CGFloat = 640
@@ -198,6 +201,7 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
     private let pendingState: OSAllocatedUnfairLock<PendingCameraFrameState>
 
     init(publishesFrames: Bool = true) {
+        self.publishesFrames = publishesFrames
         self.pendingState = OSAllocatedUnfairLock(
             initialState: PendingCameraFrameState(publishesFrames: publishesFrames, isCapturing: false)
         )

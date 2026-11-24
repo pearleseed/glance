@@ -193,6 +193,10 @@ nonisolated final class CameraFrameWaiter: Sendable {
 
     private let state: OSAllocatedUnfairLock<State>
 
+    var currentEpoch: UInt64 {
+        state.withLock { $0.epoch }
+    }
+
     init(isActive: Bool = true) {
         self.state = OSAllocatedUnfairLock(initialState: State(isActive: isActive))
     }
@@ -280,7 +284,8 @@ nonisolated final class CameraFrameWaiter: Sendable {
 
     func nextFrame(
         after lastFrameID: UInt64?,
-        until deadline: ContinuousClock.Instant
+        until deadline: ContinuousClock.Instant,
+        expectedEpoch: UInt64? = nil
     ) async -> CameraFrame? {
         let clock = ContinuousClock()
         enum Preflight {
@@ -290,6 +295,9 @@ nonisolated final class CameraFrameWaiter: Sendable {
 
         let preflight: Preflight = state.withLock { s in
             guard s.isActive, !Task.isCancelled else {
+                return .immediate(nil)
+            }
+            if let expectedEpoch, s.epoch != expectedEpoch {
                 return .immediate(nil)
             }
             if let latest = s.latestFrame,

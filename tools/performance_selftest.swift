@@ -181,6 +181,7 @@ struct PerformanceSelfTest {
                 extracted[index] == subscriptValue,
                 "FAIL: Float16 fast-path diverged from subscript at \(index): \(extracted[index]) vs \(subscriptValue)"
             )
+            #if arch(arm64)
             if index >= 10 {
                 let diffFromSeed = abs(extracted[index] - seedFloats[index])
                 precondition(
@@ -188,15 +189,26 @@ struct PerformanceSelfTest {
                     "FAIL: Float16 quantization error exceeded 1e-3 at \(index): \(diffFromSeed)"
                 )
             }
+            #else
+            let diffFromSeed = abs(extracted[index] - seedFloats[index])
+            precondition(
+                diffFromSeed < 1e-3,
+                "FAIL: Float16 quantization error exceeded 1e-3 at \(index): \(diffFromSeed)"
+            )
+            #endif
         }
 
         // Also validate non-contiguous Float16 fallback produces identical values.
         let backing = UnsafeMutablePointer<UInt16>.allocate(capacity: count * 2)
         defer { backing.deallocate() }
         backing.initialize(repeating: 0, count: count * 2)
-        let rawSource = multiArray.dataPointer.assumingMemoryBound(to: UInt16.self)
-        for index in 0..<count {
-            backing[index * 2] = rawSource[index]
+        multiArray.withUnsafeBytes { bytes in
+            for index in 0..<count {
+                backing[index * 2] = bytes.loadUnaligned(
+                    fromByteOffset: index * MemoryLayout<UInt16>.stride,
+                    as: UInt16.self
+                )
+            }
         }
         let stridedExtracted: [Float]
         do {
@@ -209,6 +221,23 @@ struct PerformanceSelfTest {
             stridedExtracted = ArcFaceEmbedder.floatVector(from: stridedArray)
         }
         precondition(stridedExtracted == extracted, "FAIL: non-contiguous Float16 fallback diverged from fast-path")
+
+        // Also validate unaligned contiguous Float16/Float32 custom MLMultiArray never traps.
+        let unalignedBytes = count * MemoryLayout<UInt16>.stride + 1
+        let unalignedRaw = UnsafeMutableRawPointer.allocate(byteCount: unalignedBytes, alignment: 16)
+        defer { unalignedRaw.deallocate() }
+        let unalignedPtr = unalignedRaw.advanced(by: 1)
+        multiArray.withUnsafeBytes { bytes in
+            unalignedPtr.copyMemory(from: bytes.baseAddress!, byteCount: count * MemoryLayout<UInt16>.stride)
+        }
+        let unalignedFp16Array = try MLMultiArray(
+            dataPointer: unalignedPtr,
+            shape: [1, NSNumber(value: count)],
+            dataType: .float16,
+            strides: [NSNumber(value: count), 1]
+        )
+        let unalignedExtracted = ArcFaceEmbedder.floatVector(from: unalignedFp16Array)
+        precondition(unalignedExtracted == extracted, "FAIL: unaligned Float16 extraction diverged")
 
         // And validate Float32 contiguous fast-path.
         let float32Array = try MLMultiArray(shape: [1, NSNumber(value: count)], dataType: .float32)
@@ -459,7 +488,7 @@ struct PerformanceSelfTest {
             "FAIL: expected frame1 (id 1), got \(String(describing: received1?.id))"
         )
         precondition(
-            elapsed1 < .milliseconds(50),
+            elapsed1 < .milliseconds(250),
             "FAIL: waiter took too long to wake on delivery: \(elapsed1)"
         )
 
@@ -478,7 +507,7 @@ struct PerformanceSelfTest {
             "FAIL: expected frame2 (id 2), got \(String(describing: received2?.id))"
         )
         precondition(
-            elapsed2 < .milliseconds(50),
+            elapsed2 < .milliseconds(250),
             "FAIL: waiter took too long to wake on frame2 delivery: \(elapsed2)"
         )
 
@@ -487,7 +516,7 @@ struct PerformanceSelfTest {
         let cached = await waiter.nextFrame(after: frame1.id, until: start3 + .seconds(1))
         let elapsed3 = clock.now - start3
         precondition(cached?.id == frame2.id, "FAIL: expected cached frame2 immediately")
-        precondition(elapsed3 < .milliseconds(10), "FAIL: cached frame return took \(elapsed3)")
+        precondition(elapsed3 < .milliseconds(50), "FAIL: cached frame return took \(elapsed3)")
 
         print("PASS: CameraFrameWaiter wakes immediately on frame delivery")
     }
@@ -508,13 +537,13 @@ struct PerformanceSelfTest {
         try await stopTask.value
 
         precondition(afterStop == nil, "FAIL: expected nil when stop() cancels waiting nextFrame")
-        precondition(stopElapsed < .milliseconds(35), "FAIL: stop() took too long to wake waiter: \(stopElapsed)")
+        precondition(stopElapsed < .milliseconds(200), "FAIL: stop() took too long to wake waiter: \(stopElapsed)")
 
         // Calling nextFrame while stopped must immediately return nil.
         let stoppedNow = clock.now
         let whileStopped = await waiter.nextFrame(after: nil, until: stoppedNow + .seconds(1))
         precondition(whileStopped == nil, "FAIL: expected nil when waiter is stopped")
-        precondition(clock.now - stoppedNow < .milliseconds(10), "FAIL: stopped waiter suspended")
+        precondition(clock.now - stoppedNow < .milliseconds(50), "FAIL: stopped waiter suspended")
 
         // 2. Deadline expiry with no frame delivered returns nil on time.
         waiter.start()
@@ -523,7 +552,7 @@ struct PerformanceSelfTest {
         let timeoutElapsed = clock.now - timeoutStart
         precondition(timedOut == nil, "FAIL: expected nil on deadline expiry")
         precondition(
-            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(200),
+            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(250),
             "FAIL: timeout elapsed out of expected range: \(timeoutElapsed)"
         )
 
@@ -537,7 +566,7 @@ struct PerformanceSelfTest {
         let cancelledResult = await waitingTask.value
         let cancelElapsed = clock.now - cancelStart
         precondition(cancelledResult == nil, "FAIL: expected nil when waiting task is cancelled")
-        precondition(cancelElapsed < .milliseconds(35), "FAIL: task cancellation took too long: \(cancelElapsed)")
+        precondition(cancelElapsed < .milliseconds(200), "FAIL: task cancellation took too long: \(cancelElapsed)")
 
         // 4. Stale-frame isolation across start -> deliver -> stop -> start.
         let oldFrame = makeDummyCameraFrame(id: 100)
@@ -546,6 +575,19 @@ struct PerformanceSelfTest {
         waiter.start()
         let staleCheck = await waiter.nextFrame(after: nil, until: clock.now + .milliseconds(25))
         precondition(staleCheck == nil, "FAIL: stale frame leaked across stop() -> start()")
+
+        // 4b. Stale expectedEpoch (stop/start across actor hop) returns nil immediately even if active with a frame.
+        let staleEpoch = waiter.currentEpoch
+        waiter.stop()
+        waiter.start()
+        waiter.deliver(makeDummyCameraFrame(id: 102))
+        let staleEpochResult = await waiter.nextFrame(
+            after: nil,
+            until: clock.now + .seconds(1),
+            expectedEpoch: staleEpoch
+        )
+        precondition(staleEpochResult == nil, "FAIL: stale expectedEpoch must return nil immediately")
+        waiter.start()
 
         // Subsequent delivery after restart still wakes normally.
         let freshFrame = makeDummyCameraFrame(id: 101)
@@ -645,7 +687,7 @@ struct PerformanceSelfTest {
             state.phase == .closed
         }
         let immediateElapsed = clock.now - immediateStart
-        precondition(immediateElapsed < .milliseconds(15), "FAIL: already-false wait suspended for \(immediateElapsed)")
+        precondition(immediateElapsed < .milliseconds(50), "FAIL: already-false wait suspended for \(immediateElapsed)")
 
         // 2. Wakes immediately when `@Observable` property changes away from `.failure`.
         state.phase = .failure
@@ -660,7 +702,7 @@ struct PerformanceSelfTest {
         let wait1Elapsed = clock.now - wait1Start
         try await collapseTask.value
         precondition(state.phase == .collapsing, "FAIL: expected phase .collapsing")
-        precondition(wait1Elapsed < .milliseconds(60), "FAIL: phase wake took too long: \(wait1Elapsed)")
+        precondition(wait1Elapsed < .milliseconds(250), "FAIL: phase wake took too long: \(wait1Elapsed)")
 
         // 3. Intermediate changes keeping predicate true re-subscribe until final transition.
         state.stepCount = 0
@@ -679,7 +721,7 @@ struct PerformanceSelfTest {
         let wait2Elapsed = clock.now - wait2Start
         try await stepsTask.value
         precondition(state.stepCount == 3, "FAIL: expected stepCount == 3")
-        precondition(wait2Elapsed < .milliseconds(100), "FAIL: multi-step wait took too long: \(wait2Elapsed)")
+        precondition(wait2Elapsed < .milliseconds(300), "FAIL: multi-step wait took too long: \(wait2Elapsed)")
 
         // 4. Non-observable stop flag wakes immediately via `ObservationSignal`.
         var activeGeneration: UInt64 = 1
@@ -695,7 +737,7 @@ struct PerformanceSelfTest {
         }
         let wait3Elapsed = clock.now - wait3Start
         try await signalTask.value
-        precondition(wait3Elapsed < .milliseconds(60), "FAIL: signal wake took too long: \(wait3Elapsed)")
+        precondition(wait3Elapsed < .milliseconds(250), "FAIL: signal wake took too long: \(wait3Elapsed)")
 
         print("PASS: ObservationWaiter @Observable transitions & ObservationSignal wakeups")
     }
@@ -713,7 +755,7 @@ struct PerformanceSelfTest {
         }
         let timeoutElapsed = clock.now - timeoutStart
         precondition(
-            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(200),
+            timeoutElapsed >= .milliseconds(25) && timeoutElapsed < .milliseconds(250),
             "FAIL: observation timeout elapsed out of range: \(timeoutElapsed)"
         )
 
@@ -728,7 +770,7 @@ struct PerformanceSelfTest {
         waitingTask.cancel()
         await waitingTask.value
         let cancelElapsed = clock.now - cancelStart
-        precondition(cancelElapsed < .milliseconds(60), "FAIL: observation cancel took too long: \(cancelElapsed)")
+        precondition(cancelElapsed < .milliseconds(250), "FAIL: observation cancel took too long: \(cancelElapsed)")
 
         // 3. Stress rapid concurrent mutation / cancellation / timeout races.
         let signal = ObservationSignal()

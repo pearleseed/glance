@@ -396,6 +396,7 @@ final class SudoFaceAuthenticator {
                 return generation == self.scanGeneration
                     && NotchOverlayController.shared.phase == .failure
             }
+            guard !Task.isCancelled else { return }
             retryGate?.cancelWaiting()
         }
 

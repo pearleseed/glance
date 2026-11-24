@@ -230,9 +230,7 @@ final class FaceRecognitionPipeline {
         preferNear previousBoundingBox: CGRect? = nil,
         includeQuality: Bool = true
     ) throws -> FaceRecognitionResult {
-        let workingWidth = CGFloat(frame.image.width)
-        let willAttemptNativeCrop =
-            workingWidth > 0 && (frame.sourceSize.width / workingWidth) > Self.nativeUpscaleThreshold
+        let willAttemptNativeCrop = Self.willUseNativeCrop(for: frame)
         // Skip quality and landmarks on the 640px pass when Phase 2 will run both on the 512px native crop.
         let faces = try FaceDetector.detectFaces(
             in: frame.image,
@@ -252,11 +250,9 @@ final class FaceRecognitionPipeline {
         in frame: CameraFrame,
         includeQuality: Bool = true
     ) throws -> FaceRecognitionResult {
-        let workingWidth = CGFloat(frame.image.width)
-        let workingSize = CGSize(width: workingWidth, height: CGFloat(frame.image.height))
-        let upscale = workingWidth > 0 ? frame.sourceSize.width / workingWidth : 1
+        let workingSize = CGSize(width: frame.image.width, height: frame.image.height)
 
-        if upscale > Self.nativeUpscaleThreshold,
+        if Self.willUseNativeCrop(for: frame),
             let clippedWorkingRect = Self.nativeCropWorkingRect(
                 for: face.boundingBox,
                 paddingFraction: Self.nativeCropPadding,
@@ -328,6 +324,13 @@ final class FaceRecognitionPipeline {
     nonisolated private static let nativeCropMaxEdge: CGFloat = 512
     /// Only re-crop from `frame.source` when native width exceeds working width by more than 25%.
     nonisolated private static let nativeUpscaleThreshold: CGFloat = 1.25
+
+    /// Returns `true` when `frame.sourceSize` exceeds `frame.image` width by more than `nativeUpscaleThreshold`,
+    /// meaning Phase-2 recognition will re-detect quality and landmarks on a native-resolution crop.
+    nonisolated static func willUseNativeCrop(for frame: CameraFrame) -> Bool {
+        let workingWidth = CGFloat(frame.image.width)
+        return workingWidth > 0 && (frame.sourceSize.width / workingWidth) > nativeUpscaleThreshold
+    }
 
     /// Absolute minimum face width in working-frame pixels (~64px at 640px working width) so wide-angle
     /// webcams at natural seating distance (~14% of frame) work without lowering the floor into tiny background noise.

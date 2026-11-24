@@ -182,7 +182,7 @@ def verify_parity(mlmodel, onnx_path: Path, *, min_cosine: float = 0.999) -> flo
 
     cosine = float(np.dot(onnx_out, coreml_out) / (np.linalg.norm(onnx_out) * np.linalg.norm(coreml_out)))
     print(f"ONNX vs Core ML cosine similarity: {cosine:.6f}  (expect >= {min_cosine:.3f})")
-    if cosine < min_cosine:
+    if not (cosine >= min_cosine):
         fail(
             "Parity check failed — the converted model disagrees with the original. "
             "Most likely cause: preprocessing mismatch (channel order RGB vs BGR, or "

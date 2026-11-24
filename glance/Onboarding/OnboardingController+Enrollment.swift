@@ -178,9 +178,14 @@ extension OnboardingController {
         defer { isProcessingFrame = false }
 
         let minimumWidth = enrollmentMinimumFaceWidth
+        let includePass1Landmarks = !FaceRecognitionPipeline.willUseNativeCrop(for: cameraFrame)
         let outcome = await Task.detached(priority: .userInitiated) {
             do {
-                let faces = try FaceDetector.detectFaces(in: cameraFrame.image, includeQuality: false)
+                let faces = try FaceDetector.detectFaces(
+                    in: cameraFrame.image,
+                    includeQuality: false,
+                    includeLandmarks: includePass1Landmarks
+                )
                 guard let face = FaceRecognitionPipeline.largestFace(in: faces) else {
                     return EnrollFrameOutcome.noFace
                 }

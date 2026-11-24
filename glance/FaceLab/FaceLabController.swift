@@ -170,6 +170,7 @@ final class FaceLabController {
         let pipeline = self.pipeline
         if pipeline.loadState == .loading {
             await pipeline.waitUntilReady()
+            guard camera.isRunning else { return }
         }
         let geometryContext = livenessAnalyzer.heavyGeometryContextIfNeeded()
         do {
@@ -182,6 +183,7 @@ final class FaceLabController {
                 let precomputedGeometry = geometryContext?.computeGeometry(appending: livenessFrame)
                 return (result, livenessFrame, precomputedGeometry)
             }.value
+            guard camera.isRunning else { return }
             detectedFaces = [result.face]
             currentResult = result
             lastLivenessFrame = livenessFrame
@@ -192,9 +194,11 @@ final class FaceLabController {
             )
             currentGeometry = livenessAnalyzer.lastGeometry
         } catch FaceRecognitionPipelineError.noFaceDetected {
+            guard camera.isRunning else { return }
             detectedFaces = []
             currentResult = nil
         } catch {
+            guard camera.isRunning else { return }
             detectedFaces = []
             currentResult = nil
             log("Detection error: \(error.localizedDescription)")
