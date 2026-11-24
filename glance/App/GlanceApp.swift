@@ -95,11 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Reassigned on every scene rebuild so the (cheap) action never goes stale.
     func bindOpenWindowAction(_ action: @escaping () -> Void) {
         openSettingsWindowAction = action
+        if pendingOpenSettingsWindow {
+            pendingOpenSettingsWindow = false
+            revealSettingsWindow()
+        }
     }
 
     /// Guards `environment.updater.start()` against running twice — reachable from two call sites, and Sparkle doesn't promise
     /// starting an already-started `SPUUpdater` is a safe no-op.
     private var hasStartedUpdater = false
+    private var pendingOpenSettingsWindow = false
 
     /// Accessory before the Dock binds this launch to a persistent tile — starting `.regular` made the pinned icon bounce and
     /// get replaced by a Recents tile the moment the Dock icon was later hidden/shown.
@@ -126,6 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // it starts on a fresh install, and starting unconditionally here used to pop it mid-onboarding.
         if GlanceSettings.shared.hasCompletedOnboarding {
             if GlanceSettings.shared.hasAcknowledgedSecurityNotice {
+                let requestedTab = Self.parseRequestedSettingsTab(
+                    includingDebug: environment.isDebugSectionRevealed
+                )
+                if let requestedTab {
+                    environment.requestedSettingsTab = requestedTab
+                    environment.allowsSettingsWindowPresentation = true
+                }
                 if #unavailable(macOS 15) {
                     if !environment.allowsSettingsWindowPresentation {
                         for window in NSApp.windows where window.canBecomeMain {
@@ -135,6 +147,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 startUpdaterIfNeeded()
                 Task { await environment.pocController.unlockSessionAtLaunch() }
+                if requestedTab != nil {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.revealSettingsWindow()
+                    }
+                }
             } else {
                 // Upgraded from a version before the notice existed — show it once, standalone.
                 presentPostUpdateSecurityNotice()
@@ -314,16 +331,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         environment.allowsSettingsWindowPresentation = true
         NSApp.setActivationPolicy(.regular)
         if let openSettingsWindowAction {
+            pendingOpenSettingsWindow = false
             openSettingsWindowAction()
         } else {
+            pendingOpenSettingsWindow = true
             // `body` hasn't run yet somehow — falls back to a direct walk, which only works if a window instance still exists.
             for window in NSApp.windows where window.canBecomeMain {
+                pendingOpenSettingsWindow = false
                 window.makeKeyAndOrderFront(nil)
             }
         }
         // Coming from `.accessory` there's no user gesture to activate the app, so without this Settings appears inactive and
         // won't take focus until the user Cmd-Tabs away and back.
         makeSettingsKeyAndActive()
+    }
+
+    private static func parseRequestedSettingsTab(
+        from arguments: [String] = CommandLine.arguments,
+        includingDebug: Bool
+    ) -> SettingsTab? {
+        let allowedTabs = SettingsTab.visibleTabs(includingDebug: includingDebug)
+        var index = 1
+        while index + 1 < arguments.count {
+            if arguments[index] == "--open-settings-tab" {
+                let rawValue = arguments[index + 1]
+                if let tab = SettingsTab(rawValue: rawValue), allowedTabs.contains(tab) {
+                    return tab
+                }
+                return nil
+            }
+            index += 1
+        }
+        return nil
     }
 
     /// Two runloop hops: `openWindow(id:)` hasn't created the `NSWindow` on this turn, and `WindowConfiguringView` configures it

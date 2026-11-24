@@ -26,6 +26,8 @@ final class AppEnvironment {
 
     /// Revealed by tapping the app icon 5 times on the About page. Plain in-memory `var` so it resets on every relaunch.
     var isDebugSectionRevealed = false
+    /// Pending settings tab requested via `--open-settings-tab` launch argument.
+    var requestedSettingsTab: SettingsTab?
     /// On macOS 14 (where `.defaultLaunchBehavior(.suppressed)` is unavailable),
     /// SwiftUI opens the initial `Window` scene at launch unless gated here.
     var allowsSettingsWindowPresentation: Bool = {

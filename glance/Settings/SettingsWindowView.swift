@@ -101,15 +101,30 @@ struct SettingsWindowView: View {
                 if isWindowVisible != visible {
                     isWindowVisible = visible
                 }
-                if !visible {
+                if visible {
+                    applyRequestedSettingsTabIfNeeded()
+                } else {
                     selection = .general
                     headerTrailingAction = nil
                 }
             }
         )
+        .onAppear { applyRequestedSettingsTabIfNeeded() }
+        .onChange(of: environment.requestedSettingsTab) { _, _ in
+            applyRequestedSettingsTabIfNeeded()
+        }
         // Backup reset if `settingsContent` unmounts (e.g. onboarding/presentation guard);
         // normal window close resets `selection` via `WindowConfigurator` since `Window` keeps `@State` alive.
         .onDisappear { selection = .general }
+    }
+
+    private func applyRequestedSettingsTabIfNeeded() {
+        guard isWindowVisible, let tab = environment.requestedSettingsTab else { return }
+        let allowedTabs = SettingsTab.visibleTabs(includingDebug: environment.isDebugSectionRevealed)
+        if allowedTabs.contains(tab) {
+            selection = tab
+        }
+        environment.requestedSettingsTab = nil
     }
 
     /// The header and tab bar float over the scroll content so scrolled rows
