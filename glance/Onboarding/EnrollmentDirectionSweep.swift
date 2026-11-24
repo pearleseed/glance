@@ -2,8 +2,8 @@
 //  EnrollmentDirectionSweep.swift
 //  glance
 //
-//  Layered blurred ribbons that sweep toward an enrollment direction; intentionally
-//  not an arrow — the motion itself is the cue.
+//  Procedural GPU-rendered light ribbons that sweep toward an enrollment direction;
+//  intentionally not an arrow — the motion itself is the cue.
 //
 
 import SwiftUI
@@ -58,32 +58,143 @@ nonisolated enum EnrollmentSweepDirection: CaseIterable, Hashable, Sendable {
 struct EnrollmentDirectionSweep: View {
     let direction: EnrollmentSweepDirection
 
+    @State private var startDate: Date?
+    @State private var isPaused = false
+
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                ForEach(Self.specs) { spec in
-                    SweepStreak(
-                        spec: spec,
-                        direction: direction,
-                        canvasSize: geo.size
-                    )
-                }
+        TimelineView(.animation(paused: isPaused)) { timeline in
+            Canvas { context, size in
+                guard size.width > 0, size.height > 0, let startDate, !isPaused else { return }
+                let elapsed = max(0, timeline.date.timeIntervalSince(startDate))
+                guard elapsed < Self.maxSweepDuration else { return }
+                drawSweep(in: &context, size: size, elapsed: elapsed)
             }
-            .frame(width: geo.size.width, height: geo.size.height)
             .opacity(OnboardingMetrics.sweepOverallOpacity)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .onAppear {
+            if startDate == nil {
+                startDate = .now
+            }
+        }
+        .onChange(of: direction) { _, _ in
+            startDate = .now
+            isPaused = false
+        }
+        .task(id: direction) {
+            try? await Task.sleep(for: .seconds(Self.maxSweepDuration + 0.05))
+            guard !Task.isCancelled else { return }
+            isPaused = true
+        }
+    }
+
+    private func drawSweep(in context: inout GraphicsContext, size: CGSize, elapsed: Double) {
+        let baseTransform = context.transform
+        let baseOpacity = context.opacity
+        let baseBlendMode = context.blendMode
+        context.blendMode = .plusLighter
+
+        let travel = direction.travel
+        let perp = CGVector(dx: -travel.dy, dy: travel.dx)
+        let shortEdge = min(size.width, size.height)
+        let diagonal = hypot(size.width, size.height)
+        // Far end stops short of a full off-screen exit so the ease-out is still on-camera.
+        let startSpan = diagonal * 0.58
+        let endSpan = diagonal * 0.50
+        let cx = size.width * 0.5
+        let cy = size.height * 0.5
+        // Spread along the true perpendicular screen axis so ribbons fan across the display.
+        let perpExtent = abs(perp.dx) * size.width + abs(perp.dy) * size.height
+        let spreadScale = min(max(shortEdge / 700, 0.35), 1.35)
+
+        for spec in Self.specs {
+            let rawU = (elapsed - spec.delay) / spec.duration
+            guard rawU > 0, rawU < spec.fadeOutAt else { continue }
+
+            let progress = Self.sweepTimingCurve(min(max(rawU, 0), 1))
+            let streakOpacity = Self.streakOpacity(
+                at: progress,
+                peak: spec.peakOpacity,
+                fadeOutAt: spec.fadeOutAt
+            )
+            guard streakOpacity > 0.001 else { continue }
+
+            let lateral = spec.lateral * perpExtent * 0.46
+            let start = CGPoint(
+                x: cx - travel.dx * startSpan + perp.dx * lateral,
+                y: cy - travel.dy * startSpan + perp.dy * lateral
+            )
+            let end = CGPoint(
+                x: cx + travel.dx * endSpan + perp.dx * lateral,
+                y: cy + travel.dy * endSpan + perp.dy * lateral
+            )
+            let bow = spec.bow * shortEdge * 0.20
+            let control = CGPoint(
+                x: (start.x + end.x) * 0.5 + perp.dx * bow,
+                y: (start.y + end.y) * 0.5 + perp.dy * bow
+            )
+
+            let u = 1 - progress
+            let point = CGPoint(
+                x: u * u * start.x + 2 * u * progress * control.x + progress * progress * end.x,
+                y: u * u * start.y + 2 * u * progress * control.y + progress * progress * end.y
+            )
+            let dx = 2 * u * (control.x - start.x) + 2 * progress * (end.x - control.x)
+            let dy = 2 * u * (control.y - start.y) + 2 * progress * (end.y - control.y)
+            let heading = atan2(dy, dx) + spec.rotationDrift * progress
+
+            let length = max(shortEdge * spec.lengthFactor * 0.55, 180)
+            let baseAlpha = baseOpacity * streakOpacity
+
+            context.transform = baseTransform
+            context.translateBy(x: point.x, y: point.y)
+            context.rotate(by: Angle(radians: heading))
+            let streakTransform = context.transform
+
+            // Outer soft aurora halo with Gaussian-like radial falloff to alpha 0.
+            let haloRx = length * 0.62 + 82 * spec.haloScale * spreadScale
+            let haloRy = spec.thickness * 0.48 * spreadScale + 78 * spec.haloScale * spreadScale
+            context.opacity = baseAlpha * (spec.isVivid ? 0.075 : 0.044)
+            context.scaleBy(x: haloRx, y: haloRy)
+            context.fill(Self.unitEllipsePath, with: Self.haloShading)
+
+            // Mid luminous ribbon body shifted slightly forward for directional momentum.
+            let bodyRx = length * 0.52 + 28 * spec.haloScale * spreadScale
+            let bodyRy = spec.thickness * 0.28 * spreadScale + 22 * spec.haloScale * spreadScale
+            context.transform = streakTransform
+            context.translateBy(x: length * 0.06, y: 0)
+            context.scaleBy(x: bodyRx, y: bodyRy)
+            context.opacity = baseAlpha * (spec.isVivid ? 0.17 : 0.105)
+            context.fill(
+                Self.unitEllipsePath,
+                with: spec.isVivid ? Self.vividBodyShading : Self.normalBodyShading
+            )
+
+            // Crisp inner filament highlight for vivid / foreground streaks.
+            if spec.hasHighlight {
+                let highlightRx = length * 0.38 + 10 * spreadScale
+                let highlightRy = max(spec.thickness * 0.085 * spreadScale, 5) + 6 * spreadScale
+                context.transform = streakTransform
+                context.translateBy(x: length * 0.10, y: 0)
+                context.scaleBy(x: highlightRx, y: highlightRy)
+                context.opacity = baseAlpha * (spec.isVivid ? 0.22 : 0.13)
+                context.fill(Self.unitEllipsePath, with: Self.highlightShading)
+            }
+        }
+
+        context.transform = baseTransform
+        context.opacity = baseOpacity
+        context.blendMode = baseBlendMode
     }
 }
 
-// MARK: - Streak specs
+// MARK: - Streak specs & shading
 
-private struct StreakSpec: Identifiable {
-    let id: Int
+private struct StreakSpec {
     let thickness: CGFloat
     let lengthFactor: CGFloat
-    let blurScale: CGFloat
+    let haloScale: CGFloat
     let peakOpacity: Double
     let duration: Double
     let delay: Double
@@ -91,6 +202,7 @@ private struct StreakSpec: Identifiable {
     let lateral: CGFloat
     /// Bézier curvature (fraction of the shorter canvas edge); opposite signs arc opposite ways.
     let bow: CGFloat
+    let rotationDrift: Double
     /// Progress at which opacity reaches zero; below 1 dies mid-screen, 1.0 runs off the far edge.
     let fadeOutAt: Double
     let hasHighlight: Bool
@@ -98,11 +210,70 @@ private struct StreakSpec: Identifiable {
 }
 
 extension EnrollmentDirectionSweep {
-    /// 42 ribbons fanned across a fixed perpendicular span — denser packing, not a wider field.
-    fileprivate static let specs: [StreakSpec] = makeSpecs()
+    private static let unitEllipsePath = Path(ellipseIn: CGRect(x: -1, y: -1, width: 2, height: 2))
+
+    private static let haloShading = GraphicsContext.Shading.radialGradient(
+        Gradient(stops: [
+            .init(color: GlanceTheme.accentBright, location: 0.0),
+            .init(color: GlanceTheme.accentBright.opacity(0.84), location: 0.22),
+            .init(color: GlanceTheme.accent.opacity(0.49), location: 0.45),
+            .init(color: GlanceTheme.accent.opacity(0.20), location: 0.68),
+            .init(color: GlanceTheme.accentDeep.opacity(0.08), location: 0.85),
+            .init(color: GlanceTheme.accentDeep.opacity(0.0), location: 1.0)
+        ]),
+        center: .zero,
+        startRadius: 0,
+        endRadius: 1
+    )
+
+    private static let normalBodyShading = GraphicsContext.Shading.radialGradient(
+        Gradient(stops: [
+            .init(color: GlanceTheme.accentBright, location: 0.0),
+            .init(color: GlanceTheme.accentBright.opacity(0.84), location: 0.22),
+            .init(color: GlanceTheme.accent.opacity(0.49), location: 0.45),
+            .init(color: GlanceTheme.accent.opacity(0.20), location: 0.68),
+            .init(color: GlanceTheme.accent.opacity(0.07), location: 0.85),
+            .init(color: GlanceTheme.accent.opacity(0.0), location: 1.0)
+        ]),
+        center: .zero,
+        startRadius: 0,
+        endRadius: 1
+    )
+
+    private static let vividBodyShading = GraphicsContext.Shading.radialGradient(
+        Gradient(stops: [
+            .init(color: GlanceTheme.accentPale, location: 0.0),
+            .init(color: GlanceTheme.accentPale.opacity(0.85), location: 0.22),
+            .init(color: GlanceTheme.accentBright.opacity(0.52), location: 0.45),
+            .init(color: GlanceTheme.accentBright.opacity(0.22), location: 0.68),
+            .init(color: GlanceTheme.accent.opacity(0.08), location: 0.85),
+            .init(color: GlanceTheme.accent.opacity(0.0), location: 1.0)
+        ]),
+        center: .zero,
+        startRadius: 0,
+        endRadius: 1
+    )
+
+    private static let highlightShading = GraphicsContext.Shading.radialGradient(
+        Gradient(stops: [
+            .init(color: Color.white, location: 0.0),
+            .init(color: GlanceTheme.accentPale.opacity(0.82), location: 0.24),
+            .init(color: GlanceTheme.accentPale.opacity(0.44), location: 0.48),
+            .init(color: GlanceTheme.accentBright.opacity(0.14), location: 0.74),
+            .init(color: GlanceTheme.accentBright.opacity(0.0), location: 1.0)
+        ]),
+        center: .zero,
+        startRadius: 0,
+        endRadius: 1
+    )
+
+    /// 28 ribbons fanned across a fixed perpendicular span — matches dense aurora field
+    /// while rendering in a single GPU Canvas pass without offscreen blur surfaces.
+    private static let specs: [StreakSpec] = makeSpecs()
+    private static let maxSweepDuration: Double = specs.map { $0.delay + $0.duration }.max() ?? 1.4
 
     private static func makeSpecs() -> [StreakSpec] {
-        let count = 42
+        let count = 28
         let laterals = (0..<count).map { index -> CGFloat in
             let t = CGFloat(index) / CGFloat(count - 1)
             return -0.86 + t * 1.72
@@ -111,85 +282,44 @@ extension EnrollmentDirectionSweep {
             let lane = index % 7
             let edgeFade = 1 - abs(Double(lateral)) * 0.22
             let isVivid = index % 6 == 1 || index % 6 == 4
-            let heavyBlur = index % 4 != 0
-            let blurScale: CGFloat =
+            let wideHalo = index % 4 != 0
+            let haloScale: CGFloat =
                 [1.35, 1.16, 0.96, 1.22, 0.82, 1.32, 1.02][lane]
-                * (heavyBlur ? 2.6 : 1.1)
+                * (wideHalo ? 2.6 : 1.1)
             let peakBase: Double = [0.58, 0.72, 0.80, 0.52, 0.66, 0.42, 0.48][lane]
+            let bow: CGFloat = [0.18, -0.14, 0.10, -0.22, 0.26, 0.08, -0.12][lane]
             return StreakSpec(
-                id: index,
                 thickness: [310, 190, 105, 155, 72, 230, 88][lane],
                 lengthFactor: [1.16, 0.94, 0.72, 0.86, 0.54, 1.04, 0.62][lane],
-                blurScale: blurScale,
+                haloScale: haloScale,
                 peakOpacity: peakBase * edgeFade * (isVivid ? 1.4 : 1),
                 duration: [1.22, 1.08, 0.98, 1.16, 0.94, 1.28, 1.04][lane],
                 delay: [0.00, 0.03, 0.06, 0.015, 0.08, 0.04, 0.065][lane]
                     + Double(index % 4) * 0.008,
                 lateral: lateral,
-                bow: [0.18, -0.14, 0.10, -0.22, 0.26, 0.08, -0.12][lane],
+                bow: bow,
+                rotationDrift: bow.sign == .minus ? -0.05 : 0.05,
                 fadeOutAt: 1,
                 hasHighlight: isVivid || lane == 2 || lane == 4,
                 isVivid: isVivid
             )
         }
     }
-}
 
-// MARK: - Geometry
-
-private struct SweepGeometry {
-    let start: CGPoint
-    let end: CGPoint
-    let control: CGPoint
-    let canvasSize: CGSize
-    let length: CGFloat
-    let rotationDrift: Double
-
-    init(spec: StreakSpec, direction: EnrollmentSweepDirection, canvasSize: CGSize) {
-        self.canvasSize = canvasSize
-        let travel = direction.travel
-        let perp = CGVector(dx: -travel.dy, dy: travel.dx)
-        let shortEdge = min(canvasSize.width, canvasSize.height)
-        // Far end stops short of a full off-screen exit so the ease-out is still on-camera.
-        let diagonal = hypot(canvasSize.width, canvasSize.height)
-        let startSpan = diagonal * 0.58
-        let endSpan = diagonal * 0.50
-        length = max(shortEdge * spec.lengthFactor * 0.55, 180)
-        let cx = canvasSize.width / 2
-        let cy = canvasSize.height / 2
-        // Spread along the true perpendicular screen axis so ribbons fan across the display.
-        let perpExtent = abs(perp.dx) * canvasSize.width + abs(perp.dy) * canvasSize.height
-        let lateral = spec.lateral * perpExtent * 0.46
-        start = CGPoint(
-            x: cx - travel.dx * startSpan + perp.dx * lateral,
-            y: cy - travel.dy * startSpan + perp.dy * lateral
-        )
-        end = CGPoint(
-            x: cx + travel.dx * endSpan + perp.dx * lateral,
-            y: cy + travel.dy * endSpan + perp.dy * lateral
-        )
-        let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
-        let bow = spec.bow * shortEdge * 0.20
-        control = CGPoint(x: mid.x + perp.dx * bow, y: mid.y + perp.dy * bow)
-        rotationDrift = Double(spec.bow.sign == .minus ? -0.05 : 0.05)
+    /// Evaluates cubic Bézier timing curve (0.68, 0.0, 0.32, 1.0) at normalized time `u` in `0...1`.
+    private static func sweepTimingCurve(_ u: Double) -> Double {
+        var s = u
+        // x(s) = 2.04*s - 3.12*s^2 + 2.08*s^3, derivative >= 0.48 everywhere on [0, 1].
+        for _ in 0..<5 {
+            let x = (2.04 + (-3.12 + 2.08 * s) * s) * s
+            let dx = 2.04 + (-6.24 + 6.24 * s) * s
+            s = min(max(s - (x - u) / dx, 0), 1)
+        }
+        // y(s) with p1y = 0, p2y = 1 simplifies to s^2 * (3 - 2*s).
+        return s * s * (3 - 2 * s)
     }
 
-    func point(at t: Double) -> CGPoint {
-        let u = 1 - t
-        return CGPoint(
-            x: u * u * start.x + 2 * u * t * control.x + t * t * end.x,
-            y: u * u * start.y + 2 * u * t * control.y + t * t * end.y
-        )
-    }
-
-    /// Tangent heading of the Bézier at `t`, in radians.
-    func heading(at t: Double) -> Double {
-        let dx = 2 * (1 - t) * (control.x - start.x) + 2 * t * (end.x - control.x)
-        let dy = 2 * (1 - t) * (control.y - start.y) + 2 * t * (end.y - control.y)
-        return atan2(dy, dx)
-    }
-
-    func opacity(at t: Double, peak: Double, fadeOutAt: Double) -> Double {
+    private static func streakOpacity(at t: Double, peak: Double, fadeOutAt: Double) -> Double {
         let fadeInEnd = 0.07
         // Dissolve during the ease-out so the slowdown is still visible.
         let fadeOutStart = 0.7
@@ -205,137 +335,6 @@ private struct SweepGeometry {
             return peak * (1 - s)
         }
         return peak
-    }
-}
-
-// MARK: - Motion
-
-/// A `View` (not a `ViewModifier`) so SwiftUI interpolates `animatableData` on the view
-/// itself — the reliable path for evaluating a Bézier each frame instead of sliding between endpoints.
-private struct SweepMovingContainer<Content: View>: View, Animatable {
-    var progress: Double
-    let geometry: SweepGeometry
-    let peakOpacity: Double
-    let fadeOutAt: Double
-    let content: Content
-
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    var body: some View {
-        let t = min(max(progress, 0), 1)
-        let point = geometry.point(at: t)
-        let cx = geometry.canvasSize.width / 2
-        let cy = geometry.canvasSize.height / 2
-        // Rotate first, then translate — rotating after offset would spin the translation
-        // around the screen center and send most directions the wrong way.
-        content
-            .rotationEffect(.radians(geometry.heading(at: t) + geometry.rotationDrift * t))
-            .offset(x: point.x - cx, y: point.y - cy)
-            .opacity(geometry.opacity(at: t, peak: peakOpacity, fadeOutAt: fadeOutAt))
-    }
-}
-
-// MARK: - Streak view
-
-private struct SweepStreak: View {
-    let spec: StreakSpec
-    let direction: EnrollmentSweepDirection
-    let canvasSize: CGSize
-
-    @State private var progress: Double = 0
-
-    var body: some View {
-        let geometry = SweepGeometry(spec: spec, direction: direction, canvasSize: canvasSize)
-        SweepMovingContainer(
-            progress: progress,
-            geometry: geometry,
-            peakOpacity: spec.peakOpacity,
-            fadeOutAt: spec.fadeOutAt,
-            content: layers(length: geometry.length)
-        )
-        .onAppear { runSweep() }
-    }
-
-    private func layers(length: CGFloat) -> some View {
-        ZStack {
-            streakLayer(
-                length: length,
-                thickness: spec.thickness * 2.35,
-                blur: 78 * spec.blurScale,
-                opacity: spec.isVivid ? 0.28 : 0.16,
-                colors: [GlanceTheme.accent, GlanceTheme.accentBright]
-            )
-            streakLayer(
-                length: length,
-                thickness: spec.thickness,
-                blur: 34 * spec.blurScale,
-                opacity: spec.isVivid ? 0.48 : 0.30,
-                colors: spec.isVivid
-                    ? [GlanceTheme.accentBright, GlanceTheme.accentPale]
-                    : [GlanceTheme.accent, GlanceTheme.accentBright]
-            )
-            streakLayer(
-                length: length,
-                thickness: spec.thickness * 0.42,
-                blur: 14 * spec.blurScale,
-                opacity: spec.isVivid ? 0.62 : 0.38,
-                colors: [GlanceTheme.accentBright, GlanceTheme.accentPale]
-            )
-            if spec.hasHighlight {
-                streakLayer(
-                    length: length * 0.72,
-                    thickness: spec.thickness * 0.12,
-                    blur: 6,
-                    opacity: spec.isVivid ? 0.36 : 0.20,
-                    colors: [GlanceTheme.accentPale, Color.white]
-                )
-            }
-        }
-        .compositingGroup()
-    }
-
-    private func streakLayer(
-        length: CGFloat,
-        thickness: CGFloat,
-        blur: CGFloat,
-        opacity: Double,
-        colors: [Color]
-    ) -> some View {
-        Capsule()
-            .fill(
-                LinearGradient(
-                    stops: [
-                        .init(color: colors[0].opacity(0), location: 0),
-                        .init(color: colors[0].opacity(0.6), location: 0.18),
-                        .init(color: colors[1], location: 0.55),
-                        .init(color: colors[1].opacity(0.85), location: 0.82),
-                        .init(color: colors[1].opacity(0), location: 1)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .frame(width: length, height: thickness)
-            .blur(radius: blur)
-            .opacity(opacity)
-    }
-
-    private func runSweep() {
-        var reset = Transaction()
-        reset.disablesAnimations = true
-        withTransaction(reset) { progress = 0 }
-        // Hop a turn so the reset isn't coalesced into the forward animation.
-        Task { @MainActor in
-            withAnimation(
-                .timingCurve(0.68, 0.0, 0.32, 1.0, duration: spec.duration)
-                    .delay(spec.delay)
-            ) {
-                progress = 1
-            }
-        }
     }
 }
 

@@ -51,16 +51,32 @@ final class PreviewHostView: NSView {
     }
 
     func updateFaceBoxes(_ faces: [DetectedFace]) {
-        boxLayers.forEach { $0.removeFromSuperlayer() }
-        boxLayers = faces.map { face in
-            let rect = previewLayer.layerRectConverted(fromMetadataOutputRect: face.normalizedBoundingBox)
+        if faces.isEmpty && boxLayers.isEmpty { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        while boxLayers.count < faces.count {
             let shape = CAShapeLayer()
-            shape.path = CGPath(rect: rect, transform: nil)
             shape.strokeColor = NSColor.systemGreen.cgColor
             shape.fillColor = NSColor.clear.cgColor
             shape.lineWidth = 2
             previewLayer.addSublayer(shape)
-            return shape
+            boxLayers.append(shape)
+        }
+        while boxLayers.count > faces.count {
+            boxLayers.removeLast().removeFromSuperlayer()
+        }
+
+        let targetFrame = previewLayer.bounds
+        for (index, face) in faces.enumerated() {
+            let shape = boxLayers[index]
+            if shape.frame != targetFrame {
+                shape.frame = targetFrame
+            }
+            let rect = previewLayer.layerRectConverted(fromMetadataOutputRect: face.normalizedBoundingBox)
+            shape.path = CGPath(rect: rect, transform: nil)
         }
     }
 }
