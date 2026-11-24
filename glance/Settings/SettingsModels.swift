@@ -92,4 +92,15 @@ enum UnlockTrigger: String, CaseIterable, Identifiable {
         case .onSpace: return "space"
         }
     }
+
+    /// Collapses back-to-back `.onWake` signals from one lid-open/wake burst,
+    /// while never suppressing a `.wake` that arrives shortly after an `.onLock` arm.
+    nonisolated static func shouldResetArmForWake(
+        lastArmedTrigger: UnlockTrigger?,
+        elapsedSinceLastArm: Duration?,
+        rearmDebounce: Duration
+    ) -> Bool {
+        guard lastArmedTrigger == .onWake, let elapsedSinceLastArm else { return true }
+        return elapsedSinceLastArm >= rearmDebounce
+    }
 }

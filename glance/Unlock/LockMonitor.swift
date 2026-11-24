@@ -35,6 +35,14 @@ final class LockMonitor {
     /// for the wake trigger instead.
     private(set) var isSleeping: Bool = false
 
+    /// True while displays are asleep (`screensDidSleepNotification` until `screensDidWakeNotification` / `didWakeNotification`).
+    private(set) var isDisplayAsleep: Bool = false
+
+    /// Timestamps of the most recent display/system wakes so keystroke injection can avoid racing
+    /// `loginwindow`'s `Clearing password field for NSWorkspaceScreensDidWakeNotification`.
+    private(set) var lastDisplayWakeAt: ContinuousClock.Instant?
+    private(set) var lastSystemWakeAt: ContinuousClock.Instant?
+
     /// Observers track `eventCount` (changes on every event, even repeats of the same kind) then read `lastEvent`.
     private(set) var lastEvent: LockEventKind?
     private(set) var eventCount: Int = 0
@@ -61,6 +69,11 @@ final class LockMonitor {
     }
 
     private func startMonitoring() {
+        registerDistributedObservers()
+        registerWorkspaceObservers()
+    }
+
+    private func registerDistributedObservers() {
         let distributed = DistributedNotificationCenter.default()
         distributedObservers.append(
             distributed.addObserver(
@@ -68,8 +81,12 @@ final class LockMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.isScreenLocked = true
-                self?.record(.screenLocked)
+                guard let self else { return }
+                self.isScreenLocked = true
+                if !self.isSleeping && !self.isDisplayAsleep {
+                    self.startReturnWatch()
+                }
+                self.record(.screenLocked)
             })
         distributedObservers.append(
             distributed.addObserver(
@@ -77,9 +94,12 @@ final class LockMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.isScreenLocked = false
-                self?.stopReturnWatch()
-                self?.record(.screenUnlocked)
+                guard let self else { return }
+                self.isScreenLocked = false
+                self.isSleeping = false
+                self.isDisplayAsleep = false
+                self.stopReturnWatch()
+                self.record(.screenUnlocked)
             })
         distributedObservers.append(
             distributed.addObserver(
@@ -97,10 +117,18 @@ final class LockMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.stopReturnWatch()
-                self?.record(.wake)
+                guard let self else { return }
+                self.isSleeping = false
+                self.isDisplayAsleep = false
+                self.stopReturnWatch()
+                if Self.isScreenActuallyLocked() {
+                    self.startReturnWatch()
+                }
+                self.record(.wake)
             })
+    }
 
+    private func registerWorkspaceObservers() {
         let workspace = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(
             workspace.addObserver(
@@ -112,6 +140,15 @@ final class LockMonitor {
                 self?.stopReturnWatch()
                 self?.record(.willSleep)
             })
+        workspaceObservers.append(
+            workspace.addObserver(
+                forName: NSWorkspace.screensDidSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.isDisplayAsleep = true
+                self?.stopReturnWatch()
+            })
         // Display- and system-level wake are treated as equivalent triggers — they land within ~100ms of each other in either order.
         workspaceObservers.append(
             workspace.addObserver(
@@ -119,7 +156,13 @@ final class LockMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.recordWake()
+                guard let self else { return }
+                self.isDisplayAsleep = false
+                self.lastDisplayWakeAt = .now
+                self.recordWake()
+                if Self.isScreenActuallyLocked() {
+                    self.startReturnWatch()
+                }
             })
         workspaceObservers.append(
             workspace.addObserver(
@@ -127,16 +170,25 @@ final class LockMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.recordWake()
+                guard let self else { return }
+                self.isDisplayAsleep = false
+                self.lastSystemWakeAt = .now
+                self.recordWake()
+                if Self.isScreenActuallyLocked() {
+                    self.startReturnWatch()
+                }
             })
     }
 
     private func startReturnWatch() {
         stopReturnWatch()
         lastIdleSeconds = 0
-        returnWatchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkUserReturned()
         }
+        timer.tolerance = 0.25
+        RunLoop.main.add(timer, forMode: .common)
+        returnWatchTimer = timer
     }
 
     private func stopReturnWatch() {
@@ -145,6 +197,11 @@ final class LockMonitor {
     }
 
     private func checkUserReturned() {
+        guard Self.isScreenActuallyLocked() else {
+            stopReturnWatch()
+            return
+        }
+        guard !isSleeping, !isDisplayAsleep else { return }
         let idle = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
         if lastIdleSeconds >= 3, idle < 1 {
             recordWake()

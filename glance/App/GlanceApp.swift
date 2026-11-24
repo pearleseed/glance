@@ -85,8 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Kept alive for the app's lifetime — a local variable would vanish (and the icon with it) once `applicationDidFinishLaunching` returns.
     private var statusItem: NSStatusItem?
-    /// Held so `menuNeedsUpdate` can refresh this row in place rather than rebuilding the whole menu.
+    /// Held so `menuNeedsUpdate` can refresh these rows in place rather than rebuilding the whole menu.
     private var sessionMenuItem: NSMenuItem?
+    private var accessibilityMenuItem: NSMenuItem?
     /// Bridges SwiftUI's `openWindow(\.settings)` action in from `glanceApp.body`, since this plain `NSObject` has no
     /// `@Environment` of its own. Bound from the scene body (not `onAppear`) so it's ready before Settings has ever shown —
     /// `NSApp.windows` stops containing the window once fully closed, so only `openWindow(id:)` can reliably re-create it.
@@ -119,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         GlanceSettings.shared.bindMenuBarVisibility { [weak self] isVisible in
             self?.setMenuBarVisibility(isVisible)
         }
+        observeMenuBarStatus()
 
         // SwiftUI can flip the app back to `.regular` while installing scenes even with `.suppressed`; re-assert accessory.
         NSApp.setActivationPolicy(.accessory)
@@ -173,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSStatusBar.system.removeStatusItem(statusItem)
             self.statusItem = nil
             sessionMenuItem = nil
+            accessibilityMenuItem = nil
         }
     }
 
@@ -199,6 +202,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(sessionItem)
         sessionMenuItem = sessionItem
 
+        let accessibilityItem = NSMenuItem(
+            title: "Accessibility Required…",
+            action: #selector(openAccessibilitySettings),
+            keyEquivalent: ""
+        )
+        accessibilityItem.target = self
+        accessibilityItem.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle.fill",
+            accessibilityDescription: nil
+        )
+        menu.addItem(accessibilityItem)
+        accessibilityMenuItem = accessibilityItem
+
         let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettingsWindow), keyEquivalent: ",")
         settingsItem.target = self
         settingsItem.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: nil)
@@ -212,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
 
         updateSessionMenuItem()
+        updateStatusItemAppearance()
     }
 
     /// First-run gate: onboarding lives entirely in the notch, so this stays accessory. Called once at launch if onboarding
@@ -266,7 +283,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Fires right before the menu opens — simpler than keeping an `NSMenuItem` reactively bound to `isSessionUnlocked`.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        environment.pocController.refreshAccessibilityStatus()
         updateSessionMenuItem()
+        updateStatusItemAppearance()
+    }
+
+    private func observeMenuBarStatus() {
+        withObservationTracking {
+            _ = environment.pocController.isSessionUnlocked
+            _ = environment.pocController.accessibilityGranted
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeMenuBarStatus()
+                self.updateSessionMenuItem()
+                self.updateStatusItemAppearance()
+            }
+        }
     }
 
     private func updateSessionMenuItem() {
@@ -277,6 +310,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             systemSymbolName: isUnlocked ? "lock.open.fill" : "lock.fill",
             accessibilityDescription: nil
         )
+        accessibilityMenuItem?.isHidden = environment.pocController.accessibilityGranted
+    }
+
+    private func updateStatusItemAppearance() {
+        guard let button = statusItem?.button else { return }
+        if !environment.pocController.accessibilityGranted {
+            button.alphaValue = 0.55
+            button.toolTip = "Glance — Accessibility permission required for lock-screen unlock"
+        } else if !environment.pocController.isSessionUnlocked {
+            button.alphaValue = 0.55
+            button.toolTip = "Glance — Session locked (click to unlock)"
+        } else {
+            button.alphaValue = 1.0
+            button.toolTip = "Glance"
+        }
+    }
+
+    @objc private func openAccessibilitySettings() {
+        environment.pocController.requestAccessibility()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// Locking is immediate; unlocking prompts Touch ID, so this can't be a plain synchronous action for that branch.

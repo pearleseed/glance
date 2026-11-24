@@ -79,6 +79,7 @@ final class NotchOverlayController {
     private let windowController = NotchWindowController()
     private var resolveTask: Task<Void, Never>?
     private var scanTimeoutTask: Task<Void, Never>?
+    private var pillHideTask: Task<Void, Never>?
 
     /// Guards `primeWindowIfNeeded` so the extra render pass only happens on the first show.
     private var hasPrimedWindow = false
@@ -110,11 +111,24 @@ final class NotchOverlayController {
         geometry = windowController.currentGeometry
     }
 
+    /// Re-syncs screen geometry, window position, and SkyLight delegation when displays settle on the lock screen.
+    func reassertLockScreenPresentation() {
+        geometry = windowController.currentGeometry
+        windowController.reassertLockScreenPresentation()
+    }
+
     // MARK: - Armed mode (FaceUnlockCoordinator)
 
     /// Arms the overlay for the lock-screen flow: shows the window and keeps it
     /// up until `disarm()`. `onActivate` restarts scanning on hover.
     func arm(onActivate: @escaping () -> Void) {
+        resolveTask?.cancel()
+        resolveTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
+        pillHideTask?.cancel()
+        pillHideTask = nil
+
         isArmed = true
         self.onActivate = onActivate
         geometry = windowController.currentGeometry
@@ -156,6 +170,8 @@ final class NotchOverlayController {
         resolveTask = nil
         scanTimeoutTask?.cancel()
         scanTimeoutTask = nil
+        pillHideTask?.cancel()
+        pillHideTask = nil
         // Re-measured here, not just trusted from `arm()` — `arm()` typically
         // fires right around wake/unlock, when AppKit may not have finished
         // laying out the menu bar yet, so `auxiliaryTopLeftArea`/`RightArea`
@@ -173,9 +189,10 @@ final class NotchOverlayController {
         }
         // The pill is visible at rest, so hiding the window right now would blink it
         // away instead of playing the slide-up (visibility check above skips hidden windows).
-        Task { [weak self] in
+        pillHideTask = Task { [weak self] in
             try? await Task.sleep(for: self?.collapseAnimationDuration ?? .milliseconds(700))
-            guard let self, !self.isArmed, self.phase == .closed else { return }
+            guard let self, !Task.isCancelled, !self.isArmed, self.phase == .closed else { return }
+            self.pillHideTask = nil
             self.windowController.hide()
         }
     }
@@ -186,12 +203,28 @@ final class NotchOverlayController {
         resolveTask?.cancel()
         resolveTask = nil
         scanTimeoutTask?.cancel()
+        pillHideTask?.cancel()
+        pillHideTask = nil
         geometry = windowController.currentGeometry
         activeUnlockStyle = GlanceSettings.shared.effectiveUnlockAnimationStyle
         content = .scan(.idle)
         phase = .scanning
+        if isArmed && !windowController.isVisible {
+            windowController.show()
+        }
         updateInteractivity()
+        scheduleScanTimeout()
+    }
 
+    /// Restarts the scanning collapse timer once the camera is actually delivering frames so
+    /// slow post-wake camera startup doesn't eat into the user's configured scan window.
+    func resetScanTimeout() {
+        guard phase == .scanning else { return }
+        scheduleScanTimeout()
+    }
+
+    private func scheduleScanTimeout() {
+        scanTimeoutTask?.cancel()
         scanTimeoutTask = Task { [weak self] in
             try? await Task.sleep(for: self?.scanTimeoutDuration ?? .seconds(5))
             guard let self, !Task.isCancelled, self.phase == .scanning else { return }
@@ -231,6 +264,8 @@ final class NotchOverlayController {
         resolveTask = nil
         scanTimeoutTask?.cancel()
         scanTimeoutTask = nil
+        pillHideTask?.cancel()
+        pillHideTask = nil
         geometry = windowController.currentGeometry
         activeUnlockStyle = styleOverride ?? GlanceSettings.shared.effectiveUnlockAnimationStyle
         primeWindowIfNeeded { [weak self] in
@@ -253,6 +288,8 @@ final class NotchOverlayController {
         resolveTask = nil
         scanTimeoutTask?.cancel()
         scanTimeoutTask = nil
+        pillHideTask?.cancel()
+        pillHideTask = nil
         geometry = windowController.currentGeometry
         primeWindowIfNeeded { [weak self] in
             guard let self else { return }
@@ -367,6 +404,8 @@ final class NotchOverlayController {
         resolveTask = nil
         scanTimeoutTask?.cancel()
         scanTimeoutTask = nil
+        pillHideTask?.cancel()
+        pillHideTask = nil
         phase = .closed
         content = .scan(.idle)
         isPillDocked = false

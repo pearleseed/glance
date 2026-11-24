@@ -56,8 +56,14 @@ enum KeystrokeInjector {
         try verifyScreenLockedIfNeeded(requireLockedScreen)
         let source = CGEventSource(stateID: .privateState)
         try clearFocusedField(source: source, requireLockedScreen: requireLockedScreen)
+        if requireLockedScreen {
+            // Give loginwindow a brief beat to dismiss an active Auto Unlock spinner and
+            // unhide/focus the secure password field before characters start arriving.
+            Thread.sleep(forTimeInterval: postClearSettleInterval)
+        }
         try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postUnicodeBuffer(utf16, source: source, requireLockedScreen: requireLockedScreen)
+        Thread.sleep(forTimeInterval: preReturnSettleInterval)
         try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postReturn(source: source)
     }
@@ -265,20 +271,54 @@ enum KeystrokeInjector {
         }
     }
 
+    /// Splits UTF-16 code units into single-grapheme-cluster ranges so each `CGEvent` delivers one
+    /// character (keeping surrogate pairs, combining diacritics, and ZWJ emoji clusters intact).
+    /// Avoids multi-character payload truncation or losing the entire password if one event is dropped
+    /// while `loginwindow` is settling focus. Oversized clusters (> `maxClusterLength`) fall back to
+    /// `splitUTF16BatchRanges` while zeroizing the temporary slice.
+    nonisolated static func splitUTF16GraphemeRanges(
+        _ utf16: [UInt16],
+        maxClusterLength: Int = maximumUnicodeBatchLength
+    ) -> [Range<Int>] {
+        guard !utf16.isEmpty else { return [] }
+        let limit = max(maxClusterLength, 2)
+        var ranges: [Range<Int>] = []
+        ranges.reserveCapacity(utf16.count)
+        var start = 0
+        while start < utf16.count {
+            var end = start + 1
+            while end < utf16.count && !isGraphemeBoundary(in: utf16, at: end) {
+                end += 1
+            }
+            if end - start <= limit {
+                ranges.append(start..<end)
+            } else {
+                var slice = Array(utf16[start..<end])
+                defer { zeroizeUTF16Buffer(&slice) }
+                for subrange in splitUTF16BatchRanges(slice, maxBatchLength: limit) {
+                    ranges.append((start + subrange.lowerBound)..<(start + subrange.upperBound))
+                }
+            }
+            start = end
+        }
+        return ranges
+    }
+
     /// Quartz reliably delivers only a small Unicode payload per keyboard event.
     /// Batching at this conservative limit avoids the undocumented truncation seen
-    /// with longer payloads, while replacing one down/up pair per character with
-    /// one pair per batch.
+    /// with longer payloads.
     nonisolated static let maximumUnicodeBatchLength = 20
     nonisolated private static let unicodeEventInterval: TimeInterval = 0.004
+    nonisolated private static let postClearSettleInterval: TimeInterval = 0.09
+    nonisolated private static let preReturnSettleInterval: TimeInterval = 0.035
 
-    /// Posts the UTF-16 password buffer in surrogate-safe batches, verifying lock state before each batch.
+    /// Posts the UTF-16 password buffer one grapheme cluster per event, verifying lock state before each event.
     private nonisolated static func postUnicodeBuffer(
         _ utf16: [UInt16],
         source: CGEventSource?,
         requireLockedScreen: Bool
     ) throws {
-        let ranges = splitUTF16BatchRanges(utf16)
+        let ranges = splitUTF16GraphemeRanges(utf16)
         try utf16.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
             for range in ranges {

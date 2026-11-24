@@ -44,6 +44,7 @@ final class NotchSkyLight {
         @convention(c) (Int32, SLSSpaceID, CFArray, Int32) -> Int32
     private typealias SLSRemoveWindowsFromSpacesFn = @convention(c) (Int32, CFArray, CFArray) -> Int32
 
+    private let showSpaces: SLSShowSpacesFn
     private let hideSpaces: SLSHideSpacesFn
     private let spaceDestroy: SLSSpaceDestroyFn
     private let addWindowsAndRemoveFromSpaces: SLSSpaceAddWindowsAndRemoveFromSpacesFn
@@ -71,7 +72,7 @@ final class NotchSkyLight {
         let mainConnectionID = unsafeBitCast(mainConnectionSym, to: SLSMainConnectionIDFn.self)
         let spaceCreate = unsafeBitCast(spaceCreateSym, to: SLSSpaceCreateFn.self)
         let setAbsoluteLevel = unsafeBitCast(setLevelSym, to: SLSSpaceSetAbsoluteLevelFn.self)
-        let showSpaces = unsafeBitCast(showSpacesSym, to: SLSShowSpacesFn.self)
+        showSpaces = unsafeBitCast(showSpacesSym, to: SLSShowSpacesFn.self)
         hideSpaces = unsafeBitCast(hideSpacesSym, to: SLSHideSpacesFn.self)
         spaceDestroy = unsafeBitCast(spaceDestroySym, to: SLSSpaceDestroyFn.self)
         addWindowsAndRemoveFromSpaces = unsafeBitCast(addRemoveSym, to: SLSSpaceAddWindowsAndRemoveFromSpacesFn.self)
@@ -113,6 +114,8 @@ final class NotchSkyLight {
     /// lock screen. Call only while actually locked.
     func delegate(_ window: NSWindow) {
         guard space != 0, window.windowNumber > 0 else { return }
+        // Re-assert space visibility across display reconfigurations and sleep/wake cycles.
+        _ = showSpaces(connection, [NSNumber(value: space)] as CFArray)
         _ = addWindowsAndRemoveFromSpaces(connection, space, [NSNumber(value: window.windowNumber)] as CFArray, 7)
     }
 

@@ -10,6 +10,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import OSLog
 import Observation
 
 @Observable
@@ -48,32 +49,37 @@ final class FaceUnlockCoordinator {
     var statusMessage = "Idle"
     var lastOutcome: String?
 
-    private var hasArmedForCurrentLock = false
+    var hasArmedForCurrentLock = false
     /// One-shot per lock session — an auto-retry that could itself auto-retry would loop the camera for the whole lock session.
     var hasAutoRetriedForCurrentLock = false
+    /// True after password injection succeeded and while waiting for `loginwindow` to complete unlocking.
+    /// Allows `disarmOverlay()` on `screenIsUnlocked` to trigger the celebratory success animation cleanly.
+    var isAwaitingPostInjectionUnlock = false
     private var scanTask: Task<Void, Never>?
     /// Bumped by every `startScanCycle()`; a cycle bails once superseded (see `runScanCycle(generation:)`).
     var scanGeneration = 0
-    /// When the last scan cycle was armed — collapses a single wake into a single arm (see `.wake` branch of `evaluateTrigger`).
+    /// When the last scan cycle was armed and which trigger armed it — collapses duplicate wake bursts without suppressing a wake after a lock.
     private var lastArmedAt: ContinuousClock.Instant?
+    private var lastArmedTrigger: UnlockTrigger?
     /// One lid-open fires several wake signals within a few hundred ms of each other; anything in this window counts as the same wake.
     private let rearmDebounce: Duration = .seconds(2)
     /// Held separately from `scanTask` since it's scheduled from inside the scan task it follows — reusing `scanTask` would self-cancel it.
     var autoRetryTask: Task<Void, Never>?
     /// Gap between headless auto-retries, just to keep the camera from restarting in a tight loop.
     let headlessRetryDelay: Duration = .seconds(1)
-    /// Max wait for `CGSessionCopyCurrentDictionary()` to catch up with a lock/wake notification.
-    private let lockStateSettleTimeout: Duration = .milliseconds(300)
+    /// Max wait for `CGSessionCopyCurrentDictionary()` to catch up with a lock/wake notification (including slow external displays).
+    private let lockStateSettleTimeout: Duration = .milliseconds(1_500)
     /// Polling cadence while waiting for lock state to settle.
     private let lockStatePollInterval: Duration = .milliseconds(25)
     /// Brief buffer past the login window's entrance before showing the notch overlay.
     private let armDelay: Duration = .milliseconds(250)
 
     private var wakeSettleTask: Task<Void, Never>?
-    private var armTask: Task<Void, Never>?
+    var armTask: Task<Void, Never>?
+    var displayRearmTask: Task<Void, Never>?
     var cameraPrewarmTask: Task<Void, Never>?
     let sceneIlluminator = SceneIlluminator()
-    private let observerBox = NotificationObserverBox()
+    let observerBox = NotificationObserverBox()
 
     /// System-wide shortcut for toggling Face Unlock on/off.
     private let toggleHotKey = GlobalHotKey()
@@ -105,12 +111,12 @@ final class FaceUnlockCoordinator {
 
     /// Allows arming and space-key monitoring while ArcFace is still loading at startup;
     /// `runScanCycle` awaits readiness and verifies `hasUnlockCapableEmbedder` before scanning.
-    private var canArmWithPipeline: Bool {
+    var canArmWithPipeline: Bool {
         pipeline.loadState == .loading || hasUnlockCapableEmbedder
     }
 
     /// Reads the space key on the lock screen for the "On space" trigger; only runs while locked + opted in.
-    private let spaceKeyMonitor = SpaceKeyMonitor()
+    let spaceKeyMonitor = SpaceKeyMonitor()
 
     init(pocController: POCController, pipeline: FaceRecognitionPipeline) {
         self.pocController = pocController
@@ -144,7 +150,7 @@ final class FaceUnlockCoordinator {
         }
     }
 
-    private func syncToggleHotKeyRegistration() {
+    func syncToggleHotKeyRegistration() {
         guard !isRecordingToggleShortcut else {
             toggleHotKey.unregister()
             isToggleShortcutUnavailable = false
@@ -198,15 +204,28 @@ final class FaceUnlockCoordinator {
         }
     }
 
-    private func evaluateTrigger() {
+    func evaluateTrigger(overrideEvent: LockEventKind? = nil) {
+        let effectiveEvent = overrideEvent ?? lockMonitor.lastEvent
         guard LockMonitor.isScreenActuallyLocked() else {
+            if isAwaitingPostInjectionUnlock {
+                isAwaitingPostInjectionUnlock = false
+                if showsUI && NotchOverlayController.shared.phase != .success {
+                    NotchOverlayController.shared.finish(success: true)
+                }
+            }
             hasArmedForCurrentLock = false
             hasAutoRetriedForCurrentLock = false
+            lastArmedTrigger = nil
             disarmOverlay()
             return
         }
         guard !lockMonitor.isSleeping else {
-            sceneIlluminator.end()
+            // Cancel any in-flight arm/prewarm/scan and reset so the upcoming wake starts cleanly.
+            hasArmedForCurrentLock = false
+            hasAutoRetriedForCurrentLock = false
+            lastArmedTrigger = nil
+            isAwaitingPostInjectionUnlock = false
+            disarmOverlay()
             return
         }
         guard GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) else {
@@ -214,16 +233,22 @@ final class FaceUnlockCoordinator {
             return
         }
 
-        // `.wake` (sleep, display sleep, or screensaver stopping) is an explicit "let me back in," so clear the one-shot guard.
-        // `isWithinRecentArmBurst` keeps the several wake signals from one lid-open from each re-arming and fighting over the camera.
-        if lockMonitor.lastEvent == .wake, !isWithinRecentArmBurst {
+        // `.wake` (sleep, display sleep, or screensaver/idle return) is an explicit "let me back in," so clear the one-shot guard.
+        // Only suppress back-to-back `.wake` bursts (not a `.wake` shortly after `.screenLocked`).
+        if effectiveEvent == .wake,
+            UnlockTrigger.shouldResetArmForWake(
+                lastArmedTrigger: lastArmedTrigger,
+                elapsedSinceLastArm: lastArmedAt.map { ContinuousClock.now - $0 },
+                rearmDebounce: rearmDebounce
+            )
+        {
             hasArmedForCurrentLock = false
         }
 
         // Runs before the hasArmedForCurrentLock guard — the space monitor's lifetime is tied to "locked + opted in," not to whether a scan already ran.
         updateSpaceMonitor()
 
-        guard let signal = checkArmPrerequisites() else { return }
+        guard let signal = checkArmPrerequisites(for: effectiveEvent) else { return }
 
         // A deselected trigger means "don't auto-scan for this signal," not "do nothing" — the user can still opt in by hand.
         let shouldAutoScan = GlanceSettings.shared.unlockTriggers.contains(signal)
@@ -232,38 +257,63 @@ final class FaceUnlockCoordinator {
         // must stay false, or a later selected signal could never fire (nothing else calls arm() to reset it).
         guard showsUI || shouldAutoScan else { return }
 
-        scheduleArm(autoScan: shouldAutoScan)
+        scheduleArm(autoScan: shouldAutoScan, trigger: signal)
     }
 
-    private func checkArmPrerequisites() -> UnlockTrigger? {
+    private func checkArmPrerequisites(for event: LockEventKind?) -> UnlockTrigger? {
         guard isEnabled, !hasArmedForCurrentLock, isOnboardingGateSatisfied else { return nil }
         guard canArmWithPipeline else {
             statusMessage = "Face unlock unavailable — the discriminative face model could not be loaded."
+            UnlockLog.logger.error("Arm skipped: face recognition pipeline is in fallback state")
             return nil
         }
-        guard let signal = requiredTrigger(for: lockMonitor.lastEvent),
-            // A pinned display that isn't connected bails entirely rather than showing up elsewhere; "Main display" (nil) always resolves.
-            NotchGeometry.preferredScreen() != nil
-        else { return nil }
+        guard let signal = requiredTrigger(for: event) else { return nil }
+        guard NotchGeometry.preferredScreen() != nil else {
+            UnlockLog.logger.warning("Arm deferred: preferredScreen() returned nil (displays may still be waking)")
+            return nil
+        }
 
         guard SecureCredentialManager.isSessionUnlocked else {
             statusMessage =
                 "Face unlock is on, but the session is locked — authenticate once from Password settings first."
+            UnlockLog.logger.warning("Arm skipped: Glance session is locked")
             return nil
         }
         guard SecureCredentialManager.hasStoredPassword() else {
             statusMessage = "Face unlock is on, but no password is stored yet."
+            UnlockLog.logger.warning("Arm skipped: no stored password")
+            return nil
+        }
+        guard KeystrokeInjector.isAccessibilityTrusted() else {
+            pocController.refreshAccessibilityStatus()
+            statusMessage =
+                "Accessibility permission required — re-enable Glance in "
+                + "System Settings → Privacy & Security → Accessibility."
+            UnlockLog.logger.error(
+                "Arm skipped: Accessibility not trusted (stale ad-hoc TCC cdhash or permission revoked)"
+            )
+            return nil
+        }
+        guard !FaceEnrollmentStore.shared.activeIdentities.isEmpty else {
+            statusMessage = "Face unlock is on, but no enrolled face is enabled."
+            UnlockLog.logger.info("Arm skipped: no active enrolled face identities")
             return nil
         }
         return signal
     }
 
-    private func scheduleArm(autoScan: Bool) {
+    private func scheduleArm(autoScan: Bool, trigger: UnlockTrigger) {
         hasArmedForCurrentLock = true
         lastArmedAt = .now
+        lastArmedTrigger = trigger
+        UnlockLog.logger.info(
+            "Arming Face Unlock (trigger=\(trigger.rawValue, privacy: .public), autoScan=\(autoScan, privacy: .public), showsUI=\(self.showsUI, privacy: .public))"
+        )
 
         armTask?.cancel()
         armTask = nil
+        displayRearmTask?.cancel()
+        displayRearmTask = nil
         if cameraPrewarmTask != nil {
             stopPrewarmedCamera()
         }
@@ -291,14 +341,8 @@ final class FaceUnlockCoordinator {
         }
     }
 
-    /// Whether the last arm was recent enough to be part of the same wake burst rather than a new one.
-    private var isWithinRecentArmBurst: Bool {
-        guard let lastArmedAt else { return false }
-        return ContinuousClock.now - lastArmedAt < rearmDebounce
-    }
-
     /// nil for signals that shouldn't arm anything — including a nil `lastEvent`, or the first observation would fire regardless of user selection.
-    private func requiredTrigger(for event: LockEventKind?) -> UnlockTrigger? {
+    func requiredTrigger(for event: LockEventKind?) -> UnlockTrigger? {
         switch event {
         case .wake: return .onWake
         case .screenLocked: return .onLock
@@ -306,15 +350,18 @@ final class FaceUnlockCoordinator {
         }
     }
 
-    private func disarmOverlay() {
+    func disarmOverlay() {
         wakeSettleTask?.cancel()
         wakeSettleTask = nil
         armTask?.cancel()
         armTask = nil
+        displayRearmTask?.cancel()
+        displayRearmTask = nil
         cameraPrewarmTask?.cancel()
         cameraPrewarmTask = nil
         scanTask?.cancel()
         scanTask = nil
+        isAwaitingPostInjectionUnlock = false
         // Bumping makes any cycle still suspended at `await camera.start()` inert, rather than resuming and re-showing the overlay.
         scanGeneration &+= 1
         autoRetryTask?.cancel()
@@ -326,60 +373,14 @@ final class FaceUnlockCoordinator {
         spaceKeyMonitor.stop()
     }
 
-    /// Idempotent and safe to call on every lock/wake event. Deliberately does not prompt for Input Monitoring — a missing grant just means "don't listen."
-    private func updateSpaceMonitor() {
-        let shouldListen =
-            isEnabled
-            && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
-            && isOnboardingGateSatisfied
-            && canArmWithPipeline
-            && GlanceSettings.shared.unlockTriggers.contains(.onSpace)
-            && LockMonitor.isScreenActuallyLocked()
-            && SpaceKeyMonitor.hasInputMonitoringAccess()
-        if shouldListen {
-            spaceKeyMonitor.start()
-        } else {
-            spaceKeyMonitor.stop()
-        }
-    }
-
-    /// Runs the same gate chain as `evaluateTrigger`, then starts a scan. Independent of `LockMonitor` events, so doesn't touch `hasArmedForCurrentLock`.
-    private func handleSpaceKeyPress() {
-        guard isEnabled,
-            GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()),
-            isOnboardingGateSatisfied,
-            canArmWithPipeline,
-            GlanceSettings.shared.unlockTriggers.contains(.onSpace),
-            LockMonitor.isScreenActuallyLocked(),
-            NotchGeometry.preferredScreen() != nil,
-            SecureCredentialManager.isSessionUnlocked,
-            SecureCredentialManager.hasStoredPassword()
-        else { return }
-
-        // Already looking — swallows auto-repeat/double-presses and lets "On wake"/"On lock" override "On space" with no special-casing.
-        guard NotchOverlayController.shared.phase != .scanning else { return }
-
-        guard showsUI else {
-            // Headless: no overlay, just scan.
-            startScanCycle()
-            return
-        }
-        if NotchOverlayController.shared.isArmed {
-            // Closed pill/notch already up — expand and scan, like a hover retry.
-            startScanCycle()
-        } else {
-            armTask?.cancel()
-            armTask = nil
-            arm(autoScan: true)
-        }
-    }
-
     /// Shared gate checked at arm, scan-cycle entry, and auto-retry wakeup.
     var canArmOrScan: Bool {
         LockMonitor.isScreenActuallyLocked()
+            && !lockMonitor.isSleeping
             && isEnabled
             && isOnboardingGateSatisfied
             && canArmWithPipeline
+            && KeystrokeInjector.isAccessibilityTrusted()
             && GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
     }
 
@@ -390,7 +391,7 @@ final class FaceUnlockCoordinator {
     }
 
     /// Either way the overlay still arms — a deselected trigger only skips the automatic scan, leaving hover-to-start available.
-    private func arm(autoScan: Bool) {
+    func arm(autoScan: Bool) {
         guard canArmOrScan else {
             stopPrewarmedCamera()
             return
@@ -416,71 +417,5 @@ final class FaceUnlockCoordinator {
         scanTask = Task { [weak self] in
             await self?.runScanCycle(generation: generation)
         }
-    }
-}
-
-// MARK: - Settings & Pipeline Observers
-
-extension FaceUnlockCoordinator {
-    private func observeDisplayContextSettings() {
-        withObservationTracking {
-            let settings = GlanceSettings.shared
-            _ = settings.isFaceUnlockEnabledBuiltInOnly
-            _ = settings.isFaceUnlockEnabledBuiltInAndExternal
-            _ = settings.isFaceUnlockEnabledExternalOnly
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observeDisplayContextSettings()
-                self.handleDisplayContextOrPreferenceChange()
-            }
-        }
-    }
-
-    private func observeScreenParameters() {
-        observerBox.observe(forName: NSApplication.didChangeScreenParametersNotification) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleDisplayContextOrPreferenceChange()
-            }
-        }
-    }
-
-    private func handleDisplayContextOrPreferenceChange() {
-        if !GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) {
-            disarmOverlay()
-        } else {
-            updateSpaceMonitor()
-        }
-    }
-
-    private func observeToggleShortcut() {
-        withObservationTracking {
-            _ = GlanceSettings.shared.faceUnlockToggleShortcut
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observeToggleShortcut()
-                self.syncToggleHotKeyRegistration()
-            }
-        }
-    }
-
-    private func observePipelineLoadState() {
-        withObservationTracking {
-            _ = pipeline.loadState
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observePipelineLoadState()
-                self.handlePipelineLoadStateChange()
-            }
-        }
-    }
-
-    private func handlePipelineLoadStateChange() {
-        if case .fallback = pipeline.loadState {
-            disarmOverlay()
-        }
-        updateSpaceMonitor()
     }
 }

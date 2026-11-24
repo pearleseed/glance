@@ -295,8 +295,12 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
   -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 
-# Full signed dual-architecture release + Sparkle appcast.xml (arm64 + x86_64 DMGs, SHA256SUMS.txt, appcast.xml)
-./tools/build_release.sh
+# Stable local install to /Applications/Glance.app (uses Apple Development or local cert to preserve TCC Accessibility/Camera grants across rebuilds)
+./tools/setup_local_signing.sh
+./tools/install_local.sh
+
+# Full clean dual-architecture release + Sparkle appcast.xml (arm64 + x86_64 DMGs, SHA256SUMS.txt, appcast.xml)
+./tools/build_release.sh --clean
 ```
 
 > [!NOTE]
@@ -304,7 +308,7 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
 >
 > **Publishing a GitHub Release with Sparkle auto-updates:**
 > 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `glance.xcodeproj/project.pbxproj` (and fallback strings in `AboutSettingsPage.swift`).
-> 2. Run `./tools/build_release.sh` — it builds and signs both `arm64` and `x86_64` `.dmg` files, cross-checks your Keychain EdDSA key (`--account com.pearleseed.glance`) against `SUPublicEDKey` in `glance/Info.plist`, and generates a verified `build/release/appcast.xml`.
+> 2. Run `./tools/build_release.sh --clean` — it removes stale builds, compiles and signs both `arm64` and `x86_64` `.dmg` files, cross-checks your Keychain EdDSA key (`--account com.pearleseed.glance`) against `SUPublicEDKey` in `glance/Info.plist`, and generates a verified `build/release/appcast.xml`.
 > 3. Upload **all 4 files** (`Glance-<ver>-arm64.dmg`, `Glance-<ver>-x86_64.dmg`, `SHA256SUMS.txt`, and **`appcast.xml`**) to the GitHub Release so `SUFeedURL` (`https://github.com/pearleseed/glance/releases/latest/download/appcast.xml`) resolves cleanly.
 
 ### Code Style, Linting & Offline Self-Tests
@@ -315,7 +319,7 @@ xcrun swift-format format -i --recursive glance tools
 swiftlint lint --strict
 ```
 
-Glance includes **10 standalone, camera-free Swift self-test suites** under `tools/` (each file documents its exact `swiftc` compile-and-run command in its header comment):
+Glance includes **12 standalone, camera-free Swift self-test suites** (plus Python appcast tests) under `tools/` (each Swift file documents its exact `swiftc` compile-and-run command in its header comment):
 
 | Test Suite | Coverage |
 |---|---|
@@ -330,6 +334,7 @@ Glance includes **10 standalone, camera-free Swift self-test suites** under `too
 | `tools/sudo_installer_selftest.swift` | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
 | `tools/sudo_protocol_selftest.swift` | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
 | `tools/settings_window_selftest.swift` | Settings window close/reopen/minimize lifecycle, stable `WindowConfiguringView` identity, and one-shot chrome configuration |
+| `tools/unlock_reliability_selftest.swift` | Per-grapheme UTF-16 password injection, Keychain login-key invalidation guard, multi-display notch geometry, and wake/lock debounce |
 | `tools/test_generate_appcast.py` | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
 
 ---

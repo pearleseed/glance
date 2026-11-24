@@ -181,4 +181,34 @@ nonisolated struct NotchGeometry: Sendable {
         let height = max(measuredHeight + CGFloat(heightAdjustment), 1)
         return CGSize(width: width, height: height)
     }
+
+    struct DisplayCandidate: Equatable, Sendable {
+        let id: String?
+        let hasPhysicalNotch: Bool
+        let isMain: Bool
+    }
+
+    /// Pure screen selection shared by `preferredScreen()` and offline tests.
+    /// Uses the pinned display whenever connected; if disconnected (e.g. clamshell mode or
+    /// mid-wake display reconfiguration), falls back to an active screen when `allowFallbackWhenPinnedMissing`
+    /// is true so Face Unlock never silently disappears when the current topology is enabled.
+    static func preferredDisplayIndex(
+        in candidates: [DisplayCandidate],
+        preferredDisplayID: String?,
+        allowFallbackWhenPinnedMissing: Bool
+    ) -> Int? {
+        if let targetID = preferredDisplayID {
+            if let pinnedIndex = candidates.firstIndex(where: { $0.id == targetID }) {
+                return pinnedIndex
+            }
+            guard allowFallbackWhenPinnedMissing else { return nil }
+        }
+        if let notchIndex = candidates.firstIndex(where: \.hasPhysicalNotch) {
+            return notchIndex
+        }
+        if let mainIndex = candidates.firstIndex(where: \.isMain) {
+            return mainIndex
+        }
+        return candidates.isEmpty ? nil : 0
+    }
 }

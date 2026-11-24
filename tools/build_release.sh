@@ -20,6 +20,9 @@ ED_KEY_FILE="${ED_KEY_FILE:-}"
 RELEASE_NOTES="${RELEASE_NOTES:-}"
 CLEAN_BUILD=0
 
+# shellcheck source=tools/codesign_common.sh
+source "${SCRIPT_DIR}/codesign_common.sh"
+
 usage() {
     cat <<'EOF'
 Usage: tools/build_release.sh [options]
@@ -27,7 +30,7 @@ Usage: tools/build_release.sh [options]
 Options:
   --clean                      Remove previous DerivedData and build/release artifacts before building
   --output-dir <dir>           Output directory (default: build/release)
-  --sign-identity <identity>   codesign identity (default: '-' for ad-hoc)
+  --sign-identity <id|auto|->  codesign identity (default: '-' for ad-hoc; 'auto' picks a stable local cert)
   --sparkle-account <account>  Keychain account for Sparkle EdDSA key (default: com.pearleseed.glance)
   --ed-key-file <path>         Optional Sparkle EdDSA private key file (or '-' for stdin)
   --repo <owner/name>          GitHub repository (default: pearleseed/glance)
@@ -88,40 +91,18 @@ echo "    Output: ${OUTPUT_DIR}"
 
 if [[ "${CLEAN_BUILD}" -eq 1 ]]; then
     echo "==> Cleaning previous build outputs and DerivedData..."
-    rm -rf "${OUTPUT_DIR}" "${REPO_ROOT}/build/DerivedData-arm64" "${REPO_ROOT}/build/DerivedData-x86_64"
+    rm -rf "${OUTPUT_DIR}" \
+        "${REPO_ROOT}/build/DerivedData-arm64" \
+        "${REPO_ROOT}/build/DerivedData-x86_64" \
+        "${REPO_ROOT}/build/DerivedData-local-"* \
+        "${REPO_ROOT}/build/local-"*
 fi
 
 mkdir -p "${OUTPUT_DIR}"
 
 sign_app_bundle() {
     local app_path="$1"
-    local sign_args=(--force --sign "${SIGN_IDENTITY}")
-    if [[ "${SIGN_IDENTITY}" != "-" ]]; then
-        sign_args+=(--options runtime --timestamp)
-    fi
-
-    # Sign nested binaries inside-out before signing the outer app bundle.
-    local sparkle_fw="${app_path}/Contents/Frameworks/Sparkle.framework"
-    if [[ -d "${sparkle_fw}" ]]; then
-        for nested in \
-            "${sparkle_fw}/Versions/B/XPCServices/Downloader.xpc" \
-            "${sparkle_fw}/Versions/B/XPCServices/Installer.xpc" \
-            "${sparkle_fw}/Versions/B/Autoupdate" \
-            "${sparkle_fw}/Versions/B/Updater.app" \
-            "${sparkle_fw}"; do
-            if [[ -e "${nested}" ]]; then
-                /usr/bin/codesign "${sign_args[@]}" "${nested}"
-            fi
-        done
-    fi
-
-    local pam_so="${app_path}/Contents/Helpers/pam_glance.so"
-    if [[ -f "${pam_so}" ]]; then
-        /usr/bin/codesign "${sign_args[@]}" "${pam_so}"
-    fi
-
-    /usr/bin/codesign "${sign_args[@]}" "${app_path}"
-    /usr/bin/codesign --verify --deep --strict "${app_path}"
+    glance_sign_app_bundle "${app_path}" "${SIGN_IDENTITY}" "${REPO_ROOT}" "${BUNDLE_ID}"
 }
 
 build_and_package_arch() {

@@ -52,12 +52,28 @@ final class NotchWindowController {
     /// actually locked, also delegates it into the SkyLight space — see NotchSkyLight.swift.
     func show() {
         let window = windowIfNeeded()
+        syncWindowSizeIfNeeded(window)
         reposition(window)
         window.orderFrontRegardless()
 
         if LockMonitor.isScreenActuallyLocked(), let skyLight = NotchSkyLight.shared {
             skyLight.delegate(window)
             isSkyLightDelegated = true
+            window.orderFrontRegardless()
+        }
+        updateCursorPolling()
+    }
+
+    /// Re-syncs window size, position, and SkyLight delegation after display reconfigurations
+    /// (e.g. external monitors coming online mid-wake and shifting screen coordinates).
+    func reassertLockScreenPresentation() {
+        guard let window, window.isVisible else { return }
+        syncWindowSizeIfNeeded(window)
+        reposition(window)
+        if LockMonitor.isScreenActuallyLocked(), let skyLight = NotchSkyLight.shared {
+            skyLight.delegate(window)
+            isSkyLightDelegated = true
+            window.orderFrontRegardless()
         }
         updateCursorPolling()
     }
@@ -81,10 +97,11 @@ final class NotchWindowController {
     }
 
     /// `key: true` additionally makes the panel key — needed only for onboarding's
-    /// password field to receive keystrokes.
+    /// password field to receive keystrokes. Lock-screen hover/retry keeps `acceptsKey = false`
+    /// so clicking the overlay can never steal keyboard focus from `loginwindow`.
     func setInteractive(_ interactive: Bool, key: Bool = false) {
         wantsInteractive = interactive
-        window?.acceptsKey = interactive
+        window?.acceptsKey = interactive && key
         if interactive, key, let window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -177,6 +194,12 @@ final class NotchWindowController {
         return newWindow
     }
 
+    private func syncWindowSizeIfNeeded(_ window: NotchWindow) {
+        let expected = NotchGeometry.windowSize(for: currentGeometry.style)
+        guard window.frame.size != expected else { return }
+        window.setContentSize(expected)
+    }
+
     private func reposition(_ window: NotchWindow) {
         guard let screen = NotchGeometry.preferredScreen() else { return }
         let screenFrame = screen.frame
@@ -190,7 +213,6 @@ final class NotchWindowController {
 
     @objc private func screenParametersChanged() {
         onScreenParametersChanged?()
-        guard let window, window.isVisible else { return }
-        reposition(window)
+        reassertLockScreenPresentation()
     }
 }

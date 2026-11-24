@@ -26,8 +26,12 @@ struct GeneralSettingsPage: View {
     /// auto-locked while this page is visible.
     private var isSessionUnlocked: Bool { pocController.isSessionUnlocked }
 
+    private var needsAccessibility: Bool {
+        coordinator.isEnabled && !pocController.accessibilityGranted
+    }
+
     private var needsInputMonitoring: Bool {
-        settings.unlockTriggers.contains(.onSpace) && inputMonitoring != .granted
+        !needsAccessibility && settings.unlockTriggers.contains(.onSpace) && inputMonitoring != .granted
     }
 
     /// Dev-only: under Xcode the reading above is Xcode's permission, not
@@ -49,7 +53,10 @@ struct GeneralSettingsPage: View {
                 .accessibilityHidden(!isSessionUnlocked)
         }
         .animation(SettingsMetrics.stateTransitionAnimation, value: isSessionUnlocked)
-        .onAppear { pocController.refreshCredentialStatus() }
+        .onAppear {
+            pocController.refreshCredentialStatus()
+            pocController.refreshAccessibilityStatus()
+        }
         .onChange(of: isSessionUnlocked) { _, unlocked in
             if !unlocked { coordinator.isRecordingToggleShortcut = false }
         }
@@ -121,6 +128,7 @@ struct GeneralSettingsPage: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
+                pocController.refreshAccessibilityStatus()
             }
             .onChange(of: settings.unlockTriggers) { oldValue, newValue in
                 // Only prompt on the transition into selecting "On space".
@@ -146,7 +154,9 @@ struct GeneralSettingsPage: View {
             if let launchAtLoginError {
                 SettingsCaption(text: launchAtLoginError)
             }
-            if hasInheritedXcodePermission {
+            if needsAccessibility {
+                accessibilityNotice()
+            } else if hasInheritedXcodePermission {
                 SettingsCaption(
                     text:
                         "Running from Xcode — permission checks resolve against Xcode’s grants, not glance’s, "
@@ -154,6 +164,11 @@ struct GeneralSettingsPage: View {
                 )
             } else if needsInputMonitoring {
                 inputMonitoringNotice()
+            }
+            if let injectionError = pocController.lastInjectionError,
+                injectionError != .accessibilityNotGranted
+            {
+                SettingsCaption(text: injectionError.localizedDescription)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -285,6 +300,29 @@ struct GeneralSettingsPage: View {
             await pocController.unlockSession()
             sessionError = pocController.sessionError
             isUnlocking = false
+        }
+    }
+
+    /// Shown whenever Face Unlock is enabled without an active Accessibility grant (including stale ad-hoc TCC entries).
+    private func accessibilityNotice() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsCaption(
+                text:
+                    "Face Unlock needs Accessibility permission to type your password on the lock screen. "
+                    + "If Glance already appears enabled after an update or rebuild, select it and click “−” to remove "
+                    + "the stale entry, then add Glance again."
+            )
+            Button("Open Accessibility settings") {
+                pocController.requestAccessibility()
+                openSystemSettings(pane: "Privacy_Accessibility")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    pocController.refreshAccessibilityStatus()
+                    inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundStyle(GlanceTheme.accent)
         }
     }
 

@@ -64,15 +64,29 @@ extension NotchGeometry {
         return NotchGeometry(closedSize: closedSize, isPhysicalNotch: true)
     }
 
-    /// Picks the screen the overlay should show on. If a display is pinned
-    /// (`GlanceSettings.preferredDisplayID`), it's used only if still connected — no
-    /// fallback. Otherwise: the physical notch if any display has one, else the primary screen.
+    /// Picks the screen the overlay should show on. Uses a pinned display (`preferredDisplayID`)
+    /// whenever connected, falling back to an active screen when the current display topology
+    /// has Face Unlock enabled (e.g. clamshell External Only or transient wake reconfiguration).
     @MainActor
     static func preferredScreen() -> NSScreen? {
-        if let targetID = GlanceSettings.shared.preferredDisplayID {
-            return NSScreen.screens.first { $0.stableDisplayID == targetID }
+        let screens = NSScreen.screens
+        let mainScreen = NSScreen.main
+        let candidates = screens.map { screen in
+            DisplayCandidate(
+                id: screen.stableDisplayID,
+                hasPhysicalNotch: screen.safeAreaInsets.top > 0,
+                isMain: screen === mainScreen
+            )
         }
-        return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+        let allowFallback = GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current())
+        guard
+            let index = preferredDisplayIndex(
+                in: candidates,
+                preferredDisplayID: GlanceSettings.shared.preferredDisplayID,
+                allowFallbackWhenPinnedMissing: allowFallback
+            )
+        else { return nil }
+        return screens[index]
     }
 }
 

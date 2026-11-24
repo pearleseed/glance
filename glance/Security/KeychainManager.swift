@@ -51,13 +51,17 @@ enum KeychainManager {
         return query
     }
 
-    nonisolated private static func exists(account: String, dataProtection: Bool) -> Bool {
+    nonisolated private static func existenceStatus(account: String, dataProtection: Bool) -> OSStatus {
         let context = LAContext()
         context.interactionNotAllowed = true
         var query = baseQuery(account: account, dataProtection: dataProtection)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext as String] = context
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return SecItemCopyMatching(query as CFDictionary, nil)
+    }
+
+    nonisolated private static func exists(account: String, dataProtection: Bool) -> Bool {
+        let status = existenceStatus(account: account, dataProtection: dataProtection)
         return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
@@ -153,20 +157,45 @@ enum KeychainManager {
     }
 
     /// Pass an `LAContext` to authorize a read on an access-controlled item — the OS presents the prompt during this call.
-    nonisolated static func read(account: String, context: LAContext? = nil) throws -> Data {
+    /// Set `nonInteractive: true` to fail fast with `errSecInteractionNotAllowed` instead of blocking on a Keychain prompt
+    /// (essential on the lock screen or during silent login unlock).
+    nonisolated static func read(
+        account: String,
+        context: LAContext? = nil,
+        nonInteractive: Bool = false
+    ) throws -> Data {
+        let effectiveContext: LAContext?
+        if let context {
+            effectiveContext = context
+        } else if nonInteractive {
+            let silent = LAContext()
+            silent.interactionNotAllowed = true
+            effectiveContext = silent
+        } else {
+            effectiveContext = nil
+        }
+
         // Handles v1.2 upgraded items and unsigned builds when the item lives only in the legacy keychain,
         // and prevents double-prompting if a cancelled Data Protection `.userPresence` read reports `errSecItemNotFound`.
         if context != nil,
             !exists(account: account, dataProtection: true),
             exists(account: account, dataProtection: false)
         {
-            let (legacyStatus, legacyItem) = rawRead(account: account, context: context, dataProtection: false)
+            let (legacyStatus, legacyItem) = rawRead(
+                account: account,
+                context: effectiveContext,
+                dataProtection: false
+            )
             return try unwrapReadResult(status: legacyStatus, item: legacyItem)
         }
 
-        let (status, item) = rawRead(account: account, context: context, dataProtection: true)
+        let (status, item) = rawRead(account: account, context: effectiveContext, dataProtection: true)
         if status == errSecMissingEntitlement || (status == errSecItemNotFound && context == nil) {
-            let (legacyStatus, legacyItem) = rawRead(account: account, context: context, dataProtection: false)
+            let (legacyStatus, legacyItem) = rawRead(
+                account: account,
+                context: effectiveContext,
+                dataProtection: false
+            )
             return try unwrapReadResult(status: legacyStatus, item: legacyItem)
         }
         return try unwrapReadResult(status: status, item: item)
@@ -281,8 +310,10 @@ enum KeychainManager {
 
     /// Migrates an ungated legacy-keychain item into the Data Protection Keychain with `accessible`.
     /// Deletes the legacy copy only after reading back from Data Protection and verifying byte-for-byte equality.
+    /// Skips cleanly when Data Protection Keychain is unavailable (`errSecMissingEntitlement`) so non-provisioned
+    /// builds never trigger a pointless Legacy Keychain read/ACL prompt at startup.
     nonisolated static func migrateLegacyItem(account: String, accessible: CFString) {
-        guard !exists(account: account, dataProtection: true),
+        guard existenceStatus(account: account, dataProtection: true) == errSecItemNotFound,
             exists(account: account, dataProtection: false)
         else { return }
 
