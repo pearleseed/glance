@@ -2,11 +2,13 @@
 //  sudo_installer_selftest.swift
 //  glance (tools)
 //
-//  Offline end-to-end self-test for `sudo-support/glance-sudo-setup.sh`.
+//  Offline self-tests for `sudo-support/glance-sudo-setup.sh`,
+//  `SudoPAMCommandBuilder`, and `SudoPAMStatus`.
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/sudo_installer_selftest \
 //        glance/SudoAuth/SudoPAMCommandBuilder.swift \
+//        glance/SudoAuth/SudoPAMStatus.swift \
 //        tools/sudo_installer_selftest.swift \
 //      && /tmp/sudo_installer_selftest
 //
@@ -21,8 +23,9 @@ struct SudoInstallerSelfTest {
 
     static func main() {
         testCommandBuilderAndErrorClassification()
+        testPAMStatusProbe()
         testSetupScriptEndToEnd()
-        print("PASS: glance-sudo-setup.sh and SudoPAMCommandBuilder self-tests passed.")
+        print("PASS: glance-sudo-setup.sh, SudoPAMCommandBuilder, and SudoPAMStatus self-tests passed.")
     }
 
     private static func testCommandBuilderAndErrorClassification() {
@@ -299,6 +302,388 @@ struct SudoInstallerSelfTest {
                 + "'/Users/O'\\''Brien/Downloads/Glance (1)/Glance.app/Contents/Resources/glance-sudo-setup.sh' "
                 + #"uninstall --restore-owner "$(id -u):$(id -g)""#,
             "FAIL [manualUninstall]: mismatch: \(uninstall)"
+        )
+    }
+
+    // MARK: - SudoPAMStatus probe tests
+
+    private static func testPAMStatusProbe() {
+        require(
+            SudoPAMStatus.pamModulePath == "/usr/local/lib/pam/pam_glance.so",
+            "FAIL [probeConst]: unexpected pamModulePath"
+        )
+        require(
+            SudoPAMStatus.pamConfigPath == "/etc/pam.d/sudo_local",
+            "FAIL [probeConst]: unexpected pamConfigPath"
+        )
+        require(
+            SudoPAMStatus.trustedBundlePath == "/Applications/Glance.app",
+            "FAIL [probeConst]: unexpected trustedBundlePath"
+        )
+        require(
+            SudoPAMStatus.trustedExecutablePath == "/Applications/Glance.app/Contents/MacOS/glance",
+            "FAIL [probeConst]: unexpected trustedExecutablePath"
+        )
+
+        testProbeModuleInstalledOutdatedAndUnsafePermissions()
+        testProbeRunningOutsideApplicationsAndMissing()
+        testProbeWrongCasingAndSetupActionPrecedence()
+        testProbeSudoLocalOrderingAndComments()
+        testProbeCanUninstallAndBundledHelpers()
+    }
+
+    private static func testProbeModuleInstalledOutdatedAndUnsafePermissions() {
+        let root = makeTempDir(prefix: "glance-probe-case1")
+        defer { removeItemIfExists(root) }
+
+        let appsDir = root.appendingPathComponent("Applications", isDirectory: true)
+        let appURL = appsDir.appendingPathComponent("Glance.app", isDirectory: true)
+        let pamBytes = Data("pam-binary-v1".utf8)
+        createFakeGlanceApp(at: appURL, pamHelperBytes: pamBytes, includeSetupScript: true)
+
+        let pamDir = root.appendingPathComponent("usr/local/lib/pam", isDirectory: true)
+        try! FileManager.default.createDirectory(at: pamDir, withIntermediateDirectories: true)
+        let installedPAM = pamDir.appendingPathComponent("pam_glance.so")
+        try! pamBytes.write(to: installedPAM)
+        chmod(installedPAM.path, 0o755)
+
+        let confDir = root.appendingPathComponent("etc/pam.d", isDirectory: true)
+        try! FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
+        let sudoLocal = confDir.appendingPathComponent("sudo_local")
+        try! """
+        auth       sufficient     /usr/local/lib/pam/pam_glance.so
+        auth       sufficient     pam_tid.so
+        """.appending("\n").write(to: sudoLocal, atomically: true, encoding: .utf8)
+
+        let readyStatus = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(readyStatus.module == .installed, "FAIL [probe1]: expected .installed, got \(readyStatus.module)")
+        require(readyStatus.config == .configured, "FAIL [probe1]: expected .configured, got \(readyStatus.config)")
+        require(
+            readyStatus.trustedBinary == .verified,
+            "FAIL [probe1]: expected .verified, got \(readyStatus.trustedBinary)"
+        )
+        require(readyStatus.hasBundledHelpers, "FAIL [probe1]: expected hasBundledHelpers == true")
+        require(readyStatus.isInstalledArtifactPresent, "FAIL [probe1]: expected isInstalledArtifactPresent == true")
+        require(readyStatus.setupAction == .ready, "FAIL [probe1]: expected .ready, got \(readyStatus.setupAction)")
+        require(!readyStatus.requiresRelocation, "FAIL [probe1]: expected requiresRelocation == false")
+        require(readyStatus.canUninstall, "FAIL [probe1]: expected canUninstall == true")
+
+        // Modified installed pam_glance.so bytes -> .outdated / .update
+        try! Data("pam-binary-older".utf8).write(to: installedPAM)
+        chmod(installedPAM.path, 0o755)
+        let outdatedStatus = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(
+            outdatedStatus.module == .outdated,
+            "FAIL [probe1]: expected .outdated, got \(outdatedStatus.module)"
+        )
+        require(
+            outdatedStatus.setupAction == .update,
+            "FAIL [probe1]: expected .update, got \(outdatedStatus.setupAction)"
+        )
+
+        // Unsafe permissions (group/other writable) -> .unsafePermissions (not .outdated), .repair
+        chmod(installedPAM.path, 0o777)
+        let unsafeStatus = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(
+            unsafeStatus.module == .unsafePermissions,
+            "FAIL [probe1]: expected .unsafePermissions, got \(unsafeStatus.module)"
+        )
+        require(
+            unsafeStatus.setupAction == .repair,
+            "FAIL [probe1]: expected .repair for unsafePermissions, got \(unsafeStatus.setupAction)"
+        )
+    }
+
+    private static func testProbeRunningOutsideApplicationsAndMissing() {
+        let root = makeTempDir(prefix: "glance-probe-case2")
+        defer { removeItemIfExists(root) }
+
+        let appsDir = root.appendingPathComponent("Applications", isDirectory: true)
+        let trustedApp = appsDir.appendingPathComponent("Glance.app", isDirectory: true)
+        let pamBytes = Data("pam-v2".utf8)
+        createFakeGlanceApp(at: trustedApp, pamHelperBytes: pamBytes, includeSetupScript: true)
+
+        let downloadsApp = root.appendingPathComponent("Downloads/Glance.app", isDirectory: true)
+        createFakeGlanceApp(at: downloadsApp, pamHelperBytes: pamBytes, includeSetupScript: true)
+
+        let pamDir = root.appendingPathComponent("usr/local/lib/pam", isDirectory: true)
+        try! FileManager.default.createDirectory(at: pamDir, withIntermediateDirectories: true)
+        let installedPAM = pamDir.appendingPathComponent("pam_glance.so")
+        try! pamBytes.write(to: installedPAM)
+        chmod(installedPAM.path, 0o755)
+
+        let confDir = root.appendingPathComponent("etc/pam.d", isDirectory: true)
+        try! FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
+        let sudoLocal = confDir.appendingPathComponent("sudo_local")
+        try! "auth       sufficient     /usr/local/lib/pam/pam_glance.so\n"
+            .write(to: sudoLocal, atomically: true, encoding: .utf8)
+
+        // Even with valid trustedApp, PAM module, and sudo_local on disk, running from Downloads must relocate
+        let externalStatus = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: trustedApp.path,
+            runningBundleURL: downloadsApp,
+            requireRootOwnership: false
+        )
+        require(
+            externalStatus.trustedBinary == .runningOutsideApplications,
+            "FAIL [probe2]: expected .runningOutsideApplications, got \(externalStatus.trustedBinary)"
+        )
+        require(
+            externalStatus.setupAction == .installAndRelocate,
+            "FAIL [probe2]: expected .installAndRelocate, got \(externalStatus.setupAction)"
+        )
+        require(externalStatus.requiresRelocation, "FAIL [probe2]: expected requiresRelocation == true")
+
+        // When runningBundleURL == trustedBundlePath on disk that doesn't exist -> .missing -> .installAndRelocate
+        let missingTrustedApp = appsDir.appendingPathComponent("MissingGlance.app", isDirectory: true)
+        let missingStatus = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: missingTrustedApp.path,
+            runningBundleURL: missingTrustedApp,
+            requireRootOwnership: false
+        )
+        require(
+            missingStatus.trustedBinary == .missing,
+            "FAIL [probe2]: expected .missing, got \(missingStatus.trustedBinary)"
+        )
+        require(
+            missingStatus.setupAction == .installAndRelocate,
+            "FAIL [probe2]: expected .installAndRelocate for .missing, got \(missingStatus.setupAction)"
+        )
+        require(missingStatus.requiresRelocation, "FAIL [probe2]: expected requiresRelocation == true for .missing")
+    }
+
+    private static func testProbeWrongCasingAndSetupActionPrecedence() {
+        let root = makeTempDir(prefix: "glance-probe-case3")
+        defer { removeItemIfExists(root) }
+
+        let appsDir = root.appendingPathComponent("Applications", isDirectory: true)
+        let lowercaseApp = appsDir.appendingPathComponent("glance.app", isDirectory: true)
+        let expectedTrustedPath = appsDir.appendingPathComponent("Glance.app", isDirectory: true).path
+        let pamBytes = Data("pam-v3".utf8)
+        createFakeGlanceApp(at: lowercaseApp, pamHelperBytes: pamBytes, includeSetupScript: true)
+
+        let missingPAM = root.appendingPathComponent("usr/local/lib/pam/pam_glance.so")
+        let missingConf = root.appendingPathComponent("etc/pam.d/sudo_local")
+
+        // Absent PAM & config with wrongCasing -> .install & requiresRelocation == true
+        let cleanCasingStatus = SudoPAMStatus.probe(
+            pamModulePath: missingPAM.path,
+            pamConfigPath: missingConf.path,
+            trustedBundlePath: expectedTrustedPath,
+            runningBundleURL: lowercaseApp,
+            requireRootOwnership: false
+        )
+        require(
+            cleanCasingStatus.trustedBinary == .wrongCasing,
+            "FAIL [probe3a]: expected .wrongCasing, got \(cleanCasingStatus.trustedBinary)"
+        )
+        require(cleanCasingStatus.requiresRelocation, "FAIL [probe3a]: expected requiresRelocation == true")
+        require(
+            cleanCasingStatus.setupAction == .install,
+            "FAIL [probe3a]: expected .install when PAM/config absent, got \(cleanCasingStatus.setupAction)"
+        )
+
+        // Present PAM & config with wrongCasing -> .repair & requiresRelocation == true
+        try! FileManager.default.createDirectory(
+            at: missingPAM.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try! pamBytes.write(to: missingPAM)
+        chmod(missingPAM.path, 0o755)
+        try! FileManager.default.createDirectory(
+            at: missingConf.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try! "auth       sufficient     /usr/local/lib/pam/pam_glance.so\n"
+            .write(to: missingConf, atomically: true, encoding: .utf8)
+
+        let dirtyCasingStatus = SudoPAMStatus.probe(
+            pamModulePath: missingPAM.path,
+            pamConfigPath: missingConf.path,
+            trustedBundlePath: expectedTrustedPath,
+            runningBundleURL: lowercaseApp,
+            requireRootOwnership: false
+        )
+        require(
+            dirtyCasingStatus.trustedBinary == .wrongCasing,
+            "FAIL [probe3b]: expected .wrongCasing, got \(dirtyCasingStatus.trustedBinary)"
+        )
+        require(dirtyCasingStatus.requiresRelocation, "FAIL [probe3b]: expected requiresRelocation == true")
+        require(
+            dirtyCasingStatus.setupAction == .repair,
+            "FAIL [probe3b]: expected .repair when PAM/config present, got \(dirtyCasingStatus.setupAction)"
+        )
+    }
+
+    private static func testProbeSudoLocalOrderingAndComments() {
+        let root = makeTempDir(prefix: "glance-probe-case4")
+        defer { removeItemIfExists(root) }
+
+        let appsDir = root.appendingPathComponent("Applications", isDirectory: true)
+        let appURL = appsDir.appendingPathComponent("Glance.app", isDirectory: true)
+        let pamBytes = Data("pam-v4".utf8)
+        createFakeGlanceApp(at: appURL, pamHelperBytes: pamBytes, includeSetupScript: true)
+
+        let pamDir = root.appendingPathComponent("usr/local/lib/pam", isDirectory: true)
+        try! FileManager.default.createDirectory(at: pamDir, withIntermediateDirectories: true)
+        let installedPAM = pamDir.appendingPathComponent("pam_glance.so")
+        try! pamBytes.write(to: installedPAM)
+        chmod(installedPAM.path, 0o755)
+
+        let confDir = root.appendingPathComponent("etc/pam.d", isDirectory: true)
+        try! FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
+        let sudoLocal = confDir.appendingPathComponent("sudo_local")
+
+        // Before pam_tid.so -> .configured
+        try! """
+        # comment
+        auth       sufficient     /usr/local/lib/pam/pam_glance.so
+        auth       sufficient     pam_tid.so
+        """.appending("\n").write(to: sudoLocal, atomically: true, encoding: .utf8)
+        let beforeTid = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(beforeTid.config == .configured, "FAIL [probe4]: expected .configured, got \(beforeTid.config)")
+
+        // After pam_tid.so -> .configuredAfterTouchID, setupAction == .repair
+        try! """
+        auth       sufficient     pam_tid.so
+        auth       sufficient     /usr/local/lib/pam/pam_glance.so
+        """.appending("\n").write(to: sudoLocal, atomically: true, encoding: .utf8)
+        let afterTid = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(
+            afterTid.config == .configuredAfterTouchID,
+            "FAIL [probe4]: expected .configuredAfterTouchID, got \(afterTid.config)"
+        )
+        require(afterTid.setupAction == .repair, "FAIL [probe4]: expected .repair, got \(afterTid.setupAction)")
+
+        // Commented out -> .notConfigured
+        try! """
+        # auth       sufficient     /usr/local/lib/pam/pam_glance.so
+        auth       sufficient     pam_tid.so
+        """.appending("\n").write(to: sudoLocal, atomically: true, encoding: .utf8)
+        let commentedOut = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(
+            commentedOut.config == .notConfigured,
+            "FAIL [probe4]: expected .notConfigured, got \(commentedOut.config)"
+        )
+    }
+
+    private static func testProbeCanUninstallAndBundledHelpers() {
+        let root = makeTempDir(prefix: "glance-probe-case5")
+        defer { removeItemIfExists(root) }
+
+        let appsDir = root.appendingPathComponent("Applications", isDirectory: true)
+        let appURL = appsDir.appendingPathComponent("Glance.app", isDirectory: true)
+        let pamBytes = Data("pam-v5".utf8)
+        createFakeGlanceApp(at: appURL, pamHelperBytes: pamBytes, includeSetupScript: false)
+
+        let pamDir = root.appendingPathComponent("usr/local/lib/pam", isDirectory: true)
+        let installedPAM = pamDir.appendingPathComponent("pam_glance.so")
+        let confDir = root.appendingPathComponent("etc/pam.d", isDirectory: true)
+        let sudoLocal = confDir.appendingPathComponent("sudo_local")
+
+        // Completely clean -> canUninstall == false, hasBundledHelpers == false (setup script missing)
+        let clean = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(!clean.isInstalledArtifactPresent, "FAIL [probe5]: clean isInstalledArtifactPresent must be false")
+        require(!clean.isApplicationRootOwned, "FAIL [probe5]: non-root temp app must not be root-owned")
+        require(clean.config == .notConfigured, "FAIL [probe5]: clean config must be .notConfigured")
+        require(!clean.canUninstall, "FAIL [probe5]: clean canUninstall must be false")
+        require(!clean.hasBundledHelpers, "FAIL [probe5]: missing setup script must make hasBundledHelpers false")
+        require(clean.setupAction == .install, "FAIL [probe5]: clean setupAction must be .install")
+
+        // Adding setup script enables hasBundledHelpers
+        let scriptURL = SudoPAMStatus.bundledSetupScriptURL(in: appURL)
+        try! Data("#!/bin/bash\n".utf8).write(to: scriptURL)
+        let withHelpers = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(withHelpers.hasBundledHelpers, "FAIL [probe5]: expected hasBundledHelpers == true")
+
+        // Condition 1: only pam_glance.so present -> canUninstall == true
+        try! FileManager.default.createDirectory(at: pamDir, withIntermediateDirectories: true)
+        try! pamBytes.write(to: installedPAM)
+        let pamOnly = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(pamOnly.isInstalledArtifactPresent, "FAIL [probe5]: expected isInstalledArtifactPresent == true")
+        require(pamOnly.canUninstall, "FAIL [probe5]: canUninstall must be true when pam_glance.so exists")
+        removeItemIfExists(installedPAM)
+
+        // Condition 2: only config != .notConfigured -> canUninstall == true
+        try! FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
+        try! "auth       sufficient     /usr/local/lib/pam/pam_glance.so\n"
+            .write(to: sudoLocal, atomically: true, encoding: .utf8)
+        let configOnly = SudoPAMStatus.probe(
+            pamModulePath: installedPAM.path,
+            pamConfigPath: sudoLocal.path,
+            trustedBundlePath: appURL.path,
+            runningBundleURL: appURL,
+            requireRootOwnership: false
+        )
+        require(configOnly.config == .configured, "FAIL [probe5]: expected config == .configured")
+        require(configOnly.canUninstall, "FAIL [probe5]: canUninstall must be true when config != .notConfigured")
+
+        // Condition 3: only isApplicationRootOwned == true -> canUninstall == true
+        let rootOwnedOnly = SudoPAMStatus(
+            module: .notInstalled,
+            config: .notConfigured,
+            trustedBinary: .notRootOwned,
+            hasBundledHelpers: true,
+            isInstalledArtifactPresent: false,
+            isApplicationRootOwned: true
+        )
+        require(
+            rootOwnedOnly.canUninstall,
+            "FAIL [probe5]: canUninstall must be true when isApplicationRootOwned == true"
         )
     }
 
@@ -1129,7 +1514,8 @@ struct SudoInstallerSelfTest {
         at bundleURL: URL,
         bundleID: String = expectedBundleID,
         pamHelperBytes: Data,
-        marker: String = "default"
+        marker: String = "default",
+        includeSetupScript: Bool = false
     ) {
         let contents = bundleURL.appendingPathComponent("Contents", isDirectory: true)
         let macos = contents.appendingPathComponent("MacOS", isDirectory: true)
@@ -1147,6 +1533,12 @@ struct SudoInstallerSelfTest {
         let helper = helpers.appendingPathComponent("pam_glance.so")
         try! pamHelperBytes.write(to: helper)
         chmod(helper.path, 0o755)
+
+        if includeSetupScript {
+            let setupScript = resources.appendingPathComponent("glance-sudo-setup.sh")
+            try! Data("#!/bin/bash\nexit 0\n".utf8).write(to: setupScript)
+            chmod(setupScript.path, 0o644)
+        }
 
         let markerFile = resources.appendingPathComponent("marker.txt")
         try! Data(marker.utf8).write(to: markerFile)
