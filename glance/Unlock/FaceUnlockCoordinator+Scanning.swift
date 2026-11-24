@@ -183,48 +183,32 @@ extension FaceUnlockCoordinator {
         camera.setConsumerBusy(false)
 
         while ContinuousClock.now < deadline,
-            !Task.isCancelled,
-            generation == scanGeneration,
-            !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+            isScanWindowActive(generation: generation, requireOverlayScanning: requireOverlayScanning)
         {
             guard let frame = await camera.nextFrame(after: lastProcessedFrameID, until: deadline) else {
                 break
             }
             lastProcessedFrameID = frame.id
 
-            guard !Task.isCancelled,
-                generation == scanGeneration,
-                !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+            guard isScanWindowActive(generation: generation, requireOverlayScanning: requireOverlayScanning),
+                LockMonitor.isScreenActuallyLocked()
             else {
                 return .noResolution
             }
-            guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
 
-            let extracted: ExtractedAuthFrame
-            do {
-                camera.setConsumerBusy(true)
-                defer {
-                    if generation == scanGeneration {
-                        camera.setConsumerBusy(false)
-                    }
-                }
-                extracted = await FaceAuthEvaluator.extractFrame(
-                    from: frame,
-                    pipeline: pipeline,
-                    previousBoundingBox: evaluator.lastFaceBoundingBox,
-                    livenessEnabled: livenessEnabled,
-                    nightBoostEnabled: nightBoostEnabled,
-                    geometryContext: evaluator.geometryContextIfNeeded()
-                )
-            }
+            let extracted = await extractFrameWithBackpressure(
+                frame: frame,
+                generation: generation,
+                evaluator: evaluator,
+                livenessEnabled: livenessEnabled,
+                nightBoostEnabled: nightBoostEnabled
+            )
 
-            guard !Task.isCancelled,
-                generation == scanGeneration,
-                !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning
+            guard isScanWindowActive(generation: generation, requireOverlayScanning: requireOverlayScanning),
+                LockMonitor.isScreenActuallyLocked()
             else {
                 return .noResolution
             }
-            guard LockMonitor.isScreenActuallyLocked() else { return .noResolution }
 
             activateNightBoostIfNeeded(
                 luminance: extracted.luminance,
@@ -247,18 +231,59 @@ extension FaceUnlockCoordinator {
             case .wrongFaceTimedOut:
                 return .consistentlyWrongFace
             case .matched(let readyMatch, let confirmingCue):
-                statusMessage = "Recognized — unlocking…"
-                let livenessNote =
-                    livenessEnabled
-                    ? (confirmingCue.map { "live via \($0.title)" } ?? "liveness clear")
-                    : "liveness off"
-                lastOutcome =
-                    "Matched \(readyMatch.identity.name) at \(String(format: "%.3f", readyMatch.centroidSimilarity)), \(livenessNote)."
-                await pocController.injectStoredPassword(requireAuthoritativeLock: true)
+                await completeMatchedUnlock(
+                    readyMatch: readyMatch,
+                    confirmingCue: confirmingCue,
+                    livenessEnabled: livenessEnabled
+                )
                 return .matched
             }
         }
         return .noResolution
+    }
+
+    private func isScanWindowActive(generation: Int, requireOverlayScanning: Bool) -> Bool {
+        !Task.isCancelled
+            && generation == scanGeneration
+            && (!requireOverlayScanning || NotchOverlayController.shared.phase == .scanning)
+    }
+
+    private func extractFrameWithBackpressure(
+        frame: CameraFrame,
+        generation: Int,
+        evaluator: FaceAuthEvaluator,
+        livenessEnabled: Bool,
+        nightBoostEnabled: Bool
+    ) async -> ExtractedAuthFrame {
+        camera.setConsumerBusy(true)
+        defer {
+            if generation == scanGeneration {
+                camera.setConsumerBusy(false)
+            }
+        }
+        return await FaceAuthEvaluator.extractFrame(
+            from: frame,
+            pipeline: pipeline,
+            previousBoundingBox: evaluator.lastFaceBoundingBox,
+            livenessEnabled: livenessEnabled,
+            nightBoostEnabled: nightBoostEnabled,
+            geometryContext: evaluator.geometryContextIfNeeded()
+        )
+    }
+
+    private func completeMatchedUnlock(
+        readyMatch: ScoredIdentity,
+        confirmingCue: LivenessCue?,
+        livenessEnabled: Bool
+    ) async {
+        statusMessage = "Recognized — unlocking…"
+        let livenessNote =
+            livenessEnabled
+            ? (confirmingCue.map { "live via \($0.title)" } ?? "liveness clear")
+            : "liveness off"
+        lastOutcome =
+            "Matched \(readyMatch.identity.name) at \(String(format: "%.3f", readyMatch.centroidSimilarity)), \(livenessNote)."
+        await pocController.injectStoredPassword(requireAuthoritativeLock: true)
     }
 
     private func activateNightBoostIfNeeded(

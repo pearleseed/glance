@@ -170,14 +170,26 @@ final class FaceRecognitionPipeline {
             initialLoadState: .loading
         )
 
+        struct SettledEmbedder {
+            let embedder: FaceEmbedder
+            let usingFallback: Bool
+            let reason: String?
+            let loadState: LoadState
+        }
+
         let task = Task.detached(priority: .userInitiated) { [weak self] in
-            let outcome: (embedder: FaceEmbedder, usingFallback: Bool, reason: String?, loadState: LoadState)
+            let outcome: SettledEmbedder
             do {
                 let loaded = try loader()
-                outcome = (loaded, false, nil, .ready)
+                outcome = SettledEmbedder(embedder: loaded, usingFallback: false, reason: nil, loadState: .ready)
             } catch {
                 let reason = error.localizedDescription
-                outcome = (VisionFeaturePrintEmbedder(), true, reason, .fallback(reason))
+                outcome = SettledEmbedder(
+                    embedder: VisionFeaturePrintEmbedder(),
+                    usingFallback: true,
+                    reason: reason,
+                    loadState: .fallback(reason)
+                )
             }
             guard let self else { return }
             await self.finishAsyncLoad(
@@ -388,11 +400,12 @@ final class FaceRecognitionPipeline {
             return (!includeQuality && face.quality != nil) ? face.withQuality(nil) : face
         }
         let targetCenter = CGPoint(x: face.normalizedBoundingBox.midX, y: face.normalizedBoundingBox.midY)
-        guard let faces = try? FaceDetector.detectFaces(
-            in: image,
-            includeQuality: needsQuality,
-            includeLandmarks: needsLandmarks
-        ),
+        guard
+            let faces = try? FaceDetector.detectFaces(
+                in: image,
+                includeQuality: needsQuality,
+                includeLandmarks: needsLandmarks
+            ),
             let matched = faces.min(by: {
                 Self.distance(from: $0, to: targetCenter) < Self.distance(from: $1, to: targetCenter)
             })

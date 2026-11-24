@@ -55,8 +55,8 @@ import CoreImage
 import CoreML
 import Foundation
 import Observation
-import os
 import SwiftUI
+import os
 
 private struct MockR50Embedder: FaceEmbedder {
     nonisolated let name = ArcFaceEmbedder.name
@@ -128,9 +128,9 @@ struct PerformanceSelfTest {
         seedFloats[3] = -1.0
         seedFloats[4] = 0.125
         seedFloats[5] = -0.375
-        seedFloats[6] = 65504.0          // Float16.greatestFiniteMagnitude
-        seedFloats[7] = -65504.0         // -Float16.greatestFiniteMagnitude
-        seedFloats[8] = 0.00006103515625 // Float16.leastNormalMagnitude (2^-14)
+        seedFloats[6] = 65504.0  // Float16.greatestFiniteMagnitude
+        seedFloats[7] = -65504.0  // -Float16.greatestFiniteMagnitude
+        seedFloats[8] = 0.00006103515625  // Float16.leastNormalMagnitude (2^-14)
         seedFloats[9] = -0.00006103515625
         for index in 10..<count {
             let phase = Float(index) * 0.137
@@ -139,32 +139,32 @@ struct PerformanceSelfTest {
 
         var expected = [Float](repeating: 0, count: count)
         #if arch(arm64)
-        let fp16Pointer = multiArray.dataPointer.bindMemory(to: Float16.self, capacity: count)
-        for index in 0..<count {
-            let value = Float16(seedFloats[index])
-            fp16Pointer[index] = value
-            expected[index] = Float(value)
-        }
+            let fp16Pointer = multiArray.dataPointer.bindMemory(to: Float16.self, capacity: count)
+            for index in 0..<count {
+                let value = Float16(seedFloats[index])
+                fp16Pointer[index] = value
+                expected[index] = Float(value)
+            }
         #else
-        seedFloats.withUnsafeMutableBytes { srcBytes in
-            var srcBuffer = vImage_Buffer(
-                data: srcBytes.baseAddress!,
-                height: 1,
-                width: vImagePixelCount(count),
-                rowBytes: count * MemoryLayout<Float>.stride
-            )
-            var dstBuffer = vImage_Buffer(
-                data: multiArray.dataPointer,
-                height: 1,
-                width: vImagePixelCount(count),
-                rowBytes: count * MemoryLayout<UInt16>.stride
-            )
-            let err = vImageConvert_PlanarFtoPlanar16F(&srcBuffer, &dstBuffer, 0)
-            precondition(err == kvImageNoError, "FAIL: vImage Float->Float16 test setup failed: \(err)")
-        }
-        for index in 0..<count {
-            expected[index] = multiArray[index].floatValue
-        }
+            seedFloats.withUnsafeMutableBytes { srcBytes in
+                var srcBuffer = vImage_Buffer(
+                    data: srcBytes.baseAddress!,
+                    height: 1,
+                    width: vImagePixelCount(count),
+                    rowBytes: count * MemoryLayout<Float>.stride
+                )
+                var dstBuffer = vImage_Buffer(
+                    data: multiArray.dataPointer,
+                    height: 1,
+                    width: vImagePixelCount(count),
+                    rowBytes: count * MemoryLayout<UInt16>.stride
+                )
+                let err = vImageConvert_PlanarFtoPlanar16F(&srcBuffer, &dstBuffer, 0)
+                precondition(err == kvImageNoError, "FAIL: vImage Float->Float16 test setup failed: \(err)")
+            }
+            for index in 0..<count {
+                expected[index] = multiArray[index].floatValue
+            }
         #endif
 
         let extracted = ArcFaceEmbedder.floatVector(from: multiArray)
@@ -182,19 +182,19 @@ struct PerformanceSelfTest {
                 "FAIL: Float16 fast-path diverged from subscript at \(index): \(extracted[index]) vs \(subscriptValue)"
             )
             #if arch(arm64)
-            if index >= 10 {
+                if index >= 10 {
+                    let diffFromSeed = abs(extracted[index] - seedFloats[index])
+                    precondition(
+                        diffFromSeed < 1e-3,
+                        "FAIL: Float16 quantization error exceeded 1e-3 at \(index): \(diffFromSeed)"
+                    )
+                }
+            #else
                 let diffFromSeed = abs(extracted[index] - seedFloats[index])
                 precondition(
                     diffFromSeed < 1e-3,
                     "FAIL: Float16 quantization error exceeded 1e-3 at \(index): \(diffFromSeed)"
                 )
-            }
-            #else
-            let diffFromSeed = abs(extracted[index] - seedFloats[index])
-            precondition(
-                diffFromSeed < 1e-3,
-                "FAIL: Float16 quantization error exceeded 1e-3 at \(index): \(diffFromSeed)"
-            )
             #endif
         }
 
@@ -254,9 +254,9 @@ struct PerformanceSelfTest {
     private static func testArcFaceComputeUnitsForArchitecture() {
         let units = ArcFaceEmbedder.preferredComputeUnits()
         #if arch(arm64)
-        precondition(units == .cpuAndNeuralEngine, "FAIL: arm64 must prefer .cpuAndNeuralEngine, got \(units)")
+            precondition(units == .cpuAndNeuralEngine, "FAIL: arm64 must prefer .cpuAndNeuralEngine, got \(units)")
         #elseif arch(x86_64)
-        precondition(units == .cpuOnly, "FAIL: x86_64 must prefer .cpuOnly, got \(units)")
+            precondition(units == .cpuOnly, "FAIL: x86_64 must prefer .cpuOnly, got \(units)")
         #endif
         print("PASS: ArcFace architecture-aware computeUnits")
     }
@@ -622,7 +622,9 @@ struct PerformanceSelfTest {
             if iteration % 3 != 0 {
                 precondition(raceResult == nil, "FAIL: expected nil in race iteration \(iteration)")
             } else if let raceResult {
-                precondition(raceResult.id == iterFrame.id, "FAIL: unexpected frame id \(raceResult.id) in race iteration \(iteration)")
+                precondition(
+                    raceResult.id == iterFrame.id,
+                    "FAIL: unexpected frame id \(raceResult.id) in race iteration \(iteration)")
             }
         }
 
@@ -653,7 +655,9 @@ struct PerformanceSelfTest {
 
         let gen1 = captureState.captureGeneration
         precondition(captureState.enqueueIfActive(dummy1, generation: gen1), "FAIL: first frame should schedule drain")
-        precondition(!captureState.enqueueIfActive(dummy2, generation: gen1), "FAIL: second frame while scheduled should coalesce")
+        precondition(
+            !captureState.enqueueIfActive(dummy2, generation: gen1),
+            "FAIL: second frame while scheduled should coalesce")
         precondition(captureState.drainPending()?.id == dummy2.id, "FAIL: drained frame must be newest coalesced frame")
         precondition(captureState.drainPending() == nil, "FAIL: second drain must be empty")
 
@@ -881,15 +885,16 @@ struct PerformanceSelfTest {
 
         // Marker centered at (60.0, 50.0) in working-frame top-left coordinates (inside face & 0.15 pad),
         // plus an outer margin marker at (200.0, 190.0) inside 0.5 pad but OUTSIDE 0.15 pad.
-        let innerMarker = CGRect(x: 52, y: 42, width: 16, height: 16) // center (60, 50)
-        let outerMarginMarker = CGRect(x: 192, y: 182, width: 16, height: 16) // center (200, 190), 0.15 pad ends at (171, 173)
+        let innerMarker = CGRect(x: 52, y: 42, width: 16, height: 16)  // center (60, 50)
+        let outerMarginMarker = CGRect(x: 192, y: 182, width: 16, height: 16)  // center (200, 190), 0.15 pad ends at (171, 173)
         let nativeTopLeftImg = makeMarkerImage(width: Int(nativeSize.width), height: Int(nativeSize.height)) { x, y in
             let wx = CGFloat(x) / scale
             let wy = CGFloat(y) / scale
             return innerMarker.contains(CGPoint(x: wx, y: wy))
                 || outerMarginMarker.contains(CGPoint(x: wx, y: wy))
         }
-        let workingBg = makeMarkerImage(width: Int(workingSize.width), height: Int(workingSize.height)) { _, _ in false }
+        let workingBg = makeMarkerImage(width: Int(workingSize.width), height: Int(workingSize.height)) { _, _ in false
+        }
         let topLeftFrame = CameraFrame(
             id: 11,
             image: workingBg,
@@ -936,7 +941,7 @@ struct PerformanceSelfTest {
             clippedBottomRight == CGRect(x: 450, y: 170, width: 190, height: 190),
             "FAIL: bottom-right clipped rect mismatch: \(String(describing: clippedBottomRight))"
         )
-        let brMarker = CGRect(x: 560, y: 280, width: 16, height: 16) // center (568, 288)
+        let brMarker = CGRect(x: 560, y: 280, width: 16, height: 16)  // center (568, 288)
         let nativeBRImg = makeMarkerImage(width: Int(nativeSize.width), height: Int(nativeSize.height)) { x, y in
             let wx = CGFloat(x) / scale
             let wy = CGFloat(y) / scale
@@ -1044,7 +1049,7 @@ struct PerformanceSelfTest {
             (255, 255, 0),
             (0, 255, 255),
             (255, 210, 40),
-            (255, 190, 210),
+            (255, 190, 210)
         ]
 
         for y in 0..<height {
@@ -1131,7 +1136,9 @@ struct PerformanceSelfTest {
 
         let extractedUnmasked = GlareCueExtractor.extract(faceCrop: image)!
         let refUnmasked = referenceExtract(mask: nil)
-        precondition(extractedUnmasked.specularFraction > 0 && extractedUnmasked.specularFraction < 0.5, "FAIL: unexpected specularFraction \(extractedUnmasked.specularFraction)")
+        precondition(
+            extractedUnmasked.specularFraction > 0 && extractedUnmasked.specularFraction < 0.5,
+            "FAIL: unexpected specularFraction \(extractedUnmasked.specularFraction)")
         precondition(
             extractedUnmasked.specularFraction == refUnmasked.fraction
                 && extractedUnmasked.specularClusterRatio == refUnmasked.cluster,
@@ -1142,7 +1149,7 @@ struct PerformanceSelfTest {
             CGPoint(x: 0.05, y: 0.05),
             CGPoint(x: 0.95, y: 0.05),
             CGPoint(x: 0.95, y: 0.95),
-            CGPoint(x: 0.05, y: 0.95),
+            CGPoint(x: 0.05, y: 0.95)
         ]
         let mask = GlareCueExtractor.regionMask(poly, width: width, height: height)!
         let extractedMasked = GlareCueExtractor.extract(faceCrop: image, faceRegion: poly)!
@@ -1172,7 +1179,7 @@ struct PerformanceSelfTest {
             LandmarkPoint(point: CGPoint(x: 345, y: 245), region: .outerLips, indexInRegion: 2),
             LandmarkPoint(point: CGPoint(x: 320, y: 195), region: .nose, indexInRegion: 0),
             LandmarkPoint(point: CGPoint(x: 320, y: 210), region: .nose, indexInRegion: 1),
-            LandmarkPoint(point: CGPoint(x: 320, y: 175), region: .noseCrest, indexInRegion: 0),
+            LandmarkPoint(point: CGPoint(x: 320, y: 175), region: .noseCrest, indexInRegion: 0)
         ]
 
         // 15 frames with total yaw swing = 5 deg (< 12 deg gate) and non-zero 2D jitter/motion
@@ -1212,8 +1219,12 @@ struct PerformanceSelfTest {
         )
 
         let diagResult = GeometryLiveness.evaluate(stillWindow, includeDiagnostics: true)
-        precondition(diagResult.planarResidualScore == 0 && diagResult.planarConfidence == 0, "FAIL: diagnostics mode must still abstain when yaw < 12 deg")
-        precondition(diagResult.pairsAnalyzed > 0, "FAIL: Face Lab includeDiagnostics: true should populate pair metrics even when yaw < 12 deg")
+        precondition(
+            diagResult.planarResidualScore == 0 && diagResult.planarConfidence == 0,
+            "FAIL: diagnostics mode must still abstain when yaw < 12 deg")
+        precondition(
+            diagResult.pairsAnalyzed > 0,
+            "FAIL: Face Lab includeDiagnostics: true should populate pair metrics even when yaw < 12 deg")
 
         // Verify off-@MainActor LivenessAnalyzer offloading & generation guard across resetConfirmations (identity swap)
         let analyzer = LivenessAnalyzer()
@@ -1226,7 +1237,8 @@ struct PerformanceSelfTest {
             }.value
             _ = analyzer.observe(frame, precomputedGeometry: precomputed, sourceGeneration: ctx.generation)
         }
-        precondition(analyzer.lastGeometry.pairsAnalyzed == 0, "FAIL: off-actor Heavy geometry should preserve early exit")
+        precondition(
+            analyzer.lastGeometry.pairsAnalyzed == 0, "FAIL: off-actor Heavy geometry should preserve early exit")
 
         let staleCtx = analyzer.heavyGeometryContextIfNeeded()!
         let sentinelConfirmGeo = GeometryLivenessResult(
@@ -1305,7 +1317,9 @@ struct PerformanceSelfTest {
             return (sqrt(2.0) / md, cx, cy)
         }
 
-        func refSolveHomography(_ src: [CGPoint], _ dst: [CGPoint], weights: [Double]? = nil) -> LandmarkGeometry.Homography? {
+        func refSolveHomography(_ src: [CGPoint], _ dst: [CGPoint], weights: [Double]? = nil) -> LandmarkGeometry
+            .Homography?
+        {
             let sT = refNorm(src)
             let dT = refNorm(dst)
             var ata = Array(repeating: Array(repeating: 0.0, count: 8), count: 8)
@@ -1331,17 +1345,17 @@ struct PerformanceSelfTest {
             let a = [
                 [1.0 / dT.scale, 0.0, dT.cx],
                 [0.0, 1.0 / dT.scale, dT.cy],
-                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0]
             ]
             let hn = [
                 [h[0], h[1], h[2]],
                 [h[3], h[4], h[5]],
-                [h[6], h[7], 1.0],
+                [h[6], h[7], 1.0]
             ]
             let b = [
                 [sT.scale, 0.0, -sT.scale * sT.cx],
                 [0.0, sT.scale, -sT.scale * sT.cy],
-                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0]
             ]
             func mul(_ m1: [[Double]], _ m2: [[Double]]) -> [[Double]] {
                 var out = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
@@ -1458,7 +1472,7 @@ struct PerformanceSelfTest {
             plist: [
                 "CFBundleIdentifier": "  com.example.SampleApp  ",
                 "CFBundleDisplayName": "Sample Display Name",
-                "CFBundleName": "Sample Bundle Name",
+                "CFBundleName": "Sample Bundle Name"
             ]
         )
         let normalMeta = InstalledApps.readAppMetadata(at: normalURL)
@@ -1481,7 +1495,7 @@ struct PerformanceSelfTest {
             name: "RawFileName",
             plist: [
                 "CFBundleIdentifier": "com.example.BundleNameOnly",
-                "CFBundleName": "Fallback Bundle Name",
+                "CFBundleName": "Fallback Bundle Name"
             ]
         )
         precondition(
@@ -1492,7 +1506,7 @@ struct PerformanceSelfTest {
         let filenameOnlyURL = try makeAppBundle(
             name: "FilenameFallbackApp",
             plist: [
-                "CFBundleIdentifier": "com.example.FilenameOnly",
+                "CFBundleIdentifier": "com.example.FilenameOnly"
             ]
         )
         precondition(
@@ -1506,7 +1520,7 @@ struct PerformanceSelfTest {
             plist: [
                 "CFBundleIdentifier": "com.example.AgentApp",
                 "CFBundleDisplayName": "Agent",
-                "LSUIElement": true,
+                "LSUIElement": true
             ]
         )
         precondition(InstalledApps.readAppMetadata(at: agentURL) == nil, "FAIL: LSUIElement app must return nil")
@@ -1516,7 +1530,7 @@ struct PerformanceSelfTest {
             plist: [
                 "CFBundleIdentifier": "com.example.BackgroundApp",
                 "CFBundleDisplayName": "Background",
-                "LSBackgroundOnly": "1",
+                "LSBackgroundOnly": "1"
             ]
         )
         precondition(InstalledApps.readAppMetadata(at: bgURL) == nil, "FAIL: LSBackgroundOnly app must return nil")
@@ -1526,7 +1540,7 @@ struct PerformanceSelfTest {
             name: "GlanceCopy",
             plist: [
                 "CFBundleIdentifier": "com.pearleseed.glance",
-                "CFBundleDisplayName": "Glance",
+                "CFBundleDisplayName": "Glance"
             ]
         )
         precondition(
@@ -1538,7 +1552,7 @@ struct PerformanceSelfTest {
             name: "TerminalCopy",
             plist: [
                 "CFBundleIdentifier": "com.apple.Terminal",
-                "CFBundleDisplayName": "Terminal",
+                "CFBundleDisplayName": "Terminal"
             ]
         )
         precondition(
@@ -1674,7 +1688,7 @@ struct PerformanceSelfTest {
             ("small 200x32 clamped-height", clampedHeightRect, 16, 42),
             ("closed 200x32 fast-path", closedNotchRect, 8, 12),
             ("translated 252x200 fast-path", translatedOpenRect, 16, 60),
-            ("narrow 120x200 clamped-width", clampedWidthRect, 16, 42),
+            ("narrow 120x200 clamped-width", clampedWidthRect, 16, 42)
         ]
 
         for (label, rect, topRadius, bottomRadius) in cases {
@@ -1710,11 +1724,19 @@ struct PerformanceSelfTest {
 
             // Top flare & bounding parity
             precondition(hypot(m0.x - rect.minX, m0.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-left start")
-            precondition(hypot(q1To.x - (rect.minX + top), q1To.y - (rect.minY + top)) < 1e-6, "FAIL [\(label)]: top-left flare end")
-            precondition(hypot(q1Ctrl.x - (rect.minX + top), q1Ctrl.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-left flare control")
-            precondition(hypot(rightTop.x - (rect.maxX - top), rightTop.y - (rect.minY + top)) < 1e-6, "FAIL [\(label)]: top-right flare start")
+            precondition(
+                hypot(q1To.x - (rect.minX + top), q1To.y - (rect.minY + top)) < 1e-6,
+                "FAIL [\(label)]: top-left flare end")
+            precondition(
+                hypot(q1Ctrl.x - (rect.minX + top), q1Ctrl.y - rect.minY) < 1e-6,
+                "FAIL [\(label)]: top-left flare control")
+            precondition(
+                hypot(rightTop.x - (rect.maxX - top), rightTop.y - (rect.minY + top)) < 1e-6,
+                "FAIL [\(label)]: top-right flare start")
             precondition(hypot(q2To.x - rect.maxX, q2To.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-right flare end")
-            precondition(hypot(q2Ctrl.x - (rect.maxX - top), q2Ctrl.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-right flare control")
+            precondition(
+                hypot(q2Ctrl.x - (rect.maxX - top), q2Ctrl.y - rect.minY) < 1e-6,
+                "FAIL [\(label)]: top-right flare control")
 
             let refPath = UnevenRoundedRectangle(
                 topLeadingRadius: 0,
@@ -1746,7 +1768,7 @@ struct PerformanceSelfTest {
                 (l2To, l3c1, l3c2, l3To),
                 (rightReach, r1c1, r1c2, r1To),
                 (r1To, r2c1, r2c2, r2To),
-                (r2To, r3c1, r3c2, r3To),
+                (r2To, r3c1, r3c2, r3To)
             ]
             let refSegments: [(CGPoint, CGPoint, CGPoint, CGPoint)] = [
                 (p8, c8b, c8a, p7),
@@ -1754,7 +1776,7 @@ struct PerformanceSelfTest {
                 (p6, c6b, c6a, l5),
                 (p4, c4b, c4a, p3),
                 (p3, c3b, c3a, p2),
-                (p2, c2b, c2a, p1),
+                (p2, c2b, c2a, p1)
             ]
 
             for (segIdx, (sSeg, rSeg)) in zip(shapeSegments, refSegments).enumerated() {
@@ -1783,7 +1805,7 @@ struct PerformanceSelfTest {
         // Zero bottom radius edge case
         for sharpRect in [
             CGRect(x: 0, y: 0, width: 180, height: 60),
-            CGRect(x: 12, y: 8, width: 180, height: 60),
+            CGRect(x: 12, y: 8, width: 180, height: 60)
         ] {
             let sharpPath = NotchShape(topRadius: 10, bottomRadius: 0, style: .notch).path(in: sharpRect)
             let sharpBounds = sharpPath.boundingRect

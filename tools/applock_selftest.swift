@@ -85,7 +85,9 @@ struct AppLockSelfTest {
         runExpirationDelayTests(&runner)
 
         expect(runner.passedCount >= 72, "Expected at least 72 tests, ran \(runner.passedCount)")
-        print("PASS: AppLockEngine v2 (RelockPolicy monotonic + Blacklist + Touch ID fallback) — \(runner.passedCount) tests passed.")
+        print(
+            "PASS: AppLockEngine v2 (RelockPolicy monotonic + Blacklist + Touch ID fallback) — \(runner.passedCount) tests passed."
+        )
     }
 
     // MARK: - Brief Core Scenarios (1..6)
@@ -93,10 +95,16 @@ struct AppLockSelfTest {
     private static func runBriefScenarios(_ r: inout TestRunner) {
         r.test("brief-1: blacklist protects critical recovery/system apps while allowing Xcode with caution") {
             expect(AppLockBlacklist.isProtected("com.apple.finder", ownBundleID: glanceOwn), "Finder must be protected")
-            expect(AppLockBlacklist.isProtected("com.apple.Terminal", ownBundleID: glanceOwn), "Terminal must be protected")
-            expect(AppLockBlacklist.isProtected("com.apple.SystemSettings", ownBundleID: glanceOwn), "SystemSettings must be protected")
+            expect(
+                AppLockBlacklist.isProtected("com.apple.Terminal", ownBundleID: glanceOwn), "Terminal must be protected"
+            )
+            expect(
+                AppLockBlacklist.isProtected("com.apple.SystemSettings", ownBundleID: glanceOwn),
+                "SystemSettings must be protected")
             expect(AppLockBlacklist.isProtected(glanceOwn, ownBundleID: glanceOwn), "own bundle ID must be protected")
-            expect(!AppLockBlacklist.isProtected("com.apple.dt.Xcode", ownBundleID: glanceOwn), "Xcode must not be hard-blocked")
+            expect(
+                !AppLockBlacklist.isProtected("com.apple.dt.Xcode", ownBundleID: glanceOwn),
+                "Xcode must not be hard-blocked")
             expect(AppLockBlacklist.isCautionApp("com.apple.dt.Xcode"), "Xcode must be caution app")
         }
 
@@ -110,13 +118,17 @@ struct AppLockSelfTest {
             let eLeave = engine.appActivated(safari, monotonicNow: 103)
             expect(eLeave.contains(.hide(notes)), "leaving .everyTime app must hide it")
             let eReturn = engine.appActivated(notes, monotonicNow: 104)
-            guard case .raiseCurtain = eReturn.first else { fatalError("FAIL: returning to .everyTime app must challenge") }
+            guard case .raiseCurtain = eReturn.first else {
+                fatalError("FAIL: returning to .everyTime app must challenge")
+            }
         }
 
         r.test("brief-3: .afterMinutes(5) skips challenge within 5m and challenges after >5m") {
             var timed = AppLockEngine(ownBundleID: glanceOwn)
             _ = timed.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
-            guard case .raiseCurtain(let c2) = timed.appActivated(notes, monotonicNow: 1000).first else { fatalError("FAIL") }
+            guard case .raiseCurtain(let c2) = timed.appActivated(notes, monotonicNow: 1000).first else {
+                fatalError("FAIL")
+            }
             _ = timed.passed(challengeID: c2.id, monotonicNow: 1001)
             _ = timed.appActivated(safari, monotonicNow: 1100)
             expect(timed.appActivated(notes, monotonicNow: 1200).isEmpty, "challenged before 5 min elapsed")
@@ -129,7 +141,9 @@ struct AppLockSelfTest {
         r.test("brief-4: .afterFocusLossMinutes(2) stays unlocked after 60s away, challenges after 125s away") {
             var idle = AppLockEngine(ownBundleID: glanceOwn)
             _ = idle.configure(isEnabled: true, policies: [notes.bundleID: .afterFocusLossMinutes(2)])
-            guard case .raiseCurtain(let c3) = idle.appActivated(notes, monotonicNow: 2000).first else { fatalError("FAIL") }
+            guard case .raiseCurtain(let c3) = idle.appActivated(notes, monotonicNow: 2000).first else {
+                fatalError("FAIL")
+            }
             _ = idle.passed(challengeID: c3.id, monotonicNow: 2001)
             _ = idle.appActivated(safari, monotonicNow: 2010)
             expect(idle.appActivated(notes, monotonicNow: 2070).isEmpty, "relocked before 2 min focus loss")
@@ -142,7 +156,9 @@ struct AppLockSelfTest {
         r.test("brief-5: lockAll() revokes timed & focus-loss sessions immediately") {
             var timed = AppLockEngine(ownBundleID: glanceOwn)
             _ = timed.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(60)])
-            guard case .raiseCurtain(let c4) = timed.appActivated(notes, monotonicNow: 3000).first else { fatalError("FAIL") }
+            guard case .raiseCurtain(let c4) = timed.appActivated(notes, monotonicNow: 3000).first else {
+                fatalError("FAIL")
+            }
             _ = timed.passed(challengeID: c4.id, monotonicNow: 3001)
             _ = timed.lockAll()
             guard case .raiseCurtain = timed.appActivated(notes, monotonicNow: 3005).first else {
@@ -153,10 +169,13 @@ struct AppLockSelfTest {
         r.test("brief-6: Touch ID system prompt fallback grants temporary reopen ticket and redeems cleanly") {
             var fallback = AppLockEngine(ownBundleID: glanceOwn)
             _ = fallback.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
-            guard case .raiseCurtain(let c5) = fallback.appActivated(notes, monotonicNow: 4000).first else { fatalError("FAIL") }
+            guard case .raiseCurtain(let c5) = fallback.appActivated(notes, monotonicNow: 4000).first else {
+                fatalError("FAIL")
+            }
             let promptEffects = fallback.systemPromptRequested(challengeID: c5.id)
             expect(
-                promptEffects.contains(.presentSystemPrompt(AppLockEngine.Challenge(id: c5.id, app: notes, phase: .systemPrompt))),
+                promptEffects.contains(
+                    .presentSystemPrompt(AppLockEngine.Challenge(id: c5.id, app: notes, phase: .systemPrompt))),
                 "system prompt not emitted"
             )
             let successEffects = fallback.systemPromptFinished(challengeID: c5.id, success: true, monotonicNow: 4002)
@@ -224,24 +243,39 @@ struct AppLockSelfTest {
 
     private static func runBlacklistTests(_ r: inout TestRunner) {
         r.test("blacklist-1: protects Activity Monitor") {
-            expect(AppLockBlacklist.isProtected("com.apple.ActivityMonitor", ownBundleID: glanceOwn), "Activity Monitor must be protected")
+            expect(
+                AppLockBlacklist.isProtected("com.apple.ActivityMonitor", ownBundleID: glanceOwn),
+                "Activity Monitor must be protected")
         }
 
         r.test("blacklist-2: protects both SystemSettings and legacy systempreferences") {
-            expect(AppLockBlacklist.isProtected("com.apple.SystemSettings", ownBundleID: glanceOwn), "SystemSettings must be protected")
-            expect(AppLockBlacklist.isProtected("com.apple.systempreferences", ownBundleID: glanceOwn), "systempreferences must be protected")
+            expect(
+                AppLockBlacklist.isProtected("com.apple.SystemSettings", ownBundleID: glanceOwn),
+                "SystemSettings must be protected")
+            expect(
+                AppLockBlacklist.isProtected("com.apple.systempreferences", ownBundleID: glanceOwn),
+                "systempreferences must be protected")
         }
 
         r.test("blacklist-3: protects ownBundleID and handles nil or empty ownBundleID safely") {
-            expect(AppLockBlacklist.isProtected("com.example.glance", ownBundleID: "com.example.glance"), "own bundle ID must be protected")
-            expect(!AppLockBlacklist.isProtected("", ownBundleID: ""), "empty bundle ID must not match empty ownBundleID")
-            expect(!AppLockBlacklist.isProtected("com.apple.Notes", ownBundleID: nil), "nil ownBundleID must allow normal apps")
+            expect(
+                AppLockBlacklist.isProtected("com.example.glance", ownBundleID: "com.example.glance"),
+                "own bundle ID must be protected")
+            expect(
+                !AppLockBlacklist.isProtected("", ownBundleID: ""), "empty bundle ID must not match empty ownBundleID")
+            expect(
+                !AppLockBlacklist.isProtected("com.apple.Notes", ownBundleID: nil),
+                "nil ownBundleID must allow normal apps")
         }
 
         r.test("blacklist-4: protection check is case-insensitive and trims whitespace") {
             expect(AppLockBlacklist.isProtected("COM.APPLE.FINDER", ownBundleID: glanceOwn), "case-insensitive Finder")
-            expect(AppLockBlacklist.isProtected(" com.apple.terminal ", ownBundleID: glanceOwn), "trimmed lowercase Terminal")
-            expect(AppLockBlacklist.isProtected("COM.PEARLESEED.GLANCE", ownBundleID: "com.pearleseed.glance"), "case-insensitive own bundle")
+            expect(
+                AppLockBlacklist.isProtected(" com.apple.terminal ", ownBundleID: glanceOwn),
+                "trimmed lowercase Terminal")
+            expect(
+                AppLockBlacklist.isProtected("COM.PEARLESEED.GLANCE", ownBundleID: "com.pearleseed.glance"),
+                "case-insensitive own bundle")
         }
 
         r.test("blacklist-5: allows normal apps and all 5 caution apps without hard-blocking") {
@@ -252,7 +286,7 @@ struct AppLockSelfTest {
                 "com.mitchellh.ghostty",
                 "dev.warp.Warp-Stable",
                 "com.apple.dt.Xcode",
-                "com.microsoft.VSCode",
+                "com.microsoft.VSCode"
             ]
             for id in allowed {
                 expect(!AppLockBlacklist.isProtected(id, ownBundleID: glanceOwn), "\(id) must not be protected")
@@ -265,7 +299,7 @@ struct AppLockSelfTest {
                 "com.mitchellh.ghostty",
                 "dev.warp.Warp-Stable",
                 "com.apple.dt.Xcode",
-                "com.microsoft.VSCode",
+                "com.microsoft.VSCode"
             ]
             for id in expectedCaution {
                 expect(AppLockBlacklist.isCautionApp(id), "\(id) must be flagged as caution app")
@@ -297,16 +331,20 @@ struct AppLockSelfTest {
 
         r.test("configure-2: filters out protected system apps and ownBundleID") {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [
-                "com.apple.finder": .everyTime,
-                "com.apple.Terminal": .everyTime,
-                "com.apple.SystemSettings": .everyTime,
-                "com.apple.systempreferences": .everyTime,
-                "com.apple.ActivityMonitor": .everyTime,
-                glanceOwn: .everyTime,
-                notes.bundleID: .everyTime,
-            ])
-            expect(engine.policies.keys.sorted() == [notes.bundleID], "protected apps leaked into policies: \(engine.policies)")
+            _ = engine.configure(
+                isEnabled: true,
+                policies: [
+                    "com.apple.finder": .everyTime,
+                    "com.apple.Terminal": .everyTime,
+                    "com.apple.SystemSettings": .everyTime,
+                    "com.apple.systempreferences": .everyTime,
+                    "com.apple.ActivityMonitor": .everyTime,
+                    glanceOwn: .everyTime,
+                    notes.bundleID: .everyTime
+                ])
+            expect(
+                engine.policies.keys.sorted() == [notes.bundleID],
+                "protected apps leaked into policies: \(engine.policies)")
             let finder = AppLockEngine.App(pid: 201, bundleID: "com.apple.finder", isRegular: true)
             let ownApp = AppLockEngine.App(pid: 202, bundleID: glanceOwn, isRegular: true)
             expect(engine.appActivated(finder, monotonicNow: 10).isEmpty, "Finder must never be challenged")
@@ -335,7 +373,8 @@ struct AppLockSelfTest {
             _ = engine.passed(challengeID: c.id, monotonicNow: 11)
             _ = engine.configure(isEnabled: false, policies: [notes.bundleID: .afterMinutes(30)])
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(30)])
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 12), for: notes, "re-enabling must require fresh unlock")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 12), for: notes, "re-enabling must require fresh unlock")
         }
 
         r.test("configure-6: disabling clears pending reopenGrant") {
@@ -346,7 +385,9 @@ struct AppLockSelfTest {
             _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 11)
             _ = engine.configure(isEnabled: false, policies: [notes.bundleID: .everyTime])
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 12), for: notes, "reopenGrant must be invalidated after disable")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 12), for: notes,
+                "reopenGrant must be invalidated after disable")
         }
 
         r.test("configure-7: removing locked app mid-challenge lowers active curtain") {
@@ -366,7 +407,9 @@ struct AppLockSelfTest {
             _ = engine.appActivated(safari, monotonicNow: 12)
             _ = engine.configure(isEnabled: true, policies: [:])
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(60)])
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 13), for: notes, "removed then re-added app must re-challenge")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 13), for: notes,
+                "removed then re-added app must re-challenge")
         }
 
         r.test("configure-9: tightening background unlocked app policy to .everyTime revokes and hides it") {
@@ -401,7 +444,9 @@ struct AppLockSelfTest {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 10), for: notes)
-            expect(engine.appActivated(notes, monotonicNow: 11).isEmpty, "duplicate activation must not raise a second curtain")
+            expect(
+                engine.appActivated(notes, monotonicNow: 11).isEmpty,
+                "duplicate activation must not raise a second curtain")
             expect(engine.activeChallenge == c, "original challenge must remain intact")
         }
 
@@ -410,7 +455,9 @@ struct AppLockSelfTest {
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 10))
             _ = engine.passed(challengeID: c.id, monotonicNow: 11)
-            expect(engine.appActivated(notes, monotonicNow: 12).isEmpty, "re-activating frontmost unlocked app must not relock")
+            expect(
+                engine.appActivated(notes, monotonicNow: 12).isEmpty,
+                "re-activating frontmost unlocked app must not relock")
         }
 
         r.test("activate-5: non-regular helper does not interrupt an active .scanning challenge") {
@@ -447,7 +494,9 @@ struct AppLockSelfTest {
             expect(engine.activeChallenge == nil, "activeChallenge must clear on switch away")
         }
 
-        r.test("activate-9: switching from unlocked .everyTime app directly to another locked app hides first and challenges second") {
+        r.test(
+            "activate-9: switching from unlocked .everyTime app directly to another locked app hides first and challenges second"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime, mail.bundleID: .everyTime])
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 10), for: notes)
@@ -457,7 +506,9 @@ struct AppLockSelfTest {
             _ = expectChallenge(in: switchEffects, for: mail, "must raise curtain for second locked app")
         }
 
-        r.test("activate-10: switching mid-challenge from one locked app directly to another lowers+hides first and challenges second") {
+        r.test(
+            "activate-10: switching mid-challenge from one locked app directly to another lowers+hides first and challenges second"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime, mail.bundleID: .everyTime])
             let c1 = expectChallenge(in: engine.appActivated(notes, monotonicNow: 10), for: notes)
@@ -514,8 +565,10 @@ struct AppLockSelfTest {
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 1000.0))
             _ = engine.passed(challengeID: c.id, monotonicNow: 1000.0)
-            expect(engine.appActivated(notes, monotonicNow: 1200.0).isEmpty, "before 5m duplicate activate stays unlocked")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 1300.0), for: notes, "past 5m must challenge")
+            expect(
+                engine.appActivated(notes, monotonicNow: 1200.0).isEmpty, "before 5m duplicate activate stays unlocked")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 1300.0), for: notes, "past 5m must challenge")
         }
 
         r.test("timer-5: .afterMinutes(0) and negative minutes expire immediately on leaving or re-activation") {
@@ -535,7 +588,9 @@ struct AppLockSelfTest {
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterFocusLossMinutes(2)])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.passed(challengeID: c.id, monotonicNow: 101)
-            expect(engine.appActivated(notes, monotonicNow: 5000).isEmpty, "staying focused must not expire focus-loss timer")
+            expect(
+                engine.appActivated(notes, monotonicNow: 5000).isEmpty,
+                "staying focused must not expire focus-loss timer")
             expect(engine.appActivated(helper, monotonicNow: 6000).isEmpty, "helper must not start focus-loss timer")
             expect(engine.appActivated(notes, monotonicNow: 7000).isEmpty, "still unlocked after helper")
         }
@@ -549,7 +604,9 @@ struct AppLockSelfTest {
             _ = engine.appActivated(safari, monotonicNow: 1010)
             expect(engine.appActivated(notes, monotonicNow: 1120).isEmpty, "110s away < 120s")
             _ = engine.appActivated(safari, monotonicNow: 1130)
-            expect(engine.appActivated(notes, monotonicNow: 1240).isEmpty, "second 110s away < 120s even though total > 240s")
+            expect(
+                engine.appActivated(notes, monotonicNow: 1240).isEmpty,
+                "second 110s away < 120s even though total > 240s")
             _ = engine.appActivated(safari, monotonicNow: 1250)
             _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 1370), for: notes, "120s away must expire")
         }
@@ -577,22 +634,29 @@ struct AppLockSelfTest {
             }
         }
 
-        r.test("timer-10: non-advancing or slightly out-of-order timestamps do not crash or falsely expire positive timers") {
+        r.test(
+            "timer-10: non-advancing or slightly out-of-order timestamps do not crash or falsely expire positive timers"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.passed(challengeID: c.id, monotonicNow: 100)
             expect(engine.appActivated(safari, monotonicNow: 100).isEmpty, "zero elapsed must not expire")
-            expect(engine.appActivated(notes, monotonicNow: 99).isEmpty, "negative delta must not expire positive timer")
+            expect(
+                engine.appActivated(notes, monotonicNow: 99).isEmpty, "negative delta must not expire positive timer")
         }
 
-        r.test("timer-11: multi-app mixed policies track independent monotonic timers and prune expired background sessions") {
+        r.test(
+            "timer-11: multi-app mixed policies track independent monotonic timers and prune expired background sessions"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [
-                notes.bundleID: .everyTime,
-                mail.bundleID: .afterMinutes(5),
-                messages.bundleID: .afterFocusLossMinutes(2),
-            ])
+            _ = engine.configure(
+                isEnabled: true,
+                policies: [
+                    notes.bundleID: .everyTime,
+                    mail.bundleID: .afterMinutes(5),
+                    messages.bundleID: .afterFocusLossMinutes(2)
+                ])
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100), for: notes)
             _ = engine.passed(challengeID: cNotes.id, monotonicNow: 101)
 
@@ -614,7 +678,9 @@ struct AppLockSelfTest {
             expect(engine.appActivated(mail, monotonicNow: 250).isEmpty, "Mail must stay unlocked at 250")
             // Switch to Safari at 330 -> Messages focus loss was 200..330 (130s >= 120s) -> hides Messages!
             let toSafari = engine.appActivated(safari, monotonicNow: 330)
-            expect(toSafari == [.hide(messages)], "expired background Messages must hide, Mail stays unlocked; got \(toSafari)")
+            expect(
+                toSafari == [.hide(messages)],
+                "expired background Messages must hide, Mail stays unlocked; got \(toSafari)")
             // Return to Mail at 411 (< 300s since 112: 299s) -> unlocked; at 412 (>= 300s) -> challenges
             expect(engine.appActivated(mail, monotonicNow: 411).isEmpty, "Mail unlocked at 299s")
             _ = expectChallenge(in: engine.appActivated(mail, monotonicNow: 412), for: mail, "Mail expired at 300s")
@@ -648,7 +714,9 @@ struct AppLockSelfTest {
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.systemPromptRequested(challengeID: c.id)
-            expect(engine.passed(challengeID: c.id, monotonicNow: 101).isEmpty, "face pass must be ignored during systemPrompt")
+            expect(
+                engine.passed(challengeID: c.id, monotonicNow: 101).isEmpty,
+                "face pass must be ignored during systemPrompt")
             expect(engine.activeChallenge?.phase == .systemPrompt, "challenge must stay in systemPrompt")
         }
 
@@ -660,7 +728,8 @@ struct AppLockSelfTest {
             expect(cancelEffects.contains(.lowerCurtain(c)), "cancel must lower curtain")
             expect(cancelEffects.contains(.hide(notes)), "cancel must hide locked app")
             expect(engine.activeChallenge == nil, "activeChallenge must clear on cancel")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 101), for: notes, "cancelled challenge must not unlock")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 101), for: notes, "cancelled challenge must not unlock")
         }
 
         r.test("challenge-5: cancel ignores unknown or stale challengeID") {
@@ -700,8 +769,11 @@ struct AppLockSelfTest {
             let finishEffects = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4001)
             expect(finishEffects == [.reopen(notes)], "success must emit reopen")
             expect(engine.appActivated(notes, monotonicNow: 4002).isEmpty, "first activation redeems reopen grant")
-            expect(engine.appActivated(safari, monotonicNow: 4002.5) == [.hide(notes)], "leaving after redemption must hide .everyTime app")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "reopen grant must not work twice")
+            expect(
+                engine.appActivated(safari, monotonicNow: 4002.5) == [.hide(notes)],
+                "leaving after redemption must hide .everyTime app")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "reopen grant must not work twice")
         }
 
         r.test("challenge-9: unused reopen grant expires after reopenGrantTTL") {
@@ -710,7 +782,8 @@ struct AppLockSelfTest {
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
             _ = engine.systemPromptRequested(challengeID: c.id)
             _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002)
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4007.1), for: notes, "expired reopen grant must challenge")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 4007.1), for: notes, "expired reopen grant must challenge")
         }
 
         r.test("challenge-10: systemPromptFinished(success: false) clears challenge without reopen or unlock") {
@@ -721,7 +794,8 @@ struct AppLockSelfTest {
             let failEffects = engine.systemPromptFinished(challengeID: c.id, success: false, monotonicNow: 4002)
             expect(failEffects.isEmpty, "failed system prompt must emit no reopen effects")
             expect(engine.activeChallenge == nil, "challenge must clear after failure")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "failed prompt must not unlock")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "failed prompt must not unlock")
         }
 
         r.test("challenge-11: underlying unlocked app surfacing after hide in systemPrompt does not abort Touch ID") {
@@ -730,14 +804,20 @@ struct AppLockSelfTest {
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
             _ = engine.systemPromptRequested(challengeID: c.id)
             // Hiding Notes causes macOS to activate Safari underneath while Touch ID prompt is open
-            expect(engine.appHidden(pid: notes.pid, monotonicNow: 4000.1).isEmpty, "hide notification must not cancel systemPrompt")
-            expect(engine.appActivated(safari, monotonicNow: 4000.2).isEmpty, "Safari surfacing must not cancel systemPrompt")
+            expect(
+                engine.appHidden(pid: notes.pid, monotonicNow: 4000.1).isEmpty,
+                "hide notification must not cancel systemPrompt")
+            expect(
+                engine.appActivated(safari, monotonicNow: 4000.2).isEmpty,
+                "Safari surfacing must not cancel systemPrompt")
             let okEffects = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002)
             expect(okEffects == [.reopen(notes)], "Touch ID completion must still reopen Notes")
             expect(engine.appActivated(notes, monotonicNow: 4003).isEmpty, "reopen grant must still redeem cleanly")
         }
 
-        r.test("challenge-12: activating another locked app during .systemPrompt cancels old prompt and ignores late completion") {
+        r.test(
+            "challenge-12: activating another locked app during .systemPrompt cancels old prompt and ignores late completion"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime, mail.bundleID: .everyTime])
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100), for: notes)
@@ -746,7 +826,9 @@ struct AppLockSelfTest {
             let cMail = expectChallenge(in: mailEffects, for: mail, "locked Mail must be challenged")
             expect(!mailEffects.contains(.lowerCurtain(cNotes)), "systemPrompt curtain was already lowered")
             expect(!mailEffects.contains(.hide(notes)), "systemPrompt app was already hidden")
-            expect(engine.systemPromptFinished(challengeID: cNotes.id, success: true, monotonicNow: 102).isEmpty, "late completion for superseded prompt must be ignored")
+            expect(
+                engine.systemPromptFinished(challengeID: cNotes.id, success: true, monotonicNow: 102).isEmpty,
+                "late completion for superseded prompt must be ignored")
             expect(engine.activeChallenge == cMail, "Mail challenge must remain active")
         }
 
@@ -757,29 +839,43 @@ struct AppLockSelfTest {
             _ = engine.systemPromptRequested(challengeID: c.id)
             _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4001)
             let otherNotesPID = AppLockEngine.App(pid: 909, bundleID: notes.bundleID, isRegular: true)
-            _ = expectChallenge(in: engine.appActivated(otherNotesPID, monotonicNow: 4002), for: otherNotesPID, "different PID must not consume reopen grant")
+            _ = expectChallenge(
+                in: engine.appActivated(otherNotesPID, monotonicNow: 4002), for: otherNotesPID,
+                "different PID must not consume reopen grant")
         }
 
-        r.test("challenge-14: re-activating or reconciling challenged app during .systemPrompt re-hides it and prevents cancel bypass") {
+        r.test(
+            "challenge-14: re-activating or reconciling challenged app during .systemPrompt re-hides it and prevents cancel bypass"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
             _ = engine.systemPromptRequested(challengeID: c.id)
 
             let reactivateEffects = engine.appActivated(notes, monotonicNow: 4001)
-            expect(reactivateEffects == [.hide(notes)], "re-activating challenged app during .systemPrompt must re-hide it, got \(reactivateEffects)")
+            expect(
+                reactivateEffects == [.hide(notes)],
+                "re-activating challenged app during .systemPrompt must re-hide it, got \(reactivateEffects)")
             expect(engine.activeChallenge?.phase == .systemPrompt, "systemPrompt challenge must remain active")
 
             let reconcileEffects = engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 4001.5)
-            expect(reconcileEffects == [.hide(notes)], "reconcile with frontmost challenged app during .systemPrompt must re-hide it, got \(reconcileEffects)")
-            expect(engine.activeChallenge?.phase == .systemPrompt, "systemPrompt challenge must remain active after reconcile")
+            expect(
+                reconcileEffects == [.hide(notes)],
+                "reconcile with frontmost challenged app during .systemPrompt must re-hide it, got \(reconcileEffects)")
+            expect(
+                engine.activeChallenge?.phase == .systemPrompt,
+                "systemPrompt challenge must remain active after reconcile")
 
             let cancelEffects = engine.systemPromptFinished(challengeID: c.id, success: false, monotonicNow: 4002)
             expect(cancelEffects.isEmpty, "cancelled systemPrompt must not reopen")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4003), for: notes, "cancelled prompt must require fresh challenge")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 4003), for: notes,
+                "cancelled prompt must require fresh challenge")
         }
 
-        r.test("challenge-15: Touch ID success still reopens and redeems after re-activating challenged app during .systemPrompt") {
+        r.test(
+            "challenge-15: Touch ID success still reopens and redeems after re-activating challenged app during .systemPrompt"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 4000))
@@ -810,10 +906,14 @@ struct AppLockSelfTest {
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.passed(challengeID: c.id, monotonicNow: 101)
             expect(engine.appHidden(pid: notes.pid, monotonicNow: 102).isEmpty, "appHidden itself emits no hide")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 103), for: notes, "hidden .everyTime app must challenge on return")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 103), for: notes,
+                "hidden .everyTime app must challenge on return")
         }
 
-        r.test("hide-3: appHidden preserves valid .afterMinutes(5) session and avoids duplicate hide when expired later") {
+        r.test(
+            "hide-3: appHidden preserves valid .afterMinutes(5) session and avoids duplicate hide when expired later"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 1000))
@@ -821,7 +921,9 @@ struct AppLockSelfTest {
             _ = engine.appHidden(pid: notes.pid, monotonicNow: 1050)
             expect(engine.appActivated(notes, monotonicNow: 1200).isEmpty, "unhiding within 5m stays unlocked")
             _ = engine.appHidden(pid: notes.pid, monotonicNow: 1250)
-            expect(engine.appActivated(safari, monotonicNow: 1350).isEmpty, "already-hidden expired session should not emit redundant hide")
+            expect(
+                engine.appActivated(safari, monotonicNow: 1350).isEmpty,
+                "already-hidden expired session should not emit redundant hide")
             _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 1351), for: notes)
         }
 
@@ -833,7 +935,8 @@ struct AppLockSelfTest {
             _ = engine.appHidden(pid: notes.pid, monotonicNow: 2010)
             expect(engine.appActivated(notes, monotonicNow: 2100).isEmpty, "90s hidden < 120s")
             _ = engine.appHidden(pid: notes.pid, monotonicNow: 2110)
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 2230), for: notes, "120s hidden must expire")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 2230), for: notes, "120s hidden must expire")
         }
 
         r.test("terminate-1: appTerminated mid-challenge lowers curtain without hide") {
@@ -851,7 +954,9 @@ struct AppLockSelfTest {
             let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.passed(challengeID: c.id, monotonicNow: 101)
             expect(engine.appTerminated(pid: notes.pid).isEmpty, "terminating unlocked app emits no curtain/hide")
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 105), for: notes, "relaunching terminated app must challenge")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 105), for: notes,
+                "relaunching terminated app must challenge")
         }
 
         r.test("terminate-3: appTerminated invalidates pending reopenGrant") {
@@ -861,16 +966,20 @@ struct AppLockSelfTest {
             _ = engine.systemPromptRequested(challengeID: c.id)
             _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 101)
             _ = engine.appTerminated(pid: notes.pid)
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 102), for: notes, "terminated app must not reuse reopen grant")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 102), for: notes,
+                "terminated app must not reuse reopen grant")
         }
 
         r.test("lockAll-1: lockAll revokes all three policy kinds simultaneously and hides visible unlocked sessions") {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [
-                notes.bundleID: .everyTime,
-                mail.bundleID: .afterMinutes(60),
-                messages.bundleID: .afterFocusLossMinutes(30),
-            ])
+            _ = engine.configure(
+                isEnabled: true,
+                policies: [
+                    notes.bundleID: .everyTime,
+                    mail.bundleID: .afterMinutes(60),
+                    messages.bundleID: .afterFocusLossMinutes(30)
+                ])
             let cMail = expectChallenge(in: engine.appActivated(mail, monotonicNow: 100))
             _ = engine.passed(challengeID: cMail.id, monotonicNow: 101)
             let cMsg = expectChallenge(in: engine.appActivated(messages, monotonicNow: 102))
@@ -900,7 +1009,8 @@ struct AppLockSelfTest {
             _ = engine.systemPromptRequested(challengeID: c2.id)
             _ = engine.systemPromptFinished(challengeID: c2.id, success: true, monotonicNow: 201)
             _ = engine.lockAll()
-            _ = expectChallenge(in: engine.appActivated(notes, monotonicNow: 202), for: notes, "lockAll must invalidate reopenGrant")
+            _ = expectChallenge(
+                in: engine.appActivated(notes, monotonicNow: 202), for: notes, "lockAll must invalidate reopenGrant")
         }
 
         r.test("reconcile-1: raises curtain when locked app is already frontmost on enable") {
@@ -914,32 +1024,46 @@ struct AppLockSelfTest {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
             _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
             let c = expectChallenge(in: engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 500))
-            expect(engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 501).isEmpty, "reconcile must not re-challenge")
+            expect(
+                engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 501).isEmpty,
+                "reconcile must not re-challenge")
             _ = engine.passed(challengeID: c.id, monotonicNow: 502)
-            expect(engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 503).isEmpty, "reconcile must keep unlocked frontmost")
-            expect(engine.reconcile(frontmost: helper, running: [notes, helper], monotonicNow: 504).isEmpty, "reconcile must ignore non-regular frontmost helper")
+            expect(
+                engine.reconcile(frontmost: notes, running: [notes], monotonicNow: 503).isEmpty,
+                "reconcile must keep unlocked frontmost")
+            expect(
+                engine.reconcile(frontmost: helper, running: [notes, helper], monotonicNow: 504).isEmpty,
+                "reconcile must ignore non-regular frontmost helper")
         }
 
-        r.test("reconcile-3: cleans up dead PIDs without emitting hide and lowers curtain for terminated challenged app") {
+        r.test(
+            "reconcile-3: cleans up dead PIDs without emitting hide and lowers curtain for terminated challenged app"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime, mail.bundleID: .afterMinutes(10)])
+            _ = engine.configure(
+                isEnabled: true, policies: [notes.bundleID: .everyTime, mail.bundleID: .afterMinutes(10)])
             let cMail = expectChallenge(in: engine.appActivated(mail, monotonicNow: 100))
             _ = engine.passed(challengeID: cMail.id, monotonicNow: 101)
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 102))
 
             // Both Notes and Mail died without appTerminated; Safari is now frontmost
             let effects = engine.reconcile(frontmost: safari, running: [safari], monotonicNow: 110)
-            expect(effects == [.lowerCurtain(cNotes)], "must lower dead challenge curtain without hiding dead apps, got \(effects)")
-            _ = expectChallenge(in: engine.appActivated(mail, monotonicNow: 111), for: mail, "dead Mail session must be purged")
+            expect(
+                effects == [.lowerCurtain(cNotes)],
+                "must lower dead challenge curtain without hiding dead apps, got \(effects)")
+            _ = expectChallenge(
+                in: engine.appActivated(mail, monotonicNow: 111), for: mail, "dead Mail session must be purged")
         }
 
         r.test("reconcile-4: catches missed focus switches and expires stale background sessions") {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [
-                notes.bundleID: .everyTime,
-                mail.bundleID: .afterMinutes(5),
-                messages.bundleID: .afterFocusLossMinutes(2),
-            ])
+            _ = engine.configure(
+                isEnabled: true,
+                policies: [
+                    notes.bundleID: .everyTime,
+                    mail.bundleID: .afterMinutes(5),
+                    messages.bundleID: .afterFocusLossMinutes(2)
+                ])
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
             _ = engine.passed(challengeID: cNotes.id, monotonicNow: 101)
             // Missed appActivated(safari): reconcile sees Safari is frontmost -> must hide Notes (.everyTime)
@@ -954,7 +1078,9 @@ struct AppLockSelfTest {
             _ = engine.passed(challengeID: cMsg.id, monotonicNow: 205)
 
             // At 210, Safari is frontmost -> starts Messages focus loss at 210; neither expired yet
-            expect(engine.reconcile(frontmost: safari, running: [mail, messages, safari], monotonicNow: 210).isEmpty, "neither expired at 210")
+            expect(
+                engine.reconcile(frontmost: safari, running: [mail, messages, safari], monotonicNow: 210).isEmpty,
+                "neither expired at 210")
             // At 330, Messages focus loss 330-210 = 120s (expired!); Mail 330-200 = 130s (still valid)
             let rec2 = engine.reconcile(frontmost: safari, running: [mail, messages, safari], monotonicNow: 330)
             expect(rec2 == [.hide(messages)], "reconcile must hide expired focus-loss session only, got \(rec2)")
@@ -981,11 +1107,13 @@ struct AppLockSelfTest {
 
             let recEffects = engine.reconcile(frontmost: nil, running: [notes], monotonicNow: 4001)
             expect(recEffects.isEmpty, "nil frontmost must not emit effects or cancel .systemPrompt, got \(recEffects)")
-            expect(engine.activeChallenge == AppLockEngine.Challenge(id: c.id, app: notes, phase: .systemPrompt),
-                   "nil frontmost must preserve .systemPrompt challenge")
+            expect(
+                engine.activeChallenge == AppLockEngine.Challenge(id: c.id, app: notes, phase: .systemPrompt),
+                "nil frontmost must preserve .systemPrompt challenge")
 
             let okEffects = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002)
-            expect(okEffects == [.reopen(notes)], "systemPromptFinished must still reopen after nil frontmost reconcile")
+            expect(
+                okEffects == [.reopen(notes)], "systemPromptFinished must still reopen after nil frontmost reconcile")
             expect(engine.appActivated(notes, monotonicNow: 4003).isEmpty, "reopen grant must still redeem")
         }
 
@@ -998,8 +1126,9 @@ struct AppLockSelfTest {
             let recEffects = engine.reconcile(frontmost: nil, running: [], monotonicNow: 4001)
             expect(recEffects.isEmpty, "dead .systemPrompt app emits no curtain/hide, got \(recEffects)")
             expect(engine.activeChallenge == nil, "dead .systemPrompt app must clear activeChallenge")
-            expect(engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002).isEmpty,
-                   "stale Touch ID completion for terminated app must be ignored")
+            expect(
+                engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002).isEmpty,
+                "stale Touch ID completion for terminated app must be ignored")
         }
     }
 
@@ -1021,12 +1150,16 @@ struct AppLockSelfTest {
             expect(engine.nextExpirationDelay(at: 102) == nil, ".everyTime session must return nil delay")
         }
 
-        r.test("delay-3: .afterFocusLossMinutes returns nil while focused, then returns earliest deadline across mixed apps") {
+        r.test(
+            "delay-3: .afterFocusLossMinutes returns nil while focused, then returns earliest deadline across mixed apps"
+        ) {
             var engine = AppLockEngine(ownBundleID: glanceOwn)
-            _ = engine.configure(isEnabled: true, policies: [
-                notes.bundleID: .afterMinutes(5),
-                mail.bundleID: .afterFocusLossMinutes(1),
-            ])
+            _ = engine.configure(
+                isEnabled: true,
+                policies: [
+                    notes.bundleID: .afterMinutes(5),
+                    mail.bundleID: .afterFocusLossMinutes(1)
+                ])
             // Unlock app A (.afterMinutes(5)) at t=100 (expires at t=400)
             let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 99))
             _ = engine.passed(challengeID: cNotes.id, monotonicNow: 100)
@@ -1043,7 +1176,9 @@ struct AppLockSelfTest {
             expect(delay == 50.0, "expected earliest expiration delay 50.0 at t=130, got \(String(describing: delay))")
         }
 
-        r.test("delay-4: changing policy to .everyTime, calling lockAll(), or removing app from policies clears delay to nil") {
+        r.test(
+            "delay-4: changing policy to .everyTime, calling lockAll(), or removing app from policies clears delay to nil"
+        ) {
             // Case A: tighten policy to .everyTime
             var engineA = AppLockEngine(ownBundleID: glanceOwn)
             _ = engineA.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
@@ -1087,9 +1222,12 @@ struct AppLockSelfTest {
             _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 100)
 
             expect(engine.nextExpirationDelay(at: 102) == 3.0, "reopenGrant must report remaining TTL 3.0s")
-            expect(engine.nextExpirationDelay(at: 106) == 0.05, "expired reopenGrant must clamp to 0.05 before reconcile")
+            expect(
+                engine.nextExpirationDelay(at: 106) == 0.05, "expired reopenGrant must clamp to 0.05 before reconcile")
             _ = engine.reconcile(frontmost: safari, running: [notes, safari], monotonicNow: 106)
-            expect(engine.nextExpirationDelay(at: 106) == nil, "reconcile past reopenGrantTTL must prune grant so delay becomes nil")
+            expect(
+                engine.nextExpirationDelay(at: 106) == nil,
+                "reconcile past reopenGrantTTL must prune grant so delay becomes nil")
         }
 
         r.test("delay-7: hasActiveChallenge tracks .scanning and .systemPrompt phases accurately") {

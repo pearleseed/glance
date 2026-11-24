@@ -109,7 +109,7 @@ final class WindowConfiguringView: NSView {
         for name in [
             NSWindow.didBecomeKeyNotification,
             NSWindow.didBecomeMainNotification,
-            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didChangeOcclusionStateNotification
         ] {
             box.observe(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
                 MainActor.assumeIsolated {

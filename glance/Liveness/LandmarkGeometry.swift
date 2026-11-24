@@ -194,9 +194,11 @@ nonisolated enum LandmarkGeometry {
         }
         return result
     }
+}
 
-    // MARK: - Homography (projective) transform
+// MARK: - Homography & Linear System
 
+nonisolated extension LandmarkGeometry {
     /// 3×3 homography — the model a flat photograph (or phone screen) is limited to,
     /// including perspective tilt; strictly more general than `solveSimilarityTransform`.
     struct Homography {
@@ -210,6 +212,24 @@ nonisolated enum LandmarkGeometry {
                 y: (h21 * point.x + h22 * point.y + h23) / w
             )
         }
+
+        fileprivate func multiplied(by other: Homography) -> Homography {
+            Homography(
+                h11: h11 * other.h11 + h12 * other.h21 + h13 * other.h31,
+                h12: h11 * other.h12 + h12 * other.h22 + h13 * other.h32,
+                h13: h11 * other.h13 + h12 * other.h23 + h13 * other.h33,
+                h21: h21 * other.h11 + h22 * other.h21 + h23 * other.h31,
+                h22: h21 * other.h12 + h22 * other.h22 + h23 * other.h32,
+                h23: h21 * other.h13 + h22 * other.h23 + h23 * other.h33,
+                h31: h31 * other.h11 + h32 * other.h21 + h33 * other.h31,
+                h32: h31 * other.h12 + h32 * other.h22 + h33 * other.h32,
+                h33: h31 * other.h13 + h32 * other.h23 + h33 * other.h33
+            )
+        }
+    }
+
+    private struct DLTRow {
+        let xw, yw, ww, pxw, pyw, rhs: Double
     }
 
     /// Hartley-normalized DLT homography with `h33 = 1`, solved as an 8×8
@@ -218,13 +238,13 @@ nonisolated enum LandmarkGeometry {
     static func solveHomography(
         from sourcePoints: [CGPoint], to destinationPoints: [CGPoint], weights: [CGFloat]? = nil
     ) -> Homography? {
-        if let weights {
-            guard weights.count == sourcePoints.count else { return nil }
-            return weights.withUnsafeBufferPointer { buffer in
-                solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: buffer)
-            }
+        guard let weights else {
+            return solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: nil)
         }
-        return solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: nil)
+        guard weights.count == sourcePoints.count else { return nil }
+        return weights.withUnsafeBufferPointer {
+            solveHomography(from: sourcePoints, to: destinationPoints, weightsBuffer: $0)
+        }
     }
 
     private static func solveHomography(
@@ -233,10 +253,7 @@ nonisolated enum LandmarkGeometry {
         weightsBuffer: UnsafeBufferPointer<CGFloat>?
     ) -> Homography? {
         guard sourcePoints.count == destinationPoints.count, sourcePoints.count >= 4 else { return nil }
-        if let weightsBuffer {
-            guard weightsBuffer.count == sourcePoints.count else { return nil }
-        }
-
+        guard weightsBuffer?.count ?? sourcePoints.count == sourcePoints.count else { return nil }
         guard let srcT = normalizingTransform(sourcePoints),
             let dstT = normalizingTransform(destinationPoints)
         else { return nil }
@@ -252,35 +269,27 @@ nonisolated enum LandmarkGeometry {
                     let dst = applyNormalization(destinationPoints[i], dstT)
                     let w = Double((weightsBuffer?[i] ?? 1).squareRoot())
                     guard w > 0 else { continue }
-                    let x = Double(src.x)
-                    let y = Double(src.y)
                     let u = Double(dst.x)
                     let v = Double(dst.y)
-                    let xw = x * w
-                    let yw = y * w
+                    let xw = Double(src.x) * w
+                    let yw = Double(src.y) * w
                     // Two DLT rows, h33 fixed at 1:
                     // [x y 1 0 0 0 -u x -u y] · h = u
                     // [0 0 0 x y 1 -v x -v y] · h = v
                     accumulateDLTRowUpper(
                         blockStart: 0,
-                        xw: xw, yw: yw, ww: w,
-                        pxw: -u * xw, pyw: -u * yw,
-                        rhs: u * w,
+                        row: DLTRow(xw: xw, yw: yw, ww: w, pxw: -u * xw, pyw: -u * yw, rhs: u * w),
                         ata: ata, atb: atb
                     )
                     accumulateDLTRowUpper(
                         blockStart: 3,
-                        xw: xw, yw: yw, ww: w,
-                        pxw: -v * xw, pyw: -v * yw,
-                        rhs: v * w,
+                        row: DLTRow(xw: xw, yw: yw, ww: w, pxw: -v * xw, pyw: -v * yw, rhs: v * w),
                         ata: ata, atb: atb
                     )
                 }
 
                 for i in 0..<8 {
-                    for j in (i + 1)..<8 {
-                        ata[j * 8 + i] = ata[i * 8 + j]
-                    }
+                    for j in (i + 1)..<8 { ata[j * 8 + i] = ata[i * 8 + j] }
                 }
 
                 guard solveLinearSystemInPlace(ata, atb, count: 8) else { return nil }
@@ -317,8 +326,7 @@ nonisolated enum LandmarkGeometry {
                 scratch.sort()
                 let mid = n / 2
                 let median = n.isMultiple(of: 2) ? (scratch[mid - 1] + scratch[mid]) / 2 : scratch[mid]
-                let scale = max(median, 1e-4)
-                let cutoff = 4.685 * 1.4826 * scale
+                let cutoff = 4.685 * 1.4826 * max(median, 1e-4)
                 var inliers = 0
                 for i in 0..<n {
                     let u = residuals[i] / cutoff
@@ -331,13 +339,9 @@ nonisolated enum LandmarkGeometry {
                         if w > 0 { inliers += 1 }
                     }
                 }
-                if inliers < 6 {
-                    weights.initialize(repeating: 1)
-                }
+                if inliers < 6 { weights.initialize(repeating: 1) }
                 if let refined = solveHomography(
-                    from: sourcePoints,
-                    to: destinationPoints,
-                    weightsBuffer: UnsafeBufferPointer(weights)
+                    from: sourcePoints, to: destinationPoints, weightsBuffer: UnsafeBufferPointer(weights)
                 ) {
                     current = refined
                 }
@@ -347,9 +351,7 @@ nonisolated enum LandmarkGeometry {
     }
 
     private struct SimilarityNorm {
-        let scale: CGFloat
-        let centerX: CGFloat
-        let centerY: CGFloat
+        let scale, centerX, centerY: CGFloat
     }
 
     /// Translate to centroid, scale so mean distance from origin is √2.
@@ -367,103 +369,57 @@ nonisolated enum LandmarkGeometry {
         CGPoint(x: t.scale * (point.x - t.centerX), y: t.scale * (point.y - t.centerY))
     }
 
-    private struct Matrix3x3 {
-        let m11, m12, m13: CGFloat
-        let m21, m22, m23: CGFloat
-        let m31, m32, m33: CGFloat
-
-        func multiplied(by other: Matrix3x3) -> Matrix3x3 {
-            Matrix3x3(
-                m11: m11 * other.m11 + m12 * other.m21 + m13 * other.m31,
-                m12: m11 * other.m12 + m12 * other.m22 + m13 * other.m32,
-                m13: m11 * other.m13 + m12 * other.m23 + m13 * other.m33,
-                m21: m21 * other.m11 + m22 * other.m21 + m23 * other.m31,
-                m22: m21 * other.m12 + m22 * other.m22 + m23 * other.m32,
-                m23: m21 * other.m13 + m22 * other.m23 + m23 * other.m33,
-                m31: m31 * other.m11 + m32 * other.m21 + m33 * other.m31,
-                m32: m31 * other.m12 + m32 * other.m22 + m33 * other.m32,
-                m33: m31 * other.m13 + m32 * other.m23 + m33 * other.m33
-            )
-        }
-    }
-
     /// `H = Tdst⁻¹ · Hn · Tsrc`.
-    private static func denormalizeHomography(_ h: Homography, source: SimilarityNorm, destination: SimilarityNorm)
-        -> Homography
-    {
-        let s1 = source.scale
-        let cx1 = source.centerX
-        let cy1 = source.centerY
-        let s2 = destination.scale
-        let cx2 = destination.centerX
-        let cy2 = destination.centerY
-
-        let tSrc = Matrix3x3(
-            m11: s1, m12: 0, m13: -s1 * cx1,
-            m21: 0, m22: s1, m23: -s1 * cy1,
-            m31: 0, m32: 0, m33: 1
+    private static func denormalizeHomography(
+        _ h: Homography, source: SimilarityNorm, destination: SimilarityNorm
+    ) -> Homography {
+        let tSrc = Homography(
+            h11: source.scale, h12: 0, h13: -source.scale * source.centerX,
+            h21: 0, h22: source.scale, h23: -source.scale * source.centerY,
+            h31: 0, h32: 0, h33: 1
         )
-        let hNorm = Matrix3x3(
-            m11: h.h11, m12: h.h12, m13: h.h13,
-            m21: h.h21, m22: h.h22, m23: h.h23,
-            m31: h.h31, m32: h.h32, m33: h.h33
+        let tDstInv = Homography(
+            h11: 1 / destination.scale, h12: 0, h13: destination.centerX,
+            h21: 0, h22: 1 / destination.scale, h23: destination.centerY,
+            h31: 0, h32: 0, h33: 1
         )
-        let tDstInv = Matrix3x3(
-            m11: 1 / s2, m12: 0, m13: cx2,
-            m21: 0, m22: 1 / s2, m23: cy2,
-            m31: 0, m32: 0, m33: 1
-        )
-        let r = tDstInv.multiplied(by: hNorm.multiplied(by: tSrc))
-        return Homography(
-            h11: r.m11, h12: r.m12, h13: r.m13,
-            h21: r.m21, h22: r.m22, h23: r.m23,
-            h31: r.m31, h32: r.m32, h33: r.m33
-        )
+        return tDstInv.multiplied(by: h.multiplied(by: tSrc))
     }
 
     @inline(__always)
     private static func accumulateDLTRowUpper(
         blockStart: Int,
-        xw: Double, yw: Double, ww: Double,
-        pxw: Double, pyw: Double,
-        rhs: Double,
+        row: DLTRow,
         ata: UnsafeMutableBufferPointer<Double>,
         atb: UnsafeMutableBufferPointer<Double>
     ) {
         let c0 = blockStart
         let c1 = blockStart + 1
         let c2 = blockStart + 2
-
-        atb[c0] += xw * rhs
-        atb[c1] += yw * rhs
-        atb[c2] += ww * rhs
-        atb[6] += pxw * rhs
-        atb[7] += pyw * rhs
+        atb[c0] += row.xw * row.rhs
+        atb[c1] += row.yw * row.rhs
+        atb[c2] += row.ww * row.rhs
+        atb[6] += row.pxw * row.rhs
+        atb[7] += row.pyw * row.rhs
 
         let r0 = c0 * 8
-        ata[r0 + c0] += xw * xw
-        ata[r0 + c1] += xw * yw
-        ata[r0 + c2] += xw * ww
-        ata[r0 + 6] += xw * pxw
-        ata[r0 + 7] += xw * pyw
-
         let r1 = c1 * 8
-        ata[r1 + c1] += yw * yw
-        ata[r1 + c2] += yw * ww
-        ata[r1 + 6] += yw * pxw
-        ata[r1 + 7] += yw * pyw
-
         let r2 = c2 * 8
-        ata[r2 + c2] += ww * ww
-        ata[r2 + 6] += ww * pxw
-        ata[r2 + 7] += ww * pyw
-
-        let r6 = 6 * 8
-        ata[r6 + 6] += pxw * pxw
-        ata[r6 + 7] += pxw * pyw
-
-        let r7 = 7 * 8
-        ata[r7 + 7] += pyw * pyw
+        ata[r0 + c0] += row.xw * row.xw
+        ata[r0 + c1] += row.xw * row.yw
+        ata[r0 + c2] += row.xw * row.ww
+        ata[r0 + 6] += row.xw * row.pxw
+        ata[r0 + 7] += row.xw * row.pyw
+        ata[r1 + c1] += row.yw * row.yw
+        ata[r1 + c2] += row.yw * row.ww
+        ata[r1 + 6] += row.yw * row.pxw
+        ata[r1 + 7] += row.yw * row.pyw
+        ata[r2 + c2] += row.ww * row.ww
+        ata[r2 + 6] += row.ww * row.pxw
+        ata[r2 + 7] += row.ww * row.pyw
+        ata[48 + 6] += row.pxw * row.pxw
+        ata[48 + 7] += row.pxw * row.pyw
+        ata[56 + 7] += row.pyw * row.pyw
     }
 
     /// In-place Gaussian elimination with partial pivoting on an `n x n` row-major flat buffer `a`
@@ -489,11 +445,7 @@ nonisolated enum LandmarkGeometry {
             if pivot != k {
                 let rowK = k * n
                 let rowP = pivot * n
-                for j in k..<n {
-                    let tmp = a[rowK + j]
-                    a[rowK + j] = a[rowP + j]
-                    a[rowP + j] = tmp
-                }
+                for j in k..<n { (a[rowK + j], a[rowP + j]) = (a[rowP + j], a[rowK + j]) }
                 b.swapAt(k, pivot)
             }
             let rowK = k * n
@@ -502,9 +454,7 @@ nonisolated enum LandmarkGeometry {
                 for i in (k + 1)..<n {
                     let rowI = i * n
                     let factor = a[rowI + k] / diag
-                    for j in k..<n {
-                        a[rowI + j] -= factor * a[rowK + j]
-                    }
+                    for j in k..<n { a[rowI + j] -= factor * a[rowK + j] }
                     b[i] -= factor * b[k]
                 }
             }
@@ -513,9 +463,7 @@ nonisolated enum LandmarkGeometry {
             let rowI = i * n
             var sum = b[i]
             if i + 1 < n {
-                for j in (i + 1)..<n {
-                    sum -= a[rowI + j] * b[j]
-                }
+                for j in (i + 1)..<n { sum -= a[rowI + j] * b[j] }
             }
             let diag = a[rowI + i]
             guard abs(diag) > 1e-12 else { return false }
@@ -533,9 +481,7 @@ nonisolated enum LandmarkGeometry {
             return withUnsafeTemporaryAllocation(of: Double.self, capacity: n) { b in
                 for i in 0..<n {
                     b[i] = Double(rhs[i])
-                    for j in 0..<n {
-                        a[i * n + j] = Double(matrix[i][j])
-                    }
+                    for j in 0..<n { a[i * n + j] = Double(matrix[i][j]) }
                 }
                 guard solveLinearSystemInPlace(a, b, count: n) else { return nil }
                 return (0..<n).map { CGFloat(b[$0]) }
@@ -547,10 +493,7 @@ nonisolated enum LandmarkGeometry {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
         let mid = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[mid - 1] + sorted[mid]) / 2
-        }
-        return sorted[mid]
+        return sorted.count.isMultiple(of: 2) ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
     }
 
     // MARK: - Similarity transform
@@ -588,12 +531,8 @@ nonisolated enum LandmarkGeometry {
 
         // dst = R * scale * (src - srcMean) + dstMean, expanded into
         // CGAffineTransform's convention: x' = a*x + c*y + tx, y' = b*x + d*y + ty
-        let a = sc
-        let b = ss
-        let c = -ss
-        let d = sc
-        let tx = dstMean.x - (a * srcMean.x + c * srcMean.y)
-        let ty = dstMean.y - (b * srcMean.x + d * srcMean.y)
-        return CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
+        let tx = dstMean.x - (sc * srcMean.x - ss * srcMean.y)
+        let ty = dstMean.y - (ss * srcMean.x + sc * srcMean.y)
+        return CGAffineTransform(a: sc, b: ss, c: -ss, d: sc, tx: tx, ty: ty)
     }
 }

@@ -16,9 +16,9 @@
 //      && /tmp/glare_mask_selftest
 //
 
-import Foundation
 import CoreGraphics
 import CoreImage
+import Foundation
 
 private func makeTestImage(width: Int, height: Int, isBrightPixel: (Int, Int) -> Bool) -> CGImage {
     var pixels = [UInt8](repeating: 80, count: width * height * 4)
@@ -27,7 +27,9 @@ private func makeTestImage(width: Int, height: Int, isBrightPixel: (Int, Int) ->
             let idx = (y * width + x) * 4
             pixels[idx + 3] = 255
             if isBrightPixel(x, y) {
-                pixels[idx] = 255; pixels[idx + 1] = 255; pixels[idx + 2] = 255
+                pixels[idx] = 255
+                pixels[idx + 1] = 255
+                pixels[idx + 2] = 255
             }
         }
     }
@@ -78,17 +80,22 @@ struct GlareMaskSelfTest {
             CGPoint(x: 20, y: 35), CGPoint(x: 25, y: 70), CGPoint(x: 50, y: 95),
             CGPoint(x: 75, y: 70), CGPoint(x: 80, y: 35)
         ]
-        let poly = GlareFaceRegion.polygon(contour: contour, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
+        let poly = GlareFaceRegion.polygon(
+            contour: contour, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
 
         let cornerImg = makeImage(width: 100, height: 100, brightCorner: true, brightForehead: false)
         let unmasked = GlareCueExtractor.extract(faceCrop: cornerImg)!
         let masked = GlareCueExtractor.extract(faceCrop: cornerImg, faceRegion: poly)!
         precondition(unmasked.specularFraction > 0.05, "FAIL: baseline corner glare should exist unmasked")
-        precondition(masked.specularFraction < 0.01, "FAIL: background corner glare leaked through face mask: \(masked.specularFraction)")
+        precondition(
+            masked.specularFraction < 0.01,
+            "FAIL: background corner glare leaked through face mask: \(masked.specularFraction)")
 
         let foreheadImg = makeImage(width: 100, height: 100, brightCorner: false, brightForehead: true)
         let maskedForehead = GlareCueExtractor.extract(faceCrop: foreheadImg, faceRegion: poly)!
-        precondition(maskedForehead.specularFraction > 0.03, "FAIL: forehead highlight was wrongly masked out: \(maskedForehead.specularFraction)")
+        precondition(
+            maskedForehead.specularFraction > 0.03,
+            "FAIL: forehead highlight was wrongly masked out: \(maskedForehead.specularFraction)")
     }
 
     private static func runDegeneratePolygonFallbackTests() {
@@ -154,8 +161,12 @@ struct GlareMaskSelfTest {
         let cornerCrop = cameraCornerFrame.renderCrop(imageRect: faceBounds)!
         let cornerUnmasked = GlareCueExtractor.extract(faceCrop: cornerCrop)!
         let cornerMasked = GlareCueExtractor.extract(faceCrop: cornerCrop, faceRegion: poly)!
-        precondition(cornerUnmasked.specularFraction > 0.05, "FAIL: expected padded margin lamp glare unmasked: \(cornerUnmasked.specularFraction)")
-        precondition(cornerMasked.specularFraction < 0.001, "FAIL: padded margin corner glare leaked into 640x360 face mask: \(cornerMasked.specularFraction)")
+        precondition(
+            cornerUnmasked.specularFraction > 0.05,
+            "FAIL: expected padded margin lamp glare unmasked: \(cornerUnmasked.specularFraction)")
+        precondition(
+            cornerMasked.specularFraction < 0.001,
+            "FAIL: padded margin corner glare leaked into 640x360 face mask: \(cornerMasked.specularFraction)")
 
         // Forehead specular inside the face region (x: 295..<345, y: 100..<140).
         let foreheadRect = CGRect(x: 295, y: 100, width: 50, height: 40)
@@ -168,7 +179,9 @@ struct GlareMaskSelfTest {
         )
         let foreheadCrop = cameraForeheadFrame.renderCrop(imageRect: faceBounds)!
         let foreheadMasked = GlareCueExtractor.extract(faceCrop: foreheadCrop, faceRegion: poly)!
-        precondition(foreheadMasked.specularFraction > 0.03, "FAIL: 640x360 forehead highlight was wrongly masked out: \(foreheadMasked.specularFraction)")
+        precondition(
+            foreheadMasked.specularFraction > 0.03,
+            "FAIL: 640x360 forehead highlight was wrongly masked out: \(foreheadMasked.specularFraction)")
     }
 
     private static func runArbitraryContourOrderTests() {
@@ -178,8 +191,10 @@ struct GlareMaskSelfTest {
             CGPoint(x: 75, y: 70), CGPoint(x: 80, y: 35)
         ]
         let shuffled = [ordered[2], ordered[4], ordered[1], ordered[0], ordered[3]]
-        let orderedPoly = GlareFaceRegion.polygon(contour: ordered, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
-        let shuffledPoly = GlareFaceRegion.polygon(contour: shuffled, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
+        let orderedPoly = GlareFaceRegion.polygon(
+            contour: ordered, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
+        let shuffledPoly = GlareFaceRegion.polygon(
+            contour: shuffled, faceBounds: bounds, imageSize: CGSize(width: 100, height: 100))!
         precondition(orderedPoly == shuffledPoly, "FAIL: contour point order changed normalized convex hull polygon")
     }
 }

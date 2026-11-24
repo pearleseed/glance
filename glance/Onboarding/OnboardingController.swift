@@ -52,12 +52,12 @@ final class OnboardingController {
         case ready(FaceRecognitionResult)
     }
 
-    @ObservationIgnored private var _camera: CameraManager?
+    @ObservationIgnored private var lazyCamera: CameraManager?
     /// Lazily constructed only when `.enroll` actually runs so password-only and security-notice flows never touch AVFoundation.
     var camera: CameraManager {
-        if let _camera { return _camera }
+        if let lazyCamera { return lazyCamera }
         let manager = CameraManager()
-        _camera = manager
+        lazyCamera = manager
         return manager
     }
     let pipeline: FaceRecognitionPipeline?
@@ -248,7 +248,7 @@ final class OnboardingController {
     }
 
     func stopCameraIfCreated() {
-        _camera?.stop()
+        lazyCamera?.stop()
     }
 
     var shouldObserveFrames: Bool {

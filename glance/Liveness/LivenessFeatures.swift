@@ -27,20 +27,13 @@ nonisolated enum LivenessFeatureExtractor {
 
         let deviceOverlap = DeviceBezelDetector.detect(in: frame, faceBoundingBox: workingFace.boundingBox)
             .faceOverlapFraction
-        let glare: GlareSample? = faceCrop.flatMap { crop in
-            let faceRegion = landmarkFace.landmarks?.faceContour.flatMap { contour in
-                let points = LandmarkGeometry.imagePoints(
-                    of: contour,
-                    imageSize: landmarkImageSize,
-                    mappedTo: mappingRect
-                )
-                return GlareFaceRegion.polygon(
-                    contour: points,
-                    faceBounds: workingFace.boundingBox,
-                    imageSize: workingFace.imageSize
-                )
-            }
-            return GlareCueExtractor.extract(faceCrop: crop, faceRegion: faceRegion)
+        let glare = faceCrop.flatMap {
+            extractGlare(
+                faceCrop: $0,
+                landmarkFace: landmarkFace,
+                workingFace: workingFace,
+                mappingRect: mappingRect
+            )
         }
 
         guard let landmarks = landmarkFace.landmarks else {
@@ -95,5 +88,26 @@ nonisolated enum LivenessFeatureExtractor {
             deviceOverlapFraction: deviceOverlap,
             glare: glare
         )
+    }
+
+    private static func extractGlare(
+        faceCrop: CGImage,
+        landmarkFace: DetectedFace,
+        workingFace: DetectedFace,
+        mappingRect: CGRect?
+    ) -> GlareSample? {
+        let faceRegion = landmarkFace.landmarks?.faceContour.flatMap { contour in
+            let points = LandmarkGeometry.imagePoints(
+                of: contour,
+                imageSize: landmarkFace.imageSize,
+                mappedTo: mappingRect
+            )
+            return GlareFaceRegion.polygon(
+                contour: points,
+                faceBounds: workingFace.boundingBox,
+                imageSize: workingFace.imageSize
+            )
+        }
+        return GlareCueExtractor.extract(faceCrop: faceCrop, faceRegion: faceRegion)
     }
 }

@@ -91,6 +91,19 @@ struct EnrollmentDirectionSweep: View {
         }
     }
 
+    private struct SweepLayout {
+        let travel: CGVector
+        let perp: CGVector
+        let shortEdge: CGFloat
+        let startSpan: CGFloat
+        let endSpan: CGFloat
+        let center: CGPoint
+        let perpExtent: CGFloat
+        let spreadScale: CGFloat
+        let baseTransform: CGAffineTransform
+        let baseOpacity: Double
+    }
+
     private func drawSweep(in context: inout GraphicsContext, size: CGSize, elapsed: Double) {
         let baseTransform = context.transform
         let baseOpacity = context.opacity
@@ -101,94 +114,109 @@ struct EnrollmentDirectionSweep: View {
         let perp = CGVector(dx: -travel.dy, dy: travel.dx)
         let shortEdge = min(size.width, size.height)
         let diagonal = hypot(size.width, size.height)
-        // Far end stops short of a full off-screen exit so the ease-out is still on-camera.
-        let startSpan = diagonal * 0.58
-        let endSpan = diagonal * 0.50
-        let cx = size.width * 0.5
-        let cy = size.height * 0.5
-        // Spread along the true perpendicular screen axis so ribbons fan across the display.
-        let perpExtent = abs(perp.dx) * size.width + abs(perp.dy) * size.height
-        let spreadScale = min(max(shortEdge / 700, 0.35), 1.35)
+        let layout = SweepLayout(
+            travel: travel,
+            perp: perp,
+            shortEdge: shortEdge,
+            // Far end stops short of a full off-screen exit so the ease-out is still on-camera.
+            startSpan: diagonal * 0.58,
+            endSpan: diagonal * 0.50,
+            center: CGPoint(x: size.width * 0.5, y: size.height * 0.5),
+            // Spread along the true perpendicular screen axis so ribbons fan across the display.
+            perpExtent: abs(perp.dx) * size.width + abs(perp.dy) * size.height,
+            spreadScale: min(max(shortEdge / 700, 0.35), 1.35),
+            baseTransform: baseTransform,
+            baseOpacity: baseOpacity
+        )
 
         for spec in Self.specs {
-            let rawU = (elapsed - spec.delay) / spec.duration
-            guard rawU > 0, rawU < 1 else { continue }
-
-            let progress = Self.sweepTimingCurve(min(max(rawU, 0), 1))
-            guard progress < spec.fadeOutAt else { continue }
-            let streakOpacity = Self.streakOpacity(
-                at: progress,
-                peak: spec.peakOpacity,
-                fadeOutAt: spec.fadeOutAt
-            )
-            guard streakOpacity > 0.001 else { continue }
-
-            let lateral = spec.lateral * perpExtent * 0.46
-            let start = CGPoint(
-                x: cx - travel.dx * startSpan + perp.dx * lateral,
-                y: cy - travel.dy * startSpan + perp.dy * lateral
-            )
-            let end = CGPoint(
-                x: cx + travel.dx * endSpan + perp.dx * lateral,
-                y: cy + travel.dy * endSpan + perp.dy * lateral
-            )
-            let bow = spec.bow * shortEdge * 0.20
-            let control = CGPoint(
-                x: (start.x + end.x) * 0.5 + perp.dx * bow,
-                y: (start.y + end.y) * 0.5 + perp.dy * bow
-            )
-
-            let u = 1 - progress
-            let point = CGPoint(
-                x: u * u * start.x + 2 * u * progress * control.x + progress * progress * end.x,
-                y: u * u * start.y + 2 * u * progress * control.y + progress * progress * end.y
-            )
-            let dx = 2 * u * (control.x - start.x) + 2 * progress * (end.x - control.x)
-            let dy = 2 * u * (control.y - start.y) + 2 * progress * (end.y - control.y)
-            let heading = atan2(dy, dx) + spec.rotationDrift * progress
-
-            let length = max(shortEdge * spec.lengthFactor * 0.55, 180)
-            let baseAlpha = baseOpacity * streakOpacity
-
-            context.transform = baseTransform
-            context.translateBy(x: point.x, y: point.y)
-            context.rotate(by: Angle(radians: heading))
-            let streakTransform = context.transform
-
-            // Outer soft aurora halo with Gaussian-like radial falloff to alpha 0.
-            let haloRx = length * 0.62 + 82 * spec.haloScale * spreadScale
-            let haloRy = spec.thickness * 0.48 * spreadScale + 78 * spec.haloScale * spreadScale
-            context.opacity = baseAlpha * (spec.isVivid ? 0.075 : 0.044)
-            context.scaleBy(x: haloRx, y: haloRy)
-            context.fill(Self.unitEllipsePath, with: Self.haloShading)
-
-            // Mid luminous ribbon body shifted slightly forward for directional momentum.
-            let bodyRx = length * 0.52 + 28 * spec.haloScale * spreadScale
-            let bodyRy = spec.thickness * 0.28 * spreadScale + 22 * spec.haloScale * spreadScale
-            context.transform = streakTransform
-            context.translateBy(x: length * 0.06, y: 0)
-            context.scaleBy(x: bodyRx, y: bodyRy)
-            context.opacity = baseAlpha * (spec.isVivid ? 0.17 : 0.105)
-            context.fill(
-                Self.unitEllipsePath,
-                with: spec.isVivid ? Self.vividBodyShading : Self.normalBodyShading
-            )
-
-            // Crisp inner filament highlight for vivid / foreground streaks.
-            if spec.hasHighlight {
-                let highlightRx = length * 0.38 + 10 * spreadScale
-                let highlightRy = max(spec.thickness * 0.085 * spreadScale, 5) + 6 * spreadScale
-                context.transform = streakTransform
-                context.translateBy(x: length * 0.10, y: 0)
-                context.scaleBy(x: highlightRx, y: highlightRy)
-                context.opacity = baseAlpha * (spec.isVivid ? 0.22 : 0.13)
-                context.fill(Self.unitEllipsePath, with: Self.highlightShading)
-            }
+            drawStreak(spec, elapsed: elapsed, layout: layout, in: &context)
         }
 
         context.transform = baseTransform
         context.opacity = baseOpacity
         context.blendMode = baseBlendMode
+    }
+
+    private func drawStreak(
+        _ spec: StreakSpec,
+        elapsed: Double,
+        layout: SweepLayout,
+        in context: inout GraphicsContext
+    ) {
+        let rawU = (elapsed - spec.delay) / spec.duration
+        guard rawU > 0, rawU < 1 else { return }
+
+        let progress = Self.sweepTimingCurve(min(max(rawU, 0), 1))
+        guard progress < spec.fadeOutAt else { return }
+        let streakOpacity = Self.streakOpacity(
+            at: progress,
+            peak: spec.peakOpacity,
+            fadeOutAt: spec.fadeOutAt
+        )
+        guard streakOpacity > 0.001 else { return }
+
+        let lateral = spec.lateral * layout.perpExtent * 0.46
+        let start = CGPoint(
+            x: layout.center.x - layout.travel.dx * layout.startSpan + layout.perp.dx * lateral,
+            y: layout.center.y - layout.travel.dy * layout.startSpan + layout.perp.dy * lateral
+        )
+        let end = CGPoint(
+            x: layout.center.x + layout.travel.dx * layout.endSpan + layout.perp.dx * lateral,
+            y: layout.center.y + layout.travel.dy * layout.endSpan + layout.perp.dy * lateral
+        )
+        let bow = spec.bow * layout.shortEdge * 0.20
+        let control = CGPoint(
+            x: (start.x + end.x) * 0.5 + layout.perp.dx * bow,
+            y: (start.y + end.y) * 0.5 + layout.perp.dy * bow
+        )
+
+        let u = 1 - progress
+        let point = CGPoint(
+            x: u * u * start.x + 2 * u * progress * control.x + progress * progress * end.x,
+            y: u * u * start.y + 2 * u * progress * control.y + progress * progress * end.y
+        )
+        let dx = 2 * u * (control.x - start.x) + 2 * progress * (end.x - control.x)
+        let dy = 2 * u * (control.y - start.y) + 2 * progress * (end.y - control.y)
+        let heading = atan2(dy, dx) + spec.rotationDrift * progress
+
+        let length = max(layout.shortEdge * spec.lengthFactor * 0.55, 180)
+        let baseAlpha = layout.baseOpacity * streakOpacity
+
+        context.transform = layout.baseTransform
+        context.translateBy(x: point.x, y: point.y)
+        context.rotate(by: Angle(radians: heading))
+        let streakTransform = context.transform
+
+        // Outer soft aurora halo with Gaussian-like radial falloff to alpha 0.
+        let haloRx = length * 0.62 + 82 * spec.haloScale * layout.spreadScale
+        let haloRy = spec.thickness * 0.48 * layout.spreadScale + 78 * spec.haloScale * layout.spreadScale
+        context.opacity = baseAlpha * (spec.isVivid ? 0.075 : 0.044)
+        context.scaleBy(x: haloRx, y: haloRy)
+        context.fill(Self.unitEllipsePath, with: Self.haloShading)
+
+        // Mid luminous ribbon body shifted slightly forward for directional momentum.
+        let bodyRx = length * 0.52 + 28 * spec.haloScale * layout.spreadScale
+        let bodyRy = spec.thickness * 0.28 * layout.spreadScale + 22 * spec.haloScale * layout.spreadScale
+        context.transform = streakTransform
+        context.translateBy(x: length * 0.06, y: 0)
+        context.scaleBy(x: bodyRx, y: bodyRy)
+        context.opacity = baseAlpha * (spec.isVivid ? 0.17 : 0.105)
+        context.fill(
+            Self.unitEllipsePath,
+            with: spec.isVivid ? Self.vividBodyShading : Self.normalBodyShading
+        )
+
+        // Crisp inner filament highlight for vivid / foreground streaks.
+        if spec.hasHighlight {
+            let highlightRx = length * 0.38 + 10 * layout.spreadScale
+            let highlightRy = max(spec.thickness * 0.085 * layout.spreadScale, 5) + 6 * layout.spreadScale
+            context.transform = streakTransform
+            context.translateBy(x: length * 0.10, y: 0)
+            context.scaleBy(x: highlightRx, y: highlightRy)
+            context.opacity = baseAlpha * (spec.isVivid ? 0.22 : 0.13)
+            context.fill(Self.unitEllipsePath, with: Self.highlightShading)
+        }
     }
 }
 

@@ -22,7 +22,7 @@ final class SudoFaceAuthenticator {
     }
 
     private let pipeline: FaceRecognitionPipeline
-    private var _camera: CameraManager?
+    private var lazyCamera: CameraManager?
     private let stopSignal = ObservationSignal()
 
     private var isAuthenticating = false
@@ -39,16 +39,16 @@ final class SudoFaceAuthenticator {
     }
 
     private func getOrCreateCamera() -> CameraManager {
-        if let _camera { return _camera }
+        if let lazyCamera { return lazyCamera }
         let camera = CameraManager()
-        _camera = camera
+        lazyCamera = camera
         return camera
     }
 
     func stop() {
         scanGeneration &+= 1
         stopSignal.signal()
-        _camera?.stop()
+        lazyCamera?.stop()
         if isAuthenticating {
             dismissOverlayIfOwned()
         }
@@ -77,7 +77,7 @@ final class SudoFaceAuthenticator {
         defer {
             isAuthenticating = false
             if didStartCamera && generation == scanGeneration {
-                _camera?.stop()
+                lazyCamera?.stop()
             }
             if didPresentOverlay
                 && (Task.isCancelled || generation != scanGeneration || !canAuthenticateNow()
@@ -138,7 +138,7 @@ final class SudoFaceAuthenticator {
                 requireOverlayScanning: showsUI
             )
             if generation == scanGeneration {
-                _camera?.stop()
+                lazyCamera?.stop()
             }
 
             switch outcome {
@@ -299,6 +299,24 @@ final class SudoFaceAuthenticator {
             return .hardFailure
         }
 
+        return await scanFrames(
+            camera: camera,
+            generation: generation,
+            deadline: deadline,
+            requireOverlayScanning: requireOverlayScanning
+        )
+    }
+}
+
+// MARK: - Scan & Overlay Coordination Helpers
+
+extension SudoFaceAuthenticator {
+    private func scanFrames(
+        camera: CameraManager,
+        generation: UInt64,
+        deadline: ContinuousClock.Instant,
+        requireOverlayScanning: Bool
+    ) async -> SingleScanOutcome {
         // Always enforce Heavy Liveness for sudo regardless of user's lock-screen liveness preferences.
         let evaluator = FaceAuthEvaluator(
             pipeline: pipeline,
@@ -318,34 +336,26 @@ final class SudoFaceAuthenticator {
             }
             lastProcessedFrameID = frame.id
 
-            guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
-            guard !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning else {
-                break
-            }
-            guard canAuthenticateNow() else { return .hardFailure }
-
-            let extracted: ExtractedAuthFrame
-            do {
-                camera.setConsumerBusy(true)
-                defer {
-                    if generation == scanGeneration {
-                        camera.setConsumerBusy(false)
-                    }
-                }
-                extracted = await FaceAuthEvaluator.extractFrame(
-                    from: frame,
-                    pipeline: pipeline,
-                    previousBoundingBox: evaluator.lastFaceBoundingBox,
-                    livenessEnabled: true,
-                    geometryContext: evaluator.geometryContextIfNeeded()
-                )
+            if let interruption = activeScanInterruption(
+                generation: generation,
+                requireOverlayScanning: requireOverlayScanning
+            ) {
+                return interruption
             }
 
-            guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
-            guard !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning else {
-                break
+            let extracted = await extractFrameWithBackpressure(
+                frame: frame,
+                camera: camera,
+                generation: generation,
+                evaluator: evaluator
+            )
+
+            if let interruption = activeScanInterruption(
+                generation: generation,
+                requireOverlayScanning: requireOverlayScanning
+            ) {
+                return interruption
             }
-            guard canAuthenticateNow() else { return .hardFailure }
 
             let step = evaluator.evaluate(
                 extracted,
@@ -370,8 +380,38 @@ final class SudoFaceAuthenticator {
 
         return (Task.isCancelled || generation != scanGeneration) ? .cancelled : .failed
     }
+    private func activeScanInterruption(
+        generation: UInt64,
+        requireOverlayScanning: Bool
+    ) -> SingleScanOutcome? {
+        guard !Task.isCancelled, generation == scanGeneration else { return .cancelled }
+        guard !requireOverlayScanning || NotchOverlayController.shared.phase == .scanning else {
+            return .failed
+        }
+        guard canAuthenticateNow() else { return .hardFailure }
+        return nil
+    }
 
-    // MARK: - Overlay Coordination Helpers
+    private func extractFrameWithBackpressure(
+        frame: CameraFrame,
+        camera: CameraManager,
+        generation: UInt64,
+        evaluator: FaceAuthEvaluator
+    ) async -> ExtractedAuthFrame {
+        camera.setConsumerBusy(true)
+        defer {
+            if generation == scanGeneration {
+                camera.setConsumerBusy(false)
+            }
+        }
+        return await FaceAuthEvaluator.extractFrame(
+            from: frame,
+            pipeline: pipeline,
+            previousBoundingBox: evaluator.lastFaceBoundingBox,
+            livenessEnabled: true,
+            geometryContext: evaluator.geometryContextIfNeeded()
+        )
+    }
 
     private func yieldMainQueue() async {
         await withCheckedContinuation { continuation in

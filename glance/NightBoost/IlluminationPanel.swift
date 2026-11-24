@@ -116,7 +116,7 @@ private final class WarmIlluminationView: NSView {
         CGColor(srgbRed: 1.0, green: 0.94, blue: 0.83, alpha: 0.88),
         CGColor(srgbRed: 1.0, green: 0.92, blue: 0.79, alpha: 0.72),
         CGColor(srgbRed: 1.0, green: 0.90, blue: 0.75, alpha: 0.28),
-        CGColor(srgbRed: 1.0, green: 0.89, blue: 0.72, alpha: 0.0),
+        CGColor(srgbRed: 1.0, green: 0.89, blue: 0.72, alpha: 0.0)
     ]
     private static let warmLocations: [NSNumber] = [0.0, 0.45, 0.80, 1.0]
 

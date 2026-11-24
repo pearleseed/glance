@@ -58,7 +58,8 @@ nonisolated struct LockedApp: Codable, Identifiable, Equatable, Hashable, Sendab
         let resolvedURL = url.resolvingSymlinksInPath()
         let candidates = resolvedURL == url ? [url] : [resolvedURL, url]
         for baseURL in candidates {
-            let plistURL = baseURL
+            let plistURL =
+                baseURL
                 .appendingPathComponent("Contents", isDirectory: true)
                 .appendingPathComponent("Info.plist", isDirectory: false)
             if let data = try? Data(contentsOf: plistURL),

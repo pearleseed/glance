@@ -31,9 +31,9 @@
 //      && /tmp/security_selftest
 //
 
-import Foundation
 import CoreGraphics
 import CoreImage
+import Foundation
 import Vision
 
 private struct MockDiscriminativeEmbedder: FaceEmbedder {
@@ -73,8 +73,11 @@ struct SecuritySelfTest {
         precondition(pipeline.bestMatch(in: scored, threshold: 0.50) == nil, "FAIL: fallback matched in bestMatch")
 
         // Even if usingFallbackEmbedder were false, a non-unlock-capable embedder must still be refused.
-        let misconfiguredPipeline = FaceRecognitionPipeline(embedder: fallback, usingFallbackEmbedder: false, fallbackReason: nil)
-        precondition(misconfiguredPipeline.bestMatch(in: scored, threshold: 0.50) == nil, "FAIL: non-unlock-capable embedder matched in bestMatch")
+        let misconfiguredPipeline = FaceRecognitionPipeline(
+            embedder: fallback, usingFallbackEmbedder: false, fallbackReason: nil)
+        precondition(
+            misconfiguredPipeline.bestMatch(in: scored, threshold: 0.50) == nil,
+            "FAIL: non-unlock-capable embedder matched in bestMatch")
         print("PASS: fallback refusal")
     }
 
@@ -92,7 +95,7 @@ struct SecuritySelfTest {
             id: UUID(), name: "Blended",
             samples: [
                 FaceSample(embedding: [0.6, 0.8], pose: "left", capturedAt: Date(), quality: 0.9),
-                FaceSample(embedding: [0.6, -0.8], pose: "right", capturedAt: Date(), quality: 0.9),
+                FaceSample(embedding: [0.6, -0.8], pose: "right", capturedAt: Date(), quality: 0.9)
             ],
             modelIdentifier: embedder.modelIdentifier, embeddingDimension: 2, createdAt: Date()
         )
@@ -102,7 +105,8 @@ struct SecuritySelfTest {
             modelIdentifier: embedder.modelIdentifier, embeddingDimension: 2, createdAt: Date()
         )
         let scored = pipeline.score([1, 0], against: [staleTop, blendedTop, valid])
-        precondition(pipeline.bestMatch(in: scored, threshold: 0.63)?.identity.id == valid.id, "FAIL: skipped valid runner-up")
+        precondition(
+            pipeline.bestMatch(in: scored, threshold: 0.63)?.identity.id == valid.id, "FAIL: skipped valid runner-up")
         print("PASS: multi-identity bestMatch")
     }
 
@@ -139,16 +143,19 @@ struct SecuritySelfTest {
         let expected: [Float] = [0.25, -0.5, 1.75, 3.5]
         var bytes = Data([0xAA])
         expected.withUnsafeBytes { bytes.append(contentsOf: $0) }
-        let decoded = try! VisionFeaturePrintEmbedder.floatVector(from: bytes.dropFirst(1), elementCount: 4, elementType: .float)
+        let decoded = try! VisionFeaturePrintEmbedder.floatVector(
+            from: bytes.dropFirst(1), elementCount: 4, elementType: .float)
         precondition(decoded == expected, "FAIL: unaligned float decode mismatch")
 
         let expectedDoubles: [Double] = [0.25, -0.5, 1.75, 3.5]
         var doubleBytes = Data([0xAA, 0xBB, 0xCC])
         expectedDoubles.withUnsafeBytes { doubleBytes.append(contentsOf: $0) }
-        let decodedDoubles = try! VisionFeaturePrintEmbedder.floatVector(from: doubleBytes.dropFirst(3), elementCount: 4, elementType: .double)
+        let decodedDoubles = try! VisionFeaturePrintEmbedder.floatVector(
+            from: doubleBytes.dropFirst(3), elementCount: 4, elementType: .double)
         precondition(decodedDoubles == expected, "FAIL: unaligned double decode mismatch")
 
-        let emptyDecoded = try! VisionFeaturePrintEmbedder.floatVector(from: Data(), elementCount: 0, elementType: .float)
+        let emptyDecoded = try! VisionFeaturePrintEmbedder.floatVector(
+            from: Data(), elementCount: 0, elementType: .float)
         precondition(emptyDecoded.isEmpty, "FAIL: zero elementCount should produce empty array")
         print("PASS: Vision feature-print bounds & alignment")
     }
@@ -166,7 +173,8 @@ struct SecuritySelfTest {
         precondition(ranges == [0..<19, 19..<22], "FAIL: surrogate pair split across batches: \(ranges)")
 
         let defaultRanges = KeystrokeInjector.splitUTF16BatchRanges(bUTF16)
-        precondition(defaultRanges == [0..<19, 19..<22], "FAIL: default maxBatchLength split surrogate pair: \(defaultRanges)")
+        precondition(
+            defaultRanges == [0..<19, 19..<22], "FAIL: default maxBatchLength split surrogate pair: \(defaultRanges)")
 
         // Combining diacritic (NFD Vietnamese 'e' + circumflex + acute) straddling boundary 20 must stay together.
         let nfd = String(repeating: "a", count: 19) + "e\u{0302}\u{0301}" + "z"
@@ -178,7 +186,8 @@ struct SecuritySelfTest {
         let zwjOnJoiner = String(repeating: "a", count: 17) + "👨‍👩‍👧" + "z"
         let zwjJoinerUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(zwjOnJoiner.utf8))!
         let zwjJoinerRanges = KeystrokeInjector.splitUTF16BatchRanges(zwjJoinerUTF16, maxBatchLength: 20)
-        precondition(zwjJoinerRanges == [0..<17, 17..<26], "FAIL: ZWJ family split at joiner boundary: \(zwjJoinerRanges)")
+        precondition(
+            zwjJoinerRanges == [0..<17, 17..<26], "FAIL: ZWJ family split at joiner boundary: \(zwjJoinerRanges)")
 
         let zwjMidCluster = String(repeating: "a", count: 15) + "👨‍👩‍👧" + "z"
         let zwjMidUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(zwjMidCluster.utf8))!
@@ -206,16 +215,22 @@ struct SecuritySelfTest {
         let hugeCombining = "e" + String(repeating: "\u{0301}", count: 25) + "z"
         let hugeCombiningUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(hugeCombining.utf8))!
         let hugeCombiningRanges = KeystrokeInjector.splitUTF16BatchRanges(hugeCombiningUTF16, maxBatchLength: 20)
-        precondition(hugeCombiningRanges == [0..<20, 20..<27], "FAIL: oversized combining cluster unexpected split: \(hugeCombiningRanges)")
+        precondition(
+            hugeCombiningRanges == [0..<20, 20..<27],
+            "FAIL: oversized combining cluster unexpected split: \(hugeCombiningRanges)")
 
         let hugeZWJCluster = String(repeating: "👨\u{200D}", count: 9) + "👨"
         let hugeZWJUTF16 = KeystrokeInjector.decodeUTF8ToUTF16(Data(hugeZWJCluster.utf8))!
         let hugeZWJRanges = KeystrokeInjector.splitUTF16BatchRanges(hugeZWJUTF16, maxBatchLength: 19)
-        precondition(hugeZWJRanges == [0..<18, 18..<29], "FAIL: oversized ZWJ cluster split surrogate pair or failed forward progress: \(hugeZWJRanges)")
+        precondition(
+            hugeZWJRanges == [0..<18, 18..<29],
+            "FAIL: oversized ZWJ cluster split surrogate pair or failed forward progress: \(hugeZWJRanges)")
         for range in hugeZWJRanges {
             precondition(!range.isEmpty && range.count <= 19, "FAIL: invalid oversized batch range: \(range)")
-            precondition(!(0xD800...0xDBFF).contains(hugeZWJUTF16[range.upperBound - 1]), "FAIL: batch ended on high surrogate")
-            precondition(!(0xDC00...0xDFFF).contains(hugeZWJUTF16[range.lowerBound]), "FAIL: batch started on low surrogate")
+            precondition(
+                !(0xD800...0xDBFF).contains(hugeZWJUTF16[range.upperBound - 1]), "FAIL: batch ended on high surrogate")
+            precondition(
+                !(0xDC00...0xDFFF).contains(hugeZWJUTF16[range.lowerBound]), "FAIL: batch started on low surrogate")
         }
 
         precondition(KeystrokeInjector.decodeUTF8ToUTF16(Data()) == [], "FAIL: empty UTF-8 should decode to []")
@@ -246,7 +261,8 @@ struct SecuritySelfTest {
 
         nonisolated func embedding(for face: CGImage) throws -> [Float] {
             guard let data = face.dataProvider?.data,
-                  let bytes = CFDataGetBytePtr(data) else {
+                let bytes = CFDataGetBytePtr(data)
+            else {
                 return [0, 0, 0, 0]
             }
             let count = CFDataGetLength(data)
@@ -291,7 +307,8 @@ struct SecuritySelfTest {
         let imageSize = CGSize(width: 640, height: 360)
         let seated = DetectedFace(
             boundingBox: CGRect(x: 270, y: 120, width: 90, height: 90),
-            normalizedBoundingBox: CGRect(x: 270.0 / 640.0, y: 120.0 / 360.0, width: 90.0 / 640.0, height: 90.0 / 360.0),
+            normalizedBoundingBox: CGRect(
+                x: 270.0 / 640.0, y: 120.0 / 360.0, width: 90.0 / 640.0, height: 90.0 / 360.0),
             quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
         )
         let smallBystander = DetectedFace(
@@ -305,7 +322,8 @@ struct SecuritySelfTest {
         // 2. Bystander >= 64px (80px) must still be rejected if < 60% of widest (200px), even with preferNear.
         let mainUser = DetectedFace(
             boundingBox: CGRect(x: 240, y: 80, width: 200, height: 200),
-            normalizedBoundingBox: CGRect(x: 240.0 / 640.0, y: 80.0 / 360.0, width: 200.0 / 640.0, height: 200.0 / 360.0),
+            normalizedBoundingBox: CGRect(
+                x: 240.0 / 640.0, y: 80.0 / 360.0, width: 200.0 / 640.0, height: 200.0 / 360.0),
             quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
         )
         let midBystander = DetectedFace(
@@ -317,7 +335,8 @@ struct SecuritySelfTest {
             in: [midBystander, mainUser],
             preferNear: midBystander.normalizedBoundingBox
         )
-        precondition(pickedMain?.boundingBox == mainUser.boundingBox, "FAIL: bystander below 60% relative cutoff selected")
+        precondition(
+            pickedMain?.boundingBox == mainUser.boundingBox, "FAIL: bystander below 60% relative cutoff selected")
 
         // 3. strictCloseRangeOnly rejects < 18% (90px/640px = 0.14) while accepting >= 18% (120px/640px = 0.1875).
         FaceRecognitionPipeline.strictCloseRangeOnly = true
@@ -328,7 +347,8 @@ struct SecuritySelfTest {
         )
         let closeUser = DetectedFace(
             boundingBox: CGRect(x: 260, y: 100, width: 120, height: 120),
-            normalizedBoundingBox: CGRect(x: 260.0 / 640.0, y: 100.0 / 360.0, width: 120.0 / 640.0, height: 120.0 / 360.0),
+            normalizedBoundingBox: CGRect(
+                x: 260.0 / 640.0, y: 100.0 / 360.0, width: 120.0 / 640.0, height: 120.0 / 360.0),
             quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
         )
         precondition(
@@ -349,7 +369,8 @@ struct SecuritySelfTest {
             samples: [frontalA, frontalB, turnedGood, turnedFair, turnedPoor, unrated],
             modelIdentifier: "arcface-w600k_mbf-v1", embeddingDimension: 2, createdAt: Date()
         )
-        precondition(frontalA.isFrontal && frontalB.isFrontal && !turnedGood.isFrontal, "FAIL: isFrontal classification")
+        precondition(
+            frontalA.isFrontal && frontalB.isFrontal && !turnedGood.isFrontal, "FAIL: isFrontal classification")
         precondition(identity.frontalQualityReference == 0.50, "FAIL: frontalQualityReference median mismatch")
         precondition(identity.qualityTier(of: turnedGood) == .good, "FAIL: turned sample unfairly downgraded")
         precondition(identity.qualityTier(of: turnedFair) == .fair, "FAIL: turned fair sample tier mismatch")
@@ -362,7 +383,9 @@ struct SecuritySelfTest {
             modelIdentifier: "arcface-w600k_mbf-v1", embeddingDimension: 2, createdAt: Date()
         )
         precondition(noFrontalIdentity.frontalQualityReference == nil, "FAIL: frontalQualityReference should be nil")
-        precondition(noFrontalIdentity.qualityTier(of: turnedGood) == .poor, "FAIL: without frontal ref, 0.36 should fall back to absolute < 0.4")
+        precondition(
+            noFrontalIdentity.qualityTier(of: turnedGood) == .poor,
+            "FAIL: without frontal ref, 0.36 should fall back to absolute < 0.4")
 
         // 5. CameraFrame.renderCrop, FaceDetector(includeQuality:), and includeQuality true vs false embedding equality
         let nativeImage = makeSyntheticImage(width: 1920, height: 1080)
@@ -380,18 +403,24 @@ struct SecuritySelfTest {
             precondition(nativeCrop.width == 512, "FAIL: native crop should render at maxEdge 512 from 1080p source")
         }
         let glareCrop = frame.renderCrop(imageRect: seated.boundingBox)
-        precondition(glareCrop != nil && max(glareCrop!.width, glareCrop!.height) <= 448, "FAIL: default glare crop contract")
+        precondition(
+            glareCrop != nil && max(glareCrop!.width, glareCrop!.height) <= 448, "FAIL: default glare crop contract")
 
         let detectedNoQuality = try! FaceDetector.detectFaces(in: workingImage, includeQuality: false)
         let detectedWithQuality = try! FaceDetector.detectFaces(in: workingImage, includeQuality: true)
-        precondition(detectedNoQuality.count == detectedWithQuality.count, "FAIL: includeQuality altered detection count")
+        precondition(
+            detectedNoQuality.count == detectedWithQuality.count, "FAIL: includeQuality altered detection count")
 
-        let fpPipeline = FaceRecognitionPipeline(embedder: PixelFingerprintEmbedder(), usingFallbackEmbedder: false, fallbackReason: nil)
+        let fpPipeline = FaceRecognitionPipeline(
+            embedder: PixelFingerprintEmbedder(), usingFallbackEmbedder: false, fallbackReason: nil)
         let resWithQuality = try! fpPipeline.recognize(seated, in: frame, includeQuality: true)
         let resWithoutQuality = try! fpPipeline.recognize(seated, in: frame, includeQuality: false)
         precondition(resWithQuality.embedding == resWithoutQuality.embedding, "FAIL: includeQuality changed embedding")
-        precondition(resWithoutQuality.quality == nil && resWithoutQuality.face.quality == nil, "FAIL: includeQuality: false emitted quality")
-        precondition(resWithQuality.face.boundingBox == seated.boundingBox, "FAIL: result.face left working-frame coordinates")
+        precondition(
+            resWithoutQuality.quality == nil && resWithoutQuality.face.quality == nil,
+            "FAIL: includeQuality: false emitted quality")
+        precondition(
+            resWithQuality.face.boundingBox == seated.boundingBox, "FAIL: result.face left working-frame coordinates")
 
         print("PASS: adaptive seated detection, pose-aware quality grading & includeQuality equivalence")
     }

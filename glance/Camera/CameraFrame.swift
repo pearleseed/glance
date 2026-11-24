@@ -282,100 +282,97 @@ nonisolated final class CameraFrameWaiter: Sendable {
         }
     }
 
+    private enum FramePreflight {
+        case immediate(CameraFrame?)
+        case wait(id: UInt64, epoch: UInt64)
+    }
+
     func nextFrame(
         after lastFrameID: UInt64?,
         until deadline: ContinuousClock.Instant,
         expectedEpoch: UInt64? = nil
     ) async -> CameraFrame? {
-        let clock = ContinuousClock()
-        enum Preflight {
-            case immediate(CameraFrame?)
-            case wait(id: UInt64, epoch: UInt64)
+        switch preflightWait(after: lastFrameID, until: deadline, expectedEpoch: expectedEpoch) {
+        case .immediate(let frame):
+            return frame
+        case .wait(let waitID, let epoch):
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    attachWaiter(waitID: waitID, epoch: epoch, deadline: deadline, continuation: continuation)
+                }
+            } onCancel: { [weak self] in
+                self?.cancelWaiter(id: waitID)
+            }
         }
+    }
 
-        let preflight: Preflight = state.withLock { s in
-            guard s.isActive, !Task.isCancelled else {
-                return .immediate(nil)
-            }
-            if let expectedEpoch, s.epoch != expectedEpoch {
-                return .immediate(nil)
-            }
-            if let latest = s.latestFrame,
-                lastFrameID.map({ latest.id != $0 }) ?? true
-            {
+    private func preflightWait(
+        after lastFrameID: UInt64?,
+        until deadline: ContinuousClock.Instant,
+        expectedEpoch: UInt64?
+    ) -> FramePreflight {
+        let clock = ContinuousClock()
+        return state.withLock { s in
+            guard s.isActive, !Task.isCancelled else { return .immediate(nil) }
+            if let expectedEpoch, s.epoch != expectedEpoch { return .immediate(nil) }
+            if let latest = s.latestFrame, lastFrameID.map({ latest.id != $0 }) ?? true {
                 return .immediate(latest)
             }
-            guard clock.now < deadline else {
-                return .immediate(nil)
-            }
+            guard clock.now < deadline else { return .immediate(nil) }
             let waitID = s.nextWaitID
             s.nextWaitID &+= 1
-            s.waiters[waitID] = WaiterEntry(
-                id: waitID,
-                epoch: s.epoch,
-                afterFrameID: lastFrameID
-            )
+            s.waiters[waitID] = WaiterEntry(id: waitID, epoch: s.epoch, afterFrameID: lastFrameID)
             return .wait(id: waitID, epoch: s.epoch)
         }
+    }
 
-        guard case .wait(let waitID, let epoch) = preflight else {
-            if case .immediate(let frame) = preflight {
-                return frame
-            }
-            return nil
+    private func attachWaiter(
+        waitID: UInt64,
+        epoch: UInt64,
+        deadline: ContinuousClock.Instant,
+        continuation: CheckedContinuation<CameraFrame?, Never>
+    ) {
+        enum AttachOutcome {
+            case resumeImmediately(CameraFrame?)
+            case suspended
         }
 
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                enum AttachOutcome {
-                    case resumeImmediately(CameraFrame?)
-                    case suspended
-                }
-
-                let outcome: AttachOutcome = state.withLock { s in
-                    guard var entry = s.waiters[waitID] else {
-                        return .resumeImmediately(nil)
-                    }
-                    if let resolution = entry.resolution {
-                        entry.timeoutTask?.cancel()
-                        s.waiters.removeValue(forKey: waitID)
-                        switch resolution {
-                        case .frame(let frame):
-                            return .resumeImmediately(frame)
-                        case .cancelled:
-                            return .resumeImmediately(nil)
-                        }
-                    }
-                    if Task.isCancelled || !s.isActive || entry.epoch != s.epoch {
-                        entry.timeoutTask?.cancel()
-                        s.waiters.removeValue(forKey: waitID)
-                        return .resumeImmediately(nil)
-                    }
-                    entry.continuation = continuation
-                    s.waiters[waitID] = entry
-                    return .suspended
-                }
-
-                switch outcome {
-                case .resumeImmediately(let frame):
-                    continuation.resume(returning: frame)
-                case .suspended:
-                    let timeoutTask = Task.detached { [weak self] in
-                        try? await Task.sleep(until: deadline, tolerance: .milliseconds(2), clock: .continuous)
-                        guard !Task.isCancelled else { return }
-                        self?.expireWaiter(id: waitID, epoch: epoch)
-                    }
-                    state.withLock { s in
-                        if s.waiters[waitID] != nil {
-                            s.waiters[waitID]?.timeoutTask = timeoutTask
-                        } else {
-                            timeoutTask.cancel()
-                        }
-                    }
+        let outcome: AttachOutcome = state.withLock { s in
+            guard var entry = s.waiters[waitID] else { return .resumeImmediately(nil) }
+            if let resolution = entry.resolution {
+                entry.timeoutTask?.cancel()
+                s.waiters.removeValue(forKey: waitID)
+                switch resolution {
+                case .frame(let frame): return .resumeImmediately(frame)
+                case .cancelled: return .resumeImmediately(nil)
                 }
             }
-        } onCancel: { [weak self] in
-            self?.cancelWaiter(id: waitID)
+            if Task.isCancelled || !s.isActive || entry.epoch != s.epoch {
+                entry.timeoutTask?.cancel()
+                s.waiters.removeValue(forKey: waitID)
+                return .resumeImmediately(nil)
+            }
+            entry.continuation = continuation
+            s.waiters[waitID] = entry
+            return .suspended
+        }
+
+        switch outcome {
+        case .resumeImmediately(let frame):
+            continuation.resume(returning: frame)
+        case .suspended:
+            let timeoutTask = Task.detached { [weak self] in
+                try? await Task.sleep(until: deadline, tolerance: .milliseconds(2), clock: .continuous)
+                guard !Task.isCancelled else { return }
+                self?.expireWaiter(id: waitID, epoch: epoch)
+            }
+            state.withLock { s in
+                if s.waiters[waitID] != nil {
+                    s.waiters[waitID]?.timeoutTask = timeoutTask
+                } else {
+                    timeoutTask.cancel()
+                }
+            }
         }
     }
 

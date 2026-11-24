@@ -33,8 +33,8 @@
 //  columns.
 //
 
-import Foundation
 import CoreGraphics
+import Foundation
 import ImageIO
 
 @main
@@ -51,7 +51,7 @@ struct GlareCueProbe {
         for path in paths {
             let url = URL(fileURLWithPath: path)
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+                let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
             else {
                 print("Skipping \(path): couldn't load as an image.")
                 continue
@@ -68,10 +68,11 @@ struct GlareCueProbe {
                 hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: sample
             )
             let reading = LivenessCues.glossGlare(frame)
-            rows.append((
-                name: (path as NSString).lastPathComponent,
-                sample: sample, level: reading.level, confidence: reading.confidence
-            ))
+            rows.append(
+                (
+                    name: (path as NSString).lastPathComponent,
+                    sample: sample, level: reading.level, confidence: reading.confidence
+                ))
         }
 
         guard !rows.isEmpty else {
@@ -89,7 +90,9 @@ struct GlareCueProbe {
         func printRow(_ title: String, _ format: String, _ pick: (Int) -> Float) {
             print(title.padding(toLength: nameWidth, withPad: " ", startingAt: 0), terminator: "")
             for index in rows.indices {
-                print(String(format: format, pick(index)).padding(toLength: nameWidth, withPad: " ", startingAt: 0), terminator: "")
+                print(
+                    String(format: format, pick(index)).padding(toLength: nameWidth, withPad: " ", startingAt: 0),
+                    terminator: "")
             }
             print("")
         }
@@ -100,7 +103,9 @@ struct GlareCueProbe {
         printRow("cue level", "%.3f") { rows[$0].level }
         printRow("confidence", "%.3f") { rows[$0].confidence }
 
-        print("\nCurrent gate: LivenessTuning.glossLevel = \(LivenessTuning.default.glossLevel) over \(LivenessTuning.default.glossFrames) frames.")
+        print(
+            "\nCurrent gate: LivenessTuning.glossLevel = \(LivenessTuning.default.glossLevel) over \(LivenessTuning.default.glossFrames) frames."
+        )
         print("Set it between the live and spoof columns' `cue level` rows, in LivenessCues.swift.")
     }
 }

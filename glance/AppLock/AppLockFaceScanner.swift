@@ -20,7 +20,7 @@ final class AppLockFaceScanner {
     }
 
     private let pipeline: FaceRecognitionPipeline
-    private var _camera: CameraManager?
+    private var lazyCamera: CameraManager?
 
     private var scanTask: Task<Void, Never>?
     private var scanGeneration: UInt64 = 0
@@ -35,9 +35,9 @@ final class AppLockFaceScanner {
     }
 
     private func getOrCreateCamera() -> CameraManager {
-        if let _camera { return _camera }
+        if let lazyCamera { return lazyCamera }
         let camera = CameraManager()
-        _camera = camera
+        lazyCamera = camera
         return camera
     }
 
@@ -78,7 +78,7 @@ final class AppLockFaceScanner {
         activeChallengeID = nil
         scanTask?.cancel()
         scanTask = nil
-        _camera?.stop()
+        lazyCamera?.stop()
     }
 
     private func preflightGateFailure() -> String? {
@@ -180,22 +180,13 @@ final class AppLockFaceScanner {
                 return .failed(gateFailure, canRetry: false)
             }
 
-            let extracted: ExtractedAuthFrame
-            do {
-                camera.setConsumerBusy(true)
-                defer {
-                    if generation == scanGeneration {
-                        camera.setConsumerBusy(false)
-                    }
-                }
-                extracted = await FaceAuthEvaluator.extractFrame(
-                    from: frame,
-                    pipeline: pipeline,
-                    previousBoundingBox: evaluator.lastFaceBoundingBox,
-                    livenessEnabled: livenessEnabled,
-                    geometryContext: evaluator.geometryContextIfNeeded()
-                )
-            }
+            let extracted = await extractFrameWithBackpressure(
+                frame: frame,
+                camera: camera,
+                generation: generation,
+                evaluator: evaluator,
+                livenessEnabled: livenessEnabled
+            )
 
             guard isScanActive(generation: generation, challengeID: challengeID) else {
                 return .cancelled
@@ -228,5 +219,27 @@ final class AppLockFaceScanner {
         return isScanActive(generation: generation, challengeID: challengeID)
             ? .failed("No face detected.", canRetry: true)
             : .cancelled
+    }
+
+    private func extractFrameWithBackpressure(
+        frame: CameraFrame,
+        camera: CameraManager,
+        generation: UInt64,
+        evaluator: FaceAuthEvaluator,
+        livenessEnabled: Bool
+    ) async -> ExtractedAuthFrame {
+        camera.setConsumerBusy(true)
+        defer {
+            if generation == scanGeneration {
+                camera.setConsumerBusy(false)
+            }
+        }
+        return await FaceAuthEvaluator.extractFrame(
+            from: frame,
+            pipeline: pipeline,
+            previousBoundingBox: evaluator.lastFaceBoundingBox,
+            livenessEnabled: livenessEnabled,
+            geometryContext: evaluator.geometryContextIfNeeded()
+        )
     }
 }

@@ -34,11 +34,17 @@ struct NotchShape: Shape {
         }
     }
 
+    private struct ClampedRadii {
+        let top: CGFloat
+        let bottom: CGFloat
+        let bodyRect: CGRect
+    }
+
     private nonisolated static func clampedRadii(
         in rect: CGRect,
         topRadius: CGFloat,
         bottomRadius: CGFloat
-    ) -> (top: CGFloat, bottom: CGFloat, bodyRect: CGRect) {
+    ) -> ClampedRadii {
         // Clamp so a small closed size can't produce self-intersecting
         // curves when the radii exceed half the available width/height.
         let top = max(0, min(topRadius, rect.width / 2))
@@ -49,7 +55,7 @@ struct NotchShape: Shape {
             width: rect.width - 2 * top,
             height: rect.height
         )
-        return (top, bottom, bodyRect)
+        return ClampedRadii(top: top, bottom: bottom, bodyRect: bodyRect)
     }
 
     /// Reports whether `notchPath(in:)` uses the zero-allocation cached unit-corner
@@ -59,20 +65,23 @@ struct NotchShape: Shape {
         topRadius: CGFloat,
         bottomRadius: CGFloat
     ) -> Bool {
-        let (_, bottom, bodyRect) = Self.clampedRadii(
+        let clamped = Self.clampedRadii(
             in: rect,
             topRadius: topRadius,
             bottomRadius: bottomRadius
         )
-        return ContinuousCorner.canUseFastPath(bodyRect: bodyRect, radius: bottom)
+        return ContinuousCorner.canUseFastPath(bodyRect: clamped.bodyRect, radius: clamped.bottom)
     }
 
     private func notchPath(in rect: CGRect) -> Path {
-        let (top, bottom, bodyRect) = Self.clampedRadii(
+        let clamped = Self.clampedRadii(
             in: rect,
             topRadius: topRadius,
             bottomRadius: bottomRadius
         )
+        let top = clamped.top
+        let bottom = clamped.bottom
+        let bodyRect = clamped.bodyRect
 
         var path = Path()
 

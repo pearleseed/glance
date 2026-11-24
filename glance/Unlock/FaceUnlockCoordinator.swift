@@ -144,68 +144,6 @@ final class FaceUnlockCoordinator {
         }
     }
 
-    private func observeDisplayContextSettings() {
-        withObservationTracking {
-            let settings = GlanceSettings.shared
-            _ = settings.isFaceUnlockEnabledBuiltInOnly
-            _ = settings.isFaceUnlockEnabledBuiltInAndExternal
-            _ = settings.isFaceUnlockEnabledExternalOnly
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observeDisplayContextSettings()
-                self.handleDisplayContextOrPreferenceChange()
-            }
-        }
-    }
-
-    private func observeScreenParameters() {
-        observerBox.observe(forName: NSApplication.didChangeScreenParametersNotification) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleDisplayContextOrPreferenceChange()
-            }
-        }
-    }
-
-    private func handleDisplayContextOrPreferenceChange() {
-        if !GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) {
-            disarmOverlay()
-        } else {
-            updateSpaceMonitor()
-        }
-    }
-
-    private func observeToggleShortcut() {
-        withObservationTracking {
-            _ = GlanceSettings.shared.faceUnlockToggleShortcut
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observeToggleShortcut()
-                self.syncToggleHotKeyRegistration()
-            }
-        }
-    }
-
-    private func observePipelineLoadState() {
-        withObservationTracking {
-            _ = pipeline.loadState
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.observePipelineLoadState()
-                self.handlePipelineLoadStateChange()
-            }
-        }
-    }
-
-    private func handlePipelineLoadStateChange() {
-        if case .fallback = pipeline.loadState {
-            disarmOverlay()
-        }
-        updateSpaceMonitor()
-    }
-
     private func syncToggleHotKeyRegistration() {
         guard !isRecordingToggleShortcut else {
             toggleHotKey.unregister()
@@ -478,5 +416,71 @@ final class FaceUnlockCoordinator {
         scanTask = Task { [weak self] in
             await self?.runScanCycle(generation: generation)
         }
+    }
+}
+
+// MARK: - Settings & Pipeline Observers
+
+extension FaceUnlockCoordinator {
+    private func observeDisplayContextSettings() {
+        withObservationTracking {
+            let settings = GlanceSettings.shared
+            _ = settings.isFaceUnlockEnabledBuiltInOnly
+            _ = settings.isFaceUnlockEnabledBuiltInAndExternal
+            _ = settings.isFaceUnlockEnabledExternalOnly
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeDisplayContextSettings()
+                self.handleDisplayContextOrPreferenceChange()
+            }
+        }
+    }
+
+    private func observeScreenParameters() {
+        observerBox.observe(forName: NSApplication.didChangeScreenParametersNotification) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleDisplayContextOrPreferenceChange()
+            }
+        }
+    }
+
+    private func handleDisplayContextOrPreferenceChange() {
+        if !GlanceSettings.shared.isFaceUnlockEnabled(for: DisplayContext.current()) {
+            disarmOverlay()
+        } else {
+            updateSpaceMonitor()
+        }
+    }
+
+    private func observeToggleShortcut() {
+        withObservationTracking {
+            _ = GlanceSettings.shared.faceUnlockToggleShortcut
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeToggleShortcut()
+                self.syncToggleHotKeyRegistration()
+            }
+        }
+    }
+
+    private func observePipelineLoadState() {
+        withObservationTracking {
+            _ = pipeline.loadState
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observePipelineLoadState()
+                self.handlePipelineLoadStateChange()
+            }
+        }
+    }
+
+    private func handlePipelineLoadStateChange() {
+        if case .fallback = pipeline.loadState {
+            disarmOverlay()
+        }
+        updateSpaceMonitor()
     }
 }

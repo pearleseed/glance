@@ -48,7 +48,9 @@ private func makeSolidSRGBImage(width: Int, height: Int, r: UInt8, g: UInt8, b: 
     }
 }
 
-private func makeSplitSRGBImage(width: Int, height: Int, left: (UInt8, UInt8, UInt8), right: (UInt8, UInt8, UInt8)) -> CGImage {
+private func makeSplitSRGBImage(width: Int, height: Int, left: (UInt8, UInt8, UInt8), right: (UInt8, UInt8, UInt8))
+    -> CGImage
+{
     var pixels = [UInt8](repeating: 255, count: width * height * 4)
     for y in 0..<height {
         for x in 0..<width {
@@ -125,11 +127,12 @@ private final class MockIlluminationPanel: IlluminationPresenting {
     var hideCallCount = 0
 
     func show(on screen: NSScreen, coverageFraction: CGFloat, fadeInDuration: TimeInterval) {
-        showEvents.append(ShowEvent(
-            screen: screen,
-            coverageFraction: coverageFraction,
-            fadeInDuration: fadeInDuration
-        ))
+        showEvents.append(
+            ShowEvent(
+                screen: screen,
+                coverageFraction: coverageFraction,
+                fadeInDuration: fadeInDuration
+            ))
     }
 
     func hide() {
@@ -188,9 +191,12 @@ struct NightBoostSelfTest {
         precondition(darkLum < SceneLuminance.enhanceThreshold, "FAIL: synthetic dark image not below enhanceThreshold")
 
         let enhanced = LowLightEnhancer.enhance(dark, meanLuminance: darkLum)
-        precondition(enhanced.width == dark.width && enhanced.height == dark.height, "FAIL: enhancer changed image dimensions")
+        precondition(
+            enhanced.width == dark.width && enhanced.height == dark.height, "FAIL: enhancer changed image dimensions")
         let enhancedLum = SceneLuminance.meanLuminance(of: enhanced)
-        precondition(enhancedLum > darkLum + 0.10, "FAIL: enhancer did not significantly lift dark image: \(darkLum) -> \(enhancedLum)")
+        precondition(
+            enhancedLum > darkLum + 0.10,
+            "FAIL: enhancer did not significantly lift dark image: \(darkLum) -> \(enhancedLum)")
 
         // Original CGImage must remain completely untouched
         let darkPixelsAfter = readSRGBPixels(dark)
@@ -199,9 +205,11 @@ struct NightBoostSelfTest {
         // Bright image (>= enhanceThreshold) must pass through unchanged
         let bright = makeSolidSRGBImage(width: 64, height: 48, r: 140, g: 140, b: 140)
         let brightLum = SceneLuminance.meanLuminance(of: bright)
-        precondition(brightLum >= SceneLuminance.enhanceThreshold, "FAIL: synthetic bright image below enhanceThreshold")
+        precondition(
+            brightLum >= SceneLuminance.enhanceThreshold, "FAIL: synthetic bright image below enhanceThreshold")
         let brightOut = LowLightEnhancer.enhance(bright, meanLuminance: brightLum)
-        precondition(brightOut === bright, "FAIL: bright image at or above enhanceThreshold should be returned unchanged")
+        precondition(
+            brightOut === bright, "FAIL: bright image at or above enhanceThreshold should be returned unchanged")
     }
 
     @MainActor
@@ -227,7 +235,8 @@ struct NightBoostSelfTest {
             )
 
             illuminator.activateIfNeeded(displayID: displayID)
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6, "FAIL: expected brightness boosted to 0.9")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6, "FAIL: expected brightness boosted to 0.9")
             precondition(brightness.setCalls.count == 1, "FAIL: expected single brightness write on activation")
 
             // Repeat activation while active must NOT overwrite saved 0.25 with 0.9
@@ -235,12 +244,15 @@ struct NightBoostSelfTest {
             precondition(brightness.setCalls.count == 1, "FAIL: repeat activateIfNeeded should be idempotent")
 
             illuminator.end()
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.25) < 1e-6, "FAIL: end() did not restore original brightness 0.25")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.25) < 1e-6,
+                "FAIL: end() did not restore original brightness 0.25")
             precondition(panel.hideCallCount == 1, "FAIL: end() must call panel.hide()")
 
             // Idempotent second end()
             illuminator.end()
-            precondition(brightness.setCalls.count == 2, "FAIL: second end() must be idempotent and not rewrite brightness")
+            precondition(
+                brightness.setCalls.count == 2, "FAIL: second end() must be idempotent and not rewrite brightness")
             precondition(panel.hideCallCount == 1, "FAIL: second end() must be idempotent for panel.hide()")
         }
 
@@ -268,7 +280,7 @@ struct NightBoostSelfTest {
 
         // 2b. Handles nil getBrightness (external display) and failed setBrightness safely
         do {
-            let nilBrightness = MockBrightnessControl() // stored[displayID] is nil
+            let nilBrightness = MockBrightnessControl()  // stored[displayID] is nil
             let panel1 = MockIlluminationPanel()
             let illuminator1 = SceneIlluminator(
                 brightnessControl: nilBrightness,
@@ -297,7 +309,8 @@ struct NightBoostSelfTest {
             illuminator2.activateIfNeeded(displayID: displayID)
             precondition(rejectedBrightness.setCalls.count == 1, "FAIL: expected single boost attempt")
             illuminator2.end()
-            precondition(rejectedBrightness.setCalls.count == 1, "FAIL: failed boost must not trigger restore write in end()")
+            precondition(
+                rejectedBrightness.setCalls.count == 1, "FAIL: failed boost must not trigger restore write in end()")
             precondition(panel2.hideCallCount == 1, "FAIL: end() must still hide panel when setBrightness failed")
         }
 
@@ -315,10 +328,13 @@ struct NightBoostSelfTest {
             )
 
             illuminator.activateIfNeeded(displayID: displayID)
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6, "FAIL: expected boost before termination test")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6, "FAIL: expected boost before termination test")
 
             center.post(name: NSApplication.willTerminateNotification, object: nil)
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.30) < 1e-6, "FAIL: willTerminateNotification did not restore brightness")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.30) < 1e-6,
+                "FAIL: willTerminateNotification did not restore brightness")
             precondition(panel.hideCallCount == 1, "FAIL: willTerminateNotification did not hide panel")
             _ = illuminator
         }
@@ -338,16 +354,21 @@ struct NightBoostSelfTest {
 
             illuminator.activateIfNeeded()
             precondition(panel.showEvents.count == 1, "FAIL: expected panel.show once on activation")
-            precondition(abs(panel.showEvents[0].coverageFraction - 0.38) < 1e-6, "FAIL: panel coverageFraction must be 0.38")
+            precondition(
+                abs(panel.showEvents[0].coverageFraction - 0.38) < 1e-6, "FAIL: panel coverageFraction must be 0.38")
             precondition(abs(panel.showEvents[0].fadeInDuration - 0.8) < 1e-6, "FAIL: panel fadeInDuration must be 0.8")
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6, "FAIL: screen activation did not boost brightness")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.9) < 1e-6,
+                "FAIL: screen activation did not boost brightness")
 
             illuminator.activateIfNeeded()
             precondition(panel.showEvents.count == 1, "FAIL: repeat screen activation should not re-show panel")
 
             illuminator.end()
             precondition(panel.hideCallCount == 1, "FAIL: end() did not hide panel after screen activation")
-            precondition(abs((brightness.stored[displayID] ?? -1) - 0.20) < 1e-6, "FAIL: end() did not restore brightness after screen activation")
+            precondition(
+                abs((brightness.stored[displayID] ?? -1) - 0.20) < 1e-6,
+                "FAIL: end() did not restore brightness after screen activation")
         } else {
             print("SKIP: screen presentation subtest skipped (no NSScreen available in headless environment)")
         }
@@ -357,8 +378,11 @@ struct NightBoostSelfTest {
     private static func runDisplayBrightnessSafetyTests() {
         let control = DisplayBrightnessControl()
         let invalidID: CGDirectDisplayID = 0
-        precondition(control.getBrightness(for: invalidID) == nil, "FAIL: invalid display ID should return nil brightness")
+        precondition(
+            control.getBrightness(for: invalidID) == nil, "FAIL: invalid display ID should return nil brightness")
         precondition(control.setBrightness(.nan, for: invalidID) == false, "FAIL: NaN brightness must fail safely")
-        precondition(control.setBrightness(0.5, for: invalidID) == false, "FAIL: invalid display ID setBrightness must return false")
+        precondition(
+            control.setBrightness(0.5, for: invalidID) == false,
+            "FAIL: invalid display ID setBrightness must return false")
     }
 }

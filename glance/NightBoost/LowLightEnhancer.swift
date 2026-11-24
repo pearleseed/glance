@@ -54,6 +54,11 @@ nonisolated enum LowLightEnhancer: Sendable {
         }
 
         let bounded = output.cropped(to: extent)
-        return SharedCoreImageContext.srgb.createCGImage(bounded, from: extent, format: .RGBA8, colorSpace: srgbColorSpace) ?? image
+        return SharedCoreImageContext.srgb.createCGImage(
+            bounded,
+            from: extent,
+            format: .RGBA8,
+            colorSpace: srgbColorSpace
+        ) ?? image
     }
 }

@@ -61,7 +61,7 @@ private func baseTemplate() -> [LandmarkRegion: [CGPoint]] {
         .nose: [CGPoint(x: -5, y: -35), CGPoint(x: 0, y: -45), CGPoint(x: 5, y: -35)],
         .outerLips: [
             CGPoint(x: -25, y: -95), CGPoint(x: -12, y: -105), CGPoint(x: 0, y: -108),
-            CGPoint(x: 12, y: -105), CGPoint(x: 25, y: -95), CGPoint(x: 0, y: -90),
+            CGPoint(x: 12, y: -105), CGPoint(x: 25, y: -95), CGPoint(x: 0, y: -90)
         ],
         .leftEyebrow: [CGPoint(x: -85, y: 20), CGPoint(x: -72, y: 26), CGPoint(x: -58, y: 22)],
         .rightEyebrow: [CGPoint(x: 58, y: 22), CGPoint(x: 72, y: 26), CGPoint(x: 85, y: 20)],
@@ -70,7 +70,7 @@ private func baseTemplate() -> [LandmarkRegion: [CGPoint]] {
         .faceContour: (0..<8).map { i -> CGPoint in
             let angle = Double(i) / 8 * 2 * .pi
             return CGPoint(x: 150 * cos(angle), y: -30 + 170 * sin(angle))
-        },
+        }
     ]
 }
 
@@ -79,11 +79,16 @@ private func baseTemplate() -> [LandmarkRegion: [CGPoint]] {
 /// exploits. Everything else sits flush on the eye plane, same as a real
 /// face's eyes/brow/jaw line does relative to the nose.
 private func depthTemplate() -> [LandmarkRegion: CGFloat] {
-    [.leftEye: 0, .rightEye: 0, .nose: 28, .noseCrest: 18, .medianLine: 12, .outerLips: 4, .leftEyebrow: 2, .rightEyebrow: 2, .faceContour: 0]
+    [
+        .leftEye: 0, .rightEye: 0, .nose: 28, .noseCrest: 18, .medianLine: 12, .outerLips: 4, .leftEyebrow: 2,
+        .rightEyebrow: 2, .faceContour: 0
+    ]
 }
 
 private let anchorRegions: Set<LandmarkRegion> = [.leftEye, .rightEye, .nose]
-private let flexibleRegions: Set<LandmarkRegion> = [.outerLips, .innerLips, .leftEyebrow, .rightEyebrow, .faceContour, .noseCrest, .medianLine]
+private let flexibleRegions: Set<LandmarkRegion> = [
+    .outerLips, .innerLips, .leftEyebrow, .rightEyebrow, .faceContour, .noseCrest, .medianLine
+]
 
 // MARK: - Random helpers
 
@@ -92,12 +97,12 @@ private let flexibleRegions: Set<LandmarkRegion> = [.outerLips, .innerLips, .lef
 /// made the 0.20 live-vs-still margin flake from run to run.
 private struct SplitMix64: RandomNumberGenerator {
     private var state: UInt64
-    init(seed: UInt64) { state = seed == 0 ? 0x9e3779b97f4a7c15 : seed }
+    init(seed: UInt64) { state = seed == 0 ? 0x9e37_79b9_7f4a_7c15 : seed }
     mutating func next() -> UInt64 {
-        state &+= 0x9e3779b97f4a7c15
+        state &+= 0x9e37_79b9_7f4a_7c15
         var z = state
-        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
-        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+        z = (z ^ (z >> 30)) &* 0xbf58_476d_1ce4_e5b9
+        z = (z ^ (z >> 27)) &* 0x94d0_49bb_1331_11eb
         return z ^ (z >> 31)
     }
 }
@@ -126,7 +131,7 @@ private func generatePlanarSequence(frameCount: Int, noiseStd: CGFloat, seed: UI
 
     for i in 0..<frameCount {
         let t = Double(i) / Double(max(frameCount - 1, 1))
-        let rotation = CGFloat(0.05 * sin(t * 2 * .pi * 0.7))       // small rocking rotation
+        let rotation = CGFloat(0.05 * sin(t * 2 * .pi * 0.7))  // small rocking rotation
         let scale: CGFloat = 1 + 0.01 * CGFloat(sin(t * 2 * .pi * 0.5))
         let translation = CGPoint(x: 3 * CGFloat(sin(t * 2 * .pi * 0.3)), y: 2 * CGFloat(cos(t * 2 * .pi * 0.4)))
         // Perspective/shear wobble: grows and decays over the window,
@@ -139,7 +144,8 @@ private func generatePlanarSequence(frameCount: Int, noiseStd: CGFloat, seed: UI
             guard let points = template[region] else { continue }
             for (index, base) in points.enumerated() {
                 let sheared = CGPoint(x: base.x + shear * base.y, y: base.y)
-                let cosT = cos(rotation), sinT = sin(rotation)
+                let cosT = cos(rotation)
+                let sinT = sin(rotation)
                 let rotated = CGPoint(
                     x: (sheared.x * cosT - sheared.y * sinT) * scale,
                     y: (sheared.x * sinT + sheared.y * cosT) * scale
@@ -153,15 +159,16 @@ private func generatePlanarSequence(frameCount: Int, noiseStd: CGFloat, seed: UI
         }
 
         let interocular: CGFloat = 140 * scale
-        frames.append(LivenessFrame(
-            timestamp: Date(timeIntervalSince1970: t),
-            landmarks: landmarks,
-            interocularDistance: interocular,
-            yaw: Float(rotation),
-            leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
-            noseOffsetRatio: 0,   // a plane's nose offset doesn't move with "yaw" — the whole point
-            hasReliableLandmarks: true, deviceOverlapFraction: nil
-        ))
+        frames.append(
+            LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: t),
+                landmarks: landmarks,
+                interocularDistance: interocular,
+                yaw: Float(rotation),
+                leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
+                noseOffsetRatio: 0,  // a plane's nose offset doesn't move with "yaw" — the whole point
+                hasReliableLandmarks: true, deviceOverlapFraction: nil
+            ))
     }
     return frames
 }
@@ -190,25 +197,27 @@ private func generateStillPlanarSequence(frameCount: Int, noiseStd: CGFloat, see
         for region in LandmarkRegion.allCases {
             guard let points = template[region] else { continue }
             for (index, base) in points.enumerated() {
-                landmarks.append(LandmarkPoint(
-                    point: CGPoint(
-                        x: base.x + shared.x + gaussian(std: noiseStd * 0.25, using: &rng),
-                        y: base.y + shared.y + gaussian(std: noiseStd * 0.25, using: &rng)
-                    ),
-                    region: region,
-                    indexInRegion: index
-                ))
+                landmarks.append(
+                    LandmarkPoint(
+                        point: CGPoint(
+                            x: base.x + shared.x + gaussian(std: noiseStd * 0.25, using: &rng),
+                            y: base.y + shared.y + gaussian(std: noiseStd * 0.25, using: &rng)
+                        ),
+                        region: region,
+                        indexInRegion: index
+                    ))
             }
         }
-        frames.append(LivenessFrame(
-            timestamp: Date(timeIntervalSince1970: t),
-            landmarks: landmarks,
-            interocularDistance: 140,
-            yaw: 0,
-            leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
-            noseOffsetRatio: 0,
-            hasReliableLandmarks: true, deviceOverlapFraction: nil
-        ))
+        frames.append(
+            LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: t),
+                landmarks: landmarks,
+                interocularDistance: 140,
+                yaw: 0,
+                leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
+                noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil
+            ))
     }
     return frames
 }
@@ -262,7 +271,8 @@ private func generateLiveSequence(frameCount: Int, noiseStd: CGFloat, seed: UInt
                 // the resulting z). This is what makes the protruding
                 // nose's projected X track yaw and everything else barely
                 // move relative to it.
-                let cosY = cos(yaw), sinY = sin(yaw)
+                let cosY = cos(yaw)
+                let sinY = sin(yaw)
                 let projectedX = moved.x * cosY + z * sinY
 
                 let noisy = CGPoint(
@@ -274,15 +284,16 @@ private func generateLiveSequence(frameCount: Int, noiseStd: CGFloat, seed: UInt
         }
 
         let noseOffset = (28 * sin(yaw)) / 140  // matches the analyzer's own normalization
-        frames.append(LivenessFrame(
-            timestamp: Date(timeIntervalSince1970: t),
-            landmarks: landmarks,
-            interocularDistance: 140,
-            yaw: Float(yaw),
-            leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
-            noseOffsetRatio: noseOffset,
-            hasReliableLandmarks: true, deviceOverlapFraction: nil
-        ))
+        frames.append(
+            LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: t),
+                landmarks: landmarks,
+                interocularDistance: 140,
+                yaw: Float(yaw),
+                leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
+                noseOffsetRatio: noseOffset,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil
+            ))
     }
     return frames
 }
@@ -300,7 +311,8 @@ private func generateTiltedPhotoSequence(frameCount: Int, noiseStd: CGFloat, see
     for i in 0..<frameCount {
         let t = Double(i) / Double(max(frameCount - 1, 1))
         let yaw = CGFloat(0.18 * sin(t * 2 * .pi * 0.55))
-        let cosY = cos(yaw), sinY = sin(yaw)
+        let cosY = cos(yaw)
+        let sinY = sin(yaw)
 
         var landmarks: [LandmarkPoint] = []
         for region in LandmarkRegion.allCases {
@@ -317,15 +329,16 @@ private func generateTiltedPhotoSequence(frameCount: Int, noiseStd: CGFloat, see
             }
         }
 
-        frames.append(LivenessFrame(
-            timestamp: Date(timeIntervalSince1970: t),
-            landmarks: landmarks,
-            interocularDistance: 140,
-            yaw: Float(yaw),
-            leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
-            noseOffsetRatio: 0,
-            hasReliableLandmarks: true, deviceOverlapFraction: nil
-        ))
+        frames.append(
+            LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: t),
+                landmarks: landmarks,
+                interocularDistance: 140,
+                yaw: Float(yaw),
+                leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
+                noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil
+            ))
     }
     return frames
 }
@@ -348,25 +361,27 @@ private func generateStillLiveSequence(frameCount: Int, noiseStd: CGFloat, seed:
             for (index, base) in points.enumerated() {
                 // Orthographic at yaw 0: x' = x + 0*z
                 _ = z
-                landmarks.append(LandmarkPoint(
-                    point: CGPoint(
-                        x: base.x + gaussian(std: noiseStd, using: &rng),
-                        y: base.y + gaussian(std: noiseStd, using: &rng)
-                    ),
-                    region: region,
-                    indexInRegion: index
-                ))
+                landmarks.append(
+                    LandmarkPoint(
+                        point: CGPoint(
+                            x: base.x + gaussian(std: noiseStd, using: &rng),
+                            y: base.y + gaussian(std: noiseStd, using: &rng)
+                        ),
+                        region: region,
+                        indexInRegion: index
+                    ))
             }
         }
-        frames.append(LivenessFrame(
-            timestamp: Date(timeIntervalSince1970: t),
-            landmarks: landmarks,
-            interocularDistance: 140,
-            yaw: 0,
-            leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
-            noseOffsetRatio: 0,
-            hasReliableLandmarks: true, deviceOverlapFraction: nil
-        ))
+        frames.append(
+            LivenessFrame(
+                timestamp: Date(timeIntervalSince1970: t),
+                landmarks: landmarks,
+                interocularDistance: 140,
+                yaw: 0,
+                leftEyeAspectRatio: 0.35, rightEyeAspectRatio: 0.35,
+                noseOffsetRatio: 0,
+                hasReliableLandmarks: true, deviceOverlapFraction: nil
+            ))
     }
     return frames
 }
@@ -391,7 +406,7 @@ struct LivenessSelfTest {
 
     // MARK: - Flat vs 3D (the one cue with real geometry behind it)
 
-    private static let frameCount = 20 // ~1s at ~20fps
+    private static let frameCount = 20  // ~1s at ~20fps
 
     private static func planarScore(_ window: [LivenessFrame]) -> CueReading {
         GeometryLiveness.evaluate(window).planarReading
@@ -407,8 +422,10 @@ struct LivenessSelfTest {
             let wobble = planarScore(generatePlanarSequence(frameCount: frameCount, noiseStd: noise, seed: 1))
             let live = planarScore(generateLiveSequence(frameCount: frameCount, noiseStd: noise, seed: 2))
 
-            print(String(format: "%6.1f      %10.3f     %11.3f    %10.3f    %+.3f",
-                         noise, still.level, wobble.level, live.level, live.level - wobble.level))
+            print(
+                String(
+                    format: "%6.1f      %10.3f     %11.3f    %10.3f    %+.3f",
+                    noise, still.level, wobble.level, live.level, live.level - wobble.level))
 
             if live.level - wobble.level <= 0.05, breakingPoint == nil {
                 breakingPoint = noise
@@ -417,7 +434,9 @@ struct LivenessSelfTest {
 
         print("")
         if let breakingPoint {
-            print("Flat-vs-3D separation breaks down at noise >= \(breakingPoint)px — the honest sensitivity limit of this synthetic model. Verify against Face Lab's live readout.")
+            print(
+                "Flat-vs-3D separation breaks down at noise >= \(breakingPoint)px — the honest sensitivity limit of this synthetic model. Verify against Face Lab's live readout."
+            )
         } else {
             print("Flat-vs-3D separation held across the entire swept noise range (0...\(noiseLevels.last!)px).")
         }
@@ -453,11 +472,14 @@ struct LivenessSelfTest {
             tilted.confidence == 0 || tilted.level < LivenessTuning.default.flatVs3DLevel,
             "FAIL: a tilted photo reached the flat-vs-3D fire level (\(tilted.level)) — it could confirm liveness on its own."
         )
-        print("PASS: flat-vs-3D separates a tilted photo from a 3D face, abstains on a still head, and never reaches its own fire level on a photo.")
+        print(
+            "PASS: flat-vs-3D separates a tilted photo from a 3D face, abstains on a still head, and never reaches its own fire level on a photo."
+        )
 
-        let yawRange = GeometryLiveness.evaluate(
-            generateLiveSequence(frameCount: frameCount, noiseStd: 1.0, seed: 2)
-        ).diagnosticRatios["yaw range (deg)"] ?? 0
+        let yawRange =
+            GeometryLiveness.evaluate(
+                generateLiveSequence(frameCount: frameCount, noiseStd: 1.0, seed: 2)
+            ).diagnosticRatios["yaw range (deg)"] ?? 0
         precondition(
             yawRange >= 12,
             "FAIL: live sequence's yaw range (\(yawRange)) should clear GeometryTuning.minYawRangeDegrees."
@@ -484,7 +506,8 @@ struct LivenessSelfTest {
     /// were ~0% on a live face and 30-40% against a phone, which is the
     /// separation these stand in for.
     private static let skinGlare = GlareSample(cropPixelWidth: 140, specularFraction: 0.004, specularClusterRatio: 0.15)
-    private static let screenGlare = GlareSample(cropPixelWidth: 140, specularFraction: 0.09, specularClusterRatio: 0.75)
+    private static let screenGlare = GlareSample(
+        cropPixelWidth: 140, specularFraction: 0.09, specularClusterRatio: 0.75)
 
     private static func evaluate(
         _ frames: [LivenessFrame], mode: LivenessMode, cues: Set<LivenessCue> = Set(LivenessCue.allCases)
@@ -495,7 +518,8 @@ struct LivenessSelfTest {
         for frame in frames {
             window.append(frame)
             window.removeAll { frame.timestamp.timeIntervalSince($0.timestamp) > 2.0 }
-            snapshot = evaluator.observe(LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window)))
+            snapshot = evaluator.observe(
+                LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window)))
         }
         return snapshot
     }
@@ -524,7 +548,8 @@ struct LivenessSelfTest {
 
         // A single glare frame is not enough — the frame count is what
         // separates a real tell from one bright reflection.
-        let blipFrames = [makeCueFrame(at: 0, glare: screenGlare)]
+        let blipFrames =
+            [makeCueFrame(at: 0, glare: screenGlare)]
             + (1..<8).map { makeCueFrame(at: Double($0) * 0.05, glare: skinGlare) }
         let blipResult = evaluate(blipFrames, mode: .light)
         precondition(
@@ -566,7 +591,8 @@ struct LivenessSelfTest {
         for frame in mixed {
             window.append(frame)
             window.removeAll { frame.timestamp.timeIntervalSince($0.timestamp) > 2.0 }
-            _ = confirmedFirst.observe(LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window)))
+            _ = confirmedFirst.observe(
+                LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window)))
         }
         precondition(
             confirmedFirst.states[.flatVs3D]?.hasFired == true,
@@ -579,12 +605,14 @@ struct LivenessSelfTest {
         for frame in mixed {
             window.append(frame)
             window.removeAll { frame.timestamp.timeIntervalSince($0.timestamp) > 2.0 }
-            finalDecision = overridden.observe(
-                LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window))
-            ).decision
+            finalDecision =
+                overridden.observe(
+                    LivenessCues.readings(window: window, geometry: GeometryLiveness.evaluate(window))
+                ).decision
         }
         guard case .denied(.deviceDetected) = finalDecision else {
-            fatalError("FAIL: a device rectangle appearing after a confirmation should override it, got \(finalDecision).")
+            fatalError(
+                "FAIL: a device rectangle appearing after a confirmation should override it, got \(finalDecision).")
         }
         print("PASS: a deny cue overrides a confirmation that already happened.")
 
@@ -639,8 +667,12 @@ struct LivenessSelfTest {
         precondition(abs(ear0 - ear45) < 0.001, "FAIL: EAR drifted under 45° 2D roll: \(ear0) vs \(ear45)")
 
         // 2. 2D roll invariance for eye-aligned nose offset
-        let eyeL = CGPoint(x: -50, y: 0), eyeR = CGPoint(x: 50, y: 0), nose = CGPoint(x: 0, y: -30)
-        let rot = { (p: CGPoint) in CGPoint(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle)) }
+        let eyeL = CGPoint(x: -50, y: 0)
+        let eyeR = CGPoint(x: 50, y: 0)
+        let nose = CGPoint(x: 0, y: -30)
+        let rot = { (p: CGPoint) in
+            CGPoint(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
+        }
         let off0 = LandmarkGeometry.eyeAlignedNoseOffsetRatio(eyeA: eyeL, eyeB: eyeR, noseCenter: nose)!
         let off45 = LandmarkGeometry.eyeAlignedNoseOffsetRatio(eyeA: rot(eyeL), eyeB: rot(eyeR), noseCenter: rot(nose))!
         precondition(abs(off0 - off45) < 0.001, "FAIL: nose offset drifted under 45° 2D roll: \(off0) vs \(off45)")
@@ -675,7 +707,10 @@ struct LivenessSelfTest {
         )
         var denied = false
         for _ in 0..<6 {
-            if case .denied = analyzer.observeUnmatched(spoofFrame).decision { denied = true; break }
+            if case .denied = analyzer.observeUnmatched(spoofFrame).decision {
+                denied = true
+                break
+            }
         }
         precondition(denied, "FAIL: observeUnmatched failed to trigger device bezel denial")
 
@@ -711,7 +746,8 @@ struct LivenessSelfTest {
         var preResetDecision = LivenessDecision.pending
         for i in 0..<LivenessTuning.default.deviceFrames {
             let f = LivenessFrame(
-                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100, yaw: 0,
+                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100,
+                yaw: 0,
                 leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
                 hasReliableLandmarks: true, deviceOverlapFraction: 0.95, glare: nil
             )
@@ -742,7 +778,8 @@ struct LivenessSelfTest {
         let unmatchedCount = max(LivenessTuning.default.lightModeMinimumFrames * 3, 6)
         for i in 0..<unmatchedCount {
             let f = LivenessFrame(
-                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100, yaw: 0,
+                timestamp: Date(timeIntervalSince1970: Double(i) * 0.05), landmarks: [], interocularDistance: 100,
+                yaw: 0,
                 leftEyeAspectRatio: 0.3, rightEyeAspectRatio: 0.3, noseOffsetRatio: 0,
                 hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: skinGlare
             )
@@ -757,7 +794,8 @@ struct LivenessSelfTest {
             )
         }
 
-        print("PASS: 2D roll invariance, pose-depth amplitude guard, and identity-swap/unmatched liveness tests passed.")
+        print(
+            "PASS: 2D roll invariance, pose-depth amplitude guard, and identity-swap/unmatched liveness tests passed.")
     }
 
     @MainActor
@@ -800,7 +838,9 @@ struct LivenessSelfTest {
             hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
         )
         let postConfirmSnap = heavyVetoAnalyzer.observe(postConfirmFrame)
-        precondition(postConfirmSnap.decision.isConfirmed, "FAIL: Heavy mode should remain confirmed on clean post-confirm frame")
+        precondition(
+            postConfirmSnap.decision.isConfirmed, "FAIL: Heavy mode should remain confirmed on clean post-confirm frame"
+        )
         precondition(
             heavyVetoAnalyzer.lastGeometry == .empty
                 && heavyVetoAnalyzer.lastGeometry.validLandmarkCount == 0
@@ -812,14 +852,16 @@ struct LivenessSelfTest {
         var vetoedDecision = postConfirmSnap.decision
         for i in 0..<LivenessTuning.default.deviceFrames {
             let spoofFrame = LivenessFrame(
-                timestamp: t0.addingTimeInterval(1.1 + Double(i) * 0.05), landmarks: [], interocularDistance: 140, yaw: 0,
+                timestamp: t0.addingTimeInterval(1.1 + Double(i) * 0.05), landmarks: [], interocularDistance: 140,
+                yaw: 0,
                 leftEyeAspectRatio: 0.34, rightEyeAspectRatio: 0.34, noseOffsetRatio: 0,
                 hasReliableLandmarks: true, deviceOverlapFraction: 0.4, glare: nil
             )
             vetoedDecision = heavyVetoAnalyzer.observe(spoofFrame).decision
         }
         guard case .denied(.deviceDetected) = vetoedDecision else {
-            fatalError("FAIL: Heavy mode must deny on late sustained spoof cues even after confirming, got \(vetoedDecision)")
+            fatalError(
+                "FAIL: Heavy mode must deny on late sustained spoof cues even after confirming, got \(vetoedDecision)")
         }
 
         // 3. resetConfirmations() drops confirmed state so a subsequent still frame remains .pending and re-enables confirm cues
@@ -845,7 +887,9 @@ struct LivenessSelfTest {
         heavyResetAnalyzer.keepsComputingConfirmCuesAfterConfirmation = false
 
         heavyResetAnalyzer.resetConfirmations()
-        precondition(!heavyResetAnalyzer.lastSnapshot.decision.isConfirmed, "FAIL: Heavy mode stayed confirmed after resetConfirmations")
+        precondition(
+            !heavyResetAnalyzer.lastSnapshot.decision.isConfirmed,
+            "FAIL: Heavy mode stayed confirmed after resetConfirmations")
         precondition(heavyResetAnalyzer.lastGeometry == .empty, "FAIL: resetConfirmations should clear lastGeometry")
 
         let newFaceFrame = LivenessFrame(
@@ -854,7 +898,9 @@ struct LivenessSelfTest {
             hasReliableLandmarks: true, deviceOverlapFraction: nil, glare: nil
         )
         let afterReset = heavyResetAnalyzer.observe(newFaceFrame)
-        precondition(afterReset.decision == .pending, "FAIL: new face inherited Heavy confirmation after reset, got \(afterReset.decision)")
+        precondition(
+            afterReset.decision == .pending,
+            "FAIL: new face inherited Heavy confirmation after reset, got \(afterReset.decision)")
         precondition(
             heavyResetAnalyzer.lastGeometry != .empty
                 && heavyResetAnalyzer.lastGeometry.validLandmarkCount > 0

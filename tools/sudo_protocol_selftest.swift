@@ -29,20 +29,30 @@ struct SudoProtocolSelfTest {
     }
 
     private static func testProtocolValidation() {
-        let validNonce = String(repeating: "a1b2c3d4", count: 8) // 64 hex chars
+        let validNonce = String(repeating: "a1b2c3d4", count: 8)  // 64 hex chars
         precondition(SudoAuthProtocol.parseRequest("AUTH \(validNonce)\n") == validNonce, "FAIL: valid AUTH rejected")
         precondition(SudoAuthProtocol.parseRequest("AUTH short\n") == nil, "FAIL: short nonce accepted")
-        precondition(SudoAuthProtocol.parseRequest("AUTH " + String(repeating: "z", count: 64) + "\n") == nil, "FAIL: non-hex nonce accepted")
+        precondition(
+            SudoAuthProtocol.parseRequest("AUTH " + String(repeating: "z", count: 64) + "\n") == nil,
+            "FAIL: non-hex nonce accepted")
         precondition(SudoAuthProtocol.parseRequest("ALLOW\n") == nil, "FAIL: legacy static ALLOW accepted")
-        precondition(SudoAuthProtocol.formatResponse(accepted: true, nonce: validNonce) == "OK \(validNonce)\n", "FAIL: OK response mismatch")
-        precondition(SudoAuthProtocol.formatResponse(accepted: false, nonce: validNonce) == "FAIL \(validNonce)\n", "FAIL: FAIL response mismatch")
+        precondition(
+            SudoAuthProtocol.formatResponse(accepted: true, nonce: validNonce) == "OK \(validNonce)\n",
+            "FAIL: OK response mismatch")
+        precondition(
+            SudoAuthProtocol.formatResponse(accepted: false, nonce: validNonce) == "FAIL \(validNonce)\n",
+            "FAIL: FAIL response mismatch")
 
         // Additional strict protocol edge cases
         let upperNonce = String(repeating: "A1B2C3D4", count: 8)
         let mixedNonce = String(repeating: "aBcDeF09", count: 8)
-        precondition(SudoAuthProtocol.parseRequest("AUTH \(upperNonce)\n") == upperNonce, "FAIL: uppercase hex rejected")
-        precondition(SudoAuthProtocol.parseRequest("AUTH \(mixedNonce)\n") == mixedNonce, "FAIL: mixed-case hex rejected")
-        precondition(SudoAuthProtocol.parseRequest("AUTH \(validNonce)") == validNonce, "FAIL: valid single line without trailing LF rejected")
+        precondition(
+            SudoAuthProtocol.parseRequest("AUTH \(upperNonce)\n") == upperNonce, "FAIL: uppercase hex rejected")
+        precondition(
+            SudoAuthProtocol.parseRequest("AUTH \(mixedNonce)\n") == mixedNonce, "FAIL: mixed-case hex rejected")
+        precondition(
+            SudoAuthProtocol.parseRequest("AUTH \(validNonce)") == validNonce,
+            "FAIL: valid single line without trailing LF rejected")
 
         // Length boundary checks (63 and 65 chars)
         let nonce63 = String(validNonce.dropLast())
@@ -59,7 +69,9 @@ struct SudoProtocolSelfTest {
         precondition(SudoAuthProtocol.parseRequest(" AUTH \(validNonce)\n") == nil, "FAIL: leading space accepted")
         precondition(SudoAuthProtocol.parseRequest("AUTH  \(validNonce)\n") == nil, "FAIL: double space accepted")
         precondition(SudoAuthProtocol.parseRequest("AUTH \(validNonce)\n\n") == nil, "FAIL: double newline accepted")
-        precondition(SudoAuthProtocol.parseRequest("AUTH \(validNonce)\nALLOW\n") == nil, "FAIL: multi-line smuggled request accepted")
+        precondition(
+            SudoAuthProtocol.parseRequest("AUTH \(validNonce)\nALLOW\n") == nil,
+            "FAIL: multi-line smuggled request accepted")
         precondition(SudoAuthProtocol.parseRequest("OK \(validNonce)\n") == nil, "FAIL: OK command accepted as request")
         precondition(SudoAuthProtocol.parseRequest("auth \(validNonce)\n") == nil, "FAIL: lowercase verb accepted")
 
@@ -84,20 +96,25 @@ struct SudoProtocolSelfTest {
             authenticatorCalled = true
             return true
         }
-        precondition(started, "FAIL: SudoAuthServer failed to start at \(socketURL.path): \(server.lastError ?? "unknown")")
+        precondition(
+            started, "FAIL: SudoAuthServer failed to start at \(socketURL.path): \(server.lastError ?? "unknown")")
         precondition(server.isListening, "FAIL: SudoAuthServer.isListening should be true after start")
 
         // Verify socket directory permissions are strictly 0700 and not a symlink
         var dirStat = stat()
         precondition(lstat(socketDir.path, &dirStat) == 0, "FAIL: lstat on socket dir failed")
         precondition((dirStat.st_mode & S_IFMT) == S_IFDIR, "FAIL: socket dir is not a directory")
-        precondition((dirStat.st_mode & 0o777) == 0o700, "FAIL: socket dir permissions must be 0700, got \(String(dirStat.st_mode & 0o777, radix: 8))")
+        precondition(
+            (dirStat.st_mode & 0o777) == 0o700,
+            "FAIL: socket dir permissions must be 0700, got \(String(dirStat.st_mode & 0o777, radix: 8))")
 
         // Verify socket file exists, is S_IFSOCK, and permissions are 0600
         var sockStat = stat()
         precondition(lstat(socketURL.path, &sockStat) == 0, "FAIL: lstat on socket failed")
         precondition((sockStat.st_mode & S_IFMT) == S_IFSOCK, "FAIL: socket path is not a Unix socket")
-        precondition((sockStat.st_mode & 0o777) == 0o600, "FAIL: socket permissions must be 0600, got \(String(sockStat.st_mode & 0o777, radix: 8))")
+        precondition(
+            (sockStat.st_mode & 0o777) == 0o600,
+            "FAIL: socket permissions must be 0600, got \(String(sockStat.st_mode & 0o777, radix: 8))")
 
         // Verify non-root peer is rejected BEFORE reading or invoking authenticator
         if getuid() != 0 {
@@ -113,7 +130,8 @@ struct SudoProtocolSelfTest {
         // Verify rapid stop -> start -> stop unlinks cleanly without race
         server.stop()
         precondition(!server.isListening, "FAIL: isListening should be false after stop")
-        precondition(!FileManager.default.fileExists(atPath: socketURL.path), "FAIL: socket file still exists after stop")
+        precondition(
+            !FileManager.default.fileExists(atPath: socketURL.path), "FAIL: socket file still exists after stop")
 
         let restarted = server.start { false }
         precondition(restarted, "FAIL: SudoAuthServer failed to restart")
@@ -121,7 +139,8 @@ struct SudoProtocolSelfTest {
 
         server.stop()
         precondition(!server.isListening, "FAIL: isListening should be false after second stop")
-        precondition(!FileManager.default.fileExists(atPath: socketURL.path), "FAIL: socket file still exists after second stop")
+        precondition(
+            !FileManager.default.fileExists(atPath: socketURL.path), "FAIL: socket file still exists after second stop")
     }
 
     private nonisolated static func sendSocketRequest(socketPath: String, payload: String) -> String {
@@ -303,7 +322,8 @@ struct SudoProtocolSelfTest {
 
         // Timeout fires at ~50ms and sends FAIL + EOF immediately while auth1 is still blocked unwinding.
         let (resp1, eof1) = await Task.detached { readAllUntilEOF(fd: pair1.clientFD) }.value
-        precondition(resp1 == "FAIL \(nonce1)\n", "FAIL: expected timeout FAIL for client 1, got \(String(reflecting: resp1))")
+        precondition(
+            resp1 == "FAIL \(nonce1)\n", "FAIL: expected timeout FAIL for client 1, got \(String(reflecting: resp1))")
         precondition(eof1, "FAIL: expected EOF for client 1 after timeout")
 
         // Client 2 arrives while auth1 is still unwinding; single-flight slot MUST still be locked.
@@ -323,7 +343,9 @@ struct SudoProtocolSelfTest {
         }
 
         let (resp2, eof2) = await Task.detached { readAllUntilEOF(fd: pair2.clientFD) }.value
-        precondition(resp2 == "FAIL \(nonce2)\n", "FAIL: expected busy FAIL for client 2 while auth1 unwinds, got \(String(reflecting: resp2))")
+        precondition(
+            resp2 == "FAIL \(nonce2)\n",
+            "FAIL: expected busy FAIL for client 2 while auth1 unwinds, got \(String(reflecting: resp2))")
         precondition(eof2, "FAIL: expected EOF for client 2")
         precondition(!auth2Entered.get(), "FAIL: auth2 ran concurrently while auth1 was still unwinding")
 
@@ -376,7 +398,9 @@ struct SudoProtocolSelfTest {
 
             let (resp, eof) = await Task.detached { readAllUntilEOF(fd: pair.clientFD) }.value
             _ = Darwin.close(pair.clientFD)
-            precondition(resp == "OK \(nonce)\n", "FAIL: fast sequential iteration \(iteration) expected OK, got \(String(reflecting: resp))")
+            precondition(
+                resp == "OK \(nonce)\n",
+                "FAIL: fast sequential iteration \(iteration) expected OK, got \(String(reflecting: resp))")
             precondition(eof, "FAIL: fast sequential iteration \(iteration) expected EOF")
 
             // Give Task.detached defer a beat to clear activeRequestID before the next sequential request.
@@ -397,7 +421,9 @@ struct SudoProtocolSelfTest {
         }
         let (stoppedResp, stoppedEOF) = await Task.detached { readAllUntilEOF(fd: stoppedPair.clientFD) }.value
         _ = Darwin.close(stoppedPair.clientFD)
-        precondition(stoppedResp == "FAIL \(stoppedNonce)\n", "FAIL: stopped runner must fail new requests, got \(String(reflecting: stoppedResp))")
+        precondition(
+            stoppedResp == "FAIL \(stoppedNonce)\n",
+            "FAIL: stopped runner must fail new requests, got \(String(reflecting: stoppedResp))")
         precondition(stoppedEOF, "FAIL: expected EOF after stopped FAIL")
     }
 }

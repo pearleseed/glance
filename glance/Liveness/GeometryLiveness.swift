@@ -82,13 +82,7 @@ nonisolated enum GeometryLiveness {
         var diagnostics = diagnosticRatios(from: window.last)
 
         guard window.count >= 3 else {
-            return GeometryLivenessResult(
-                planarResidualScore: 0, planarConfidence: 0,
-                validLandmarkCount: lastLandmarks, pairsAnalyzed: 0, rejectedPairCount: 0,
-                medianFitResidual: nil, medianProbeResidual: nil,
-                excessRatio: nil, coherence: nil, motionMagnitude: nil,
-                diagnosticRatios: diagnostics
-            )
+            return abstentionResult(validLandmarkCount: lastLandmarks, diagnostics: diagnostics)
         }
 
         let yawRange = yawRangeDegrees(window)
@@ -96,13 +90,7 @@ nonisolated enum GeometryLiveness {
         if let yawRange { diagnostics["yaw range (deg)"] = yawRange }
 
         guard yawGateOK || includeDiagnostics else {
-            return GeometryLivenessResult(
-                planarResidualScore: 0, planarConfidence: 0,
-                validLandmarkCount: lastLandmarks, pairsAnalyzed: 0, rejectedPairCount: 0,
-                medianFitResidual: nil, medianProbeResidual: nil,
-                excessRatio: nil, coherence: nil, motionMagnitude: nil,
-                diagnosticRatios: diagnostics
-            )
+            return abstentionResult(validLandmarkCount: lastLandmarks, diagnostics: diagnostics)
         }
 
         var excesses: [CGFloat] = []
@@ -149,6 +137,19 @@ nonisolated enum GeometryLiveness {
             excessRatio: excess,
             coherence: coherence,
             motionMagnitude: motions.isEmpty ? nil : (motions.reduce(0, +) / CGFloat(motions.count)),
+            diagnosticRatios: diagnostics
+        )
+    }
+
+    private static func abstentionResult(
+        validLandmarkCount: Int,
+        diagnostics: [String: CGFloat]
+    ) -> GeometryLivenessResult {
+        GeometryLivenessResult(
+            planarResidualScore: 0, planarConfidence: 0,
+            validLandmarkCount: validLandmarkCount, pairsAnalyzed: 0, rejectedPairCount: 0,
+            medianFitResidual: nil, medianProbeResidual: nil,
+            excessRatio: nil, coherence: nil, motionMagnitude: nil,
             diagnosticRatios: diagnostics
         )
     }

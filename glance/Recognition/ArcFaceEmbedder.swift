@@ -59,9 +59,9 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     /// Intel Macs lack an ANE, so `.cpuOnly` targets BNNS directly without GPU warmup cost.
     nonisolated static func preferredComputeUnits() -> MLComputeUnits {
         #if arch(arm64)
-        return .cpuAndNeuralEngine
+            return .cpuAndNeuralEngine
         #else
-        return .cpuOnly
+            return .cpuOnly
         #endif
     }
 
@@ -167,13 +167,13 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
             switch array.dataType {
             case .float16:
                 #if arch(arm64)
-                if let decoded = decodeContiguousFloat16(from: array, count: count) {
-                    return decoded
-                }
+                    if let decoded = decodeContiguousFloat16(from: array, count: count) {
+                        return decoded
+                    }
                 #else
-                if let decoded = float16BufferToFloats(array, count: count) {
-                    return decoded
-                }
+                    if let decoded = float16BufferToFloats(array, count: count) {
+                        return decoded
+                    }
                 #endif
             case .float32:
                 if let decoded = decodeContiguousFloat32(from: array, count: count) {
@@ -191,46 +191,46 @@ nonisolated final class ArcFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     }
 
     #if arch(arm64)
-    private static func decodeContiguousFloat16(from array: MLMultiArray, count: Int) -> [Float]? {
-        let stride = MemoryLayout<Float16>.stride
-        let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
-        guard !overflow else { return nil }
-        return array.withUnsafeBytes { bytes -> [Float]? in
-            guard bytes.count >= byteCount else { return nil }
-            var result = [Float](repeating: 0, count: count)
-            for index in 0..<count {
-                result[index] = Float(bytes.loadUnaligned(fromByteOffset: index * stride, as: Float16.self))
+        private static func decodeContiguousFloat16(from array: MLMultiArray, count: Int) -> [Float]? {
+            let stride = MemoryLayout<Float16>.stride
+            let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
+            guard !overflow else { return nil }
+            return array.withUnsafeBytes { bytes -> [Float]? in
+                guard bytes.count >= byteCount else { return nil }
+                var result = [Float](repeating: 0, count: count)
+                for index in 0..<count {
+                    result[index] = Float(bytes.loadUnaligned(fromByteOffset: index * stride, as: Float16.self))
+                }
+                return result
             }
-            return result
         }
-    }
     #else
-    private static func float16BufferToFloats(_ array: MLMultiArray, count: Int) -> [Float]? {
-        let stride = MemoryLayout<UInt16>.stride
-        let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
-        guard !overflow else { return nil }
-        return array.withUnsafeBytes { bytes -> [Float]? in
-            guard bytes.count >= byteCount, let srcBase = bytes.baseAddress else { return nil }
-            var result = [Float](repeating: 0, count: count)
-            let status = result.withUnsafeMutableBytes { dstBytes -> vImage_Error in
-                guard let dstBase = dstBytes.baseAddress else { return kvImageNullPointerArgument }
-                var srcBuffer = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(mutating: srcBase),
-                    height: 1,
-                    width: vImagePixelCount(count),
-                    rowBytes: byteCount
-                )
-                var dstBuffer = vImage_Buffer(
-                    data: dstBase,
-                    height: 1,
-                    width: vImagePixelCount(count),
-                    rowBytes: count * MemoryLayout<Float>.stride
-                )
-                return vImageConvert_Planar16FtoPlanarF(&srcBuffer, &dstBuffer, 0)
+        private static func float16BufferToFloats(_ array: MLMultiArray, count: Int) -> [Float]? {
+            let stride = MemoryLayout<UInt16>.stride
+            let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
+            guard !overflow else { return nil }
+            return array.withUnsafeBytes { bytes -> [Float]? in
+                guard bytes.count >= byteCount, let srcBase = bytes.baseAddress else { return nil }
+                var result = [Float](repeating: 0, count: count)
+                let status = result.withUnsafeMutableBytes { dstBytes -> vImage_Error in
+                    guard let dstBase = dstBytes.baseAddress else { return kvImageNullPointerArgument }
+                    var srcBuffer = vImage_Buffer(
+                        data: UnsafeMutableRawPointer(mutating: srcBase),
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: byteCount
+                    )
+                    var dstBuffer = vImage_Buffer(
+                        data: dstBase,
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<Float>.stride
+                    )
+                    return vImageConvert_Planar16FtoPlanarF(&srcBuffer, &dstBuffer, 0)
+                }
+                return status == kvImageNoError ? result : nil
             }
-            return status == kvImageNoError ? result : nil
         }
-    }
     #endif
 
     private static func decodeContiguousFloat32(from array: MLMultiArray, count: Int) -> [Float]? {
