@@ -73,6 +73,7 @@
 				601C4938300FFC8400D3DE9D /* Sources */,
 				601C4939300FFC8400D3DE9D /* Frameworks */,
 				601C493A300FFC8400D3DE9D /* Resources */,
+				601C494A300FFC8500D3DE9D /* Bundle Sudo PAM Support */,
 			);
 			buildRules = (
 			);
@@ -135,6 +136,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		601C494A300FFC8500D3DE9D /* Bundle Sudo PAM Support */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/sudo-support/pam_glance.c",
+				"$(SRCROOT)/sudo-support/glance-sudo-setup.sh",
+			);
+			name = "Bundle Sudo PAM Support";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/pam_glance.so",
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/glance-sudo-setup.sh",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\n\nPAM_SRC=\"${SRCROOT}/sudo-support/pam_glance.c\"\nSCRIPT_SRC=\"${SRCROOT}/sudo-support/glance-sudo-setup.sh\"\nHELPERS_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nRESOURCES_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nPAM_OUT=\"${HELPERS_DIR}/pam_glance.so\"\nSCRIPT_OUT=\"${RESOURCES_DIR}/glance-sudo-setup.sh\"\n\n/bin/mkdir -p \"${HELPERS_DIR}\" \"${RESOURCES_DIR}\"\n\n/usr/bin/xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -O2 -Wall -Wextra -Werror -bundle -lpam \"${PAM_SRC}\" -o \"${PAM_OUT}\"\n\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" != \"-\" ]; then\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --options runtime --timestamp \"${PAM_OUT}\"\nelse\n  /usr/bin/codesign --force --sign - \"${PAM_OUT}\"\nfi\n\n/usr/bin/install -m 0644 \"${SCRIPT_SRC}\" \"${SCRIPT_OUT}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		601C4938300FFC8400D3DE9D /* Sources */ = {

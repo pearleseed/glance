@@ -10,5 +10,7 @@
 	<false/>
 	<key>SUEnableInstallerLauncherService</key>
 	<false/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Glance uses Apple Events to request macOS administrator permission when setting up or removing Face authentication for sudo.</string>
 </dict>
 </plist>
