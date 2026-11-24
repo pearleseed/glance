@@ -25,7 +25,7 @@ final class AppLockCoordinator {
     private var activeSystemPromptChallengeID: UUID?
     private var activeSystemPromptContext: LAContext?
 
-    private static let reconcileInterval: TimeInterval = 2.0
+    private static let activeChallengeFallbackInterval: TimeInterval = 3.0
     private static let log = Logger(subsystem: "com.pearleseed.glance", category: "AppLockCoordinator")
 
     init(pipeline: FaceRecognitionPipeline) {
@@ -79,10 +79,9 @@ final class AppLockCoordinator {
         execute(effects)
 
         if enabled && !policies.isEmpty {
-            startReconcileTimerIfNeeded()
             reconcileWorkspace()
         } else {
-            reconcileTimerBox.invalidate()
+            scheduleNextReconcileTimer()
         }
     }
 
@@ -173,7 +172,10 @@ final class AppLockCoordinator {
     }
 
     private func reconcileWorkspace() {
-        guard isEffectivelyEnabled else { return }
+        guard isEffectivelyEnabled else {
+            scheduleNextReconcileTimer()
+            return
+        }
         guard !LockMonitor.isScreenActuallyLocked() else {
             lockAllSessions()
             return
@@ -206,13 +208,29 @@ final class AppLockCoordinator {
         )
     }
 
-    private func startReconcileTimerIfNeeded() {
-        guard !reconcileTimerBox.isRunning else { return }
-        let timer = Timer(timeInterval: Self.reconcileInterval, repeats: true) { [weak self] _ in
+    private func scheduleNextReconcileTimer() {
+        guard isEffectivelyEnabled, !engine.policies.isEmpty else {
+            reconcileTimerBox.invalidate()
+            return
+        }
+
+        if let delay = engine.nextExpirationDelay(at: monotonicNow()) {
+            scheduleOneShotReconcileTimer(after: delay, tolerance: min(delay * 0.1, 1.0))
+        } else if engine.hasActiveChallenge {
+            // Slow fallback only while a challenge is active so abnormal process termination is still caught.
+            scheduleOneShotReconcileTimer(after: Self.activeChallengeFallbackInterval, tolerance: 0.5)
+        } else {
+            reconcileTimerBox.invalidate()
+        }
+    }
+
+    private func scheduleOneShotReconcileTimer(after delay: TimeInterval, tolerance: TimeInterval) {
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.reconcileWorkspace()
             }
         }
+        timer.tolerance = tolerance
         RunLoop.main.add(timer, forMode: .common)
         reconcileTimerBox.set(timer)
     }
@@ -247,6 +265,8 @@ final class AppLockCoordinator {
                 presentSystemPrompt(for: challenge)
             }
         }
+
+        scheduleNextReconcileTimer()
     }
 
     private func presentCurtainAndStartScan(for challenge: AppLockEngine.Challenge) {

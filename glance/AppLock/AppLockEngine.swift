@@ -60,6 +60,7 @@ nonisolated struct AppLockEngine: Sendable {
     private(set) var isEnabled: Bool = false
     private(set) var policies: [String: RelockPolicy] = [:]
     private(set) var activeChallenge: Challenge?
+    var hasActiveChallenge: Bool { activeChallenge != nil }
 
     private var unlockedSessions: [String: UnlockedSession] = [:]
     private var reopenGrant: ReopenGrant?
@@ -207,7 +208,9 @@ nonisolated struct AppLockEngine: Sendable {
             }
         }
 
-        if let grant = reopenGrant, !runningPIDs.contains(grant.pid) {
+        if let grant = reopenGrant,
+            !runningPIDs.contains(grant.pid) || (monotonicNow - grant.grantedAt) > reopenGrantTTL
+        {
             reopenGrant = nil
         }
 
@@ -318,6 +321,43 @@ nonisolated struct AppLockEngine: Sendable {
         )
 
         return [.reopen(challenge.app)]
+    }
+
+    /// Returns the shortest delay in seconds until any timed session or reopen grant expires
+    /// (clamped to `>= 0.05` s), or `nil` when no time-bounded countdown is active.
+    func nextExpirationDelay(at monotonicNow: TimeInterval) -> TimeInterval? {
+        guard isEnabled else { return nil }
+
+        var earliestDeadline: TimeInterval?
+        func consider(_ deadline: TimeInterval) {
+            if let current = earliestDeadline {
+                if deadline < current {
+                    earliestDeadline = deadline
+                }
+            } else {
+                earliestDeadline = deadline
+            }
+        }
+
+        for (bundleID, session) in unlockedSessions {
+            guard let policy = policies[bundleID] else { continue }
+            switch policy {
+            case .everyTime:
+                continue
+            case .afterMinutes:
+                consider(session.unlockedAt + (policy.durationSeconds ?? 0))
+            case .afterFocusLossMinutes:
+                guard let lostFocusAt = session.lostFocusAt else { continue }
+                consider(lostFocusAt + (policy.durationSeconds ?? 0))
+            }
+        }
+
+        if let grant = reopenGrant, policies[grant.bundleID] != nil {
+            consider(grant.grantedAt + reopenGrantTTL)
+        }
+
+        guard let earliestDeadline else { return nil }
+        return max(earliestDeadline - monotonicNow, 0.05)
     }
 
     /// Cancels an active challenge, lowering any curtain and hiding the app without unlocking it.

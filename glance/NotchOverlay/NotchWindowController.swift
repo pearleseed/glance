@@ -85,10 +85,11 @@ final class NotchWindowController {
     func setInteractive(_ interactive: Bool, key: Bool = false) {
         wantsInteractive = interactive
         window?.acceptsKey = interactive
+        if interactive, key, let window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
         updateCursorPolling()
-        guard interactive, key, let window else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
     }
 
     var isVisible: Bool { window?.isVisible ?? false }
@@ -138,11 +139,12 @@ final class NotchWindowController {
     /// receives none, and a global event monitor doesn't fire for movement over
     /// this app's own windows.
     private func updateCursorPolling() {
-        let shouldPoll = wantsInteractive && (window?.isVisible ?? false)
+        let shouldPoll = wantsInteractive && !isSkyLightDelegated && (window?.isVisible ?? false)
         if shouldPoll, cursorPollTimer == nil {
-            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateMousePassthrough() }
             }
+            timer.tolerance = 0.01
             RunLoop.main.add(timer, forMode: .common)
             cursorPollTimer = timer
         } else if !shouldPoll {

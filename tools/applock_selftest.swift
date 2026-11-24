@@ -82,8 +82,9 @@ struct AppLockSelfTest {
         runMonotonicPolicyBoundaryTests(&runner)
         runChallengeLifecycleTests(&runner)
         runHideTerminateLockAndReconcileTests(&runner)
+        runExpirationDelayTests(&runner)
 
-        expect(runner.passedCount >= 65, "Expected at least 65 tests, ran \(runner.passedCount)")
+        expect(runner.passedCount >= 72, "Expected at least 72 tests, ran \(runner.passedCount)")
         print("PASS: AppLockEngine v2 (RelockPolicy monotonic + Blacklist + Touch ID fallback) — \(runner.passedCount) tests passed.")
     }
 
@@ -999,6 +1000,111 @@ struct AppLockSelfTest {
             expect(engine.activeChallenge == nil, "dead .systemPrompt app must clear activeChallenge")
             expect(engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 4002).isEmpty,
                    "stale Touch ID completion for terminated app must be ignored")
+        }
+    }
+
+    // MARK: - Group H: Deadline-Driven Timer Scheduling (nextExpirationDelay & hasActiveChallenge)
+
+    private static func runExpirationDelayTests(_ r: inout TestRunner) {
+        r.test("delay-1: empty engine with no unlockedSessions and no reopenGrant returns nil") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
+            expect(engine.nextExpirationDelay(at: 100) == nil, "idle engine must return nil delay")
+            expect(!engine.hasActiveChallenge, "idle engine must have hasActiveChallenge == false")
+        }
+
+        r.test("delay-2: unlocked .everyTime app returns nil delay") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
+            _ = engine.passed(challengeID: c.id, monotonicNow: 101)
+            expect(engine.nextExpirationDelay(at: 102) == nil, ".everyTime session must return nil delay")
+        }
+
+        r.test("delay-3: .afterFocusLossMinutes returns nil while focused, then returns earliest deadline across mixed apps") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [
+                notes.bundleID: .afterMinutes(5),
+                mail.bundleID: .afterFocusLossMinutes(1),
+            ])
+            // Unlock app A (.afterMinutes(5)) at t=100 (expires at t=400)
+            let cNotes = expectChallenge(in: engine.appActivated(notes, monotonicNow: 99))
+            _ = engine.passed(challengeID: cNotes.id, monotonicNow: 100)
+            expect(engine.nextExpirationDelay(at: 100) == 300.0, "expected 300.0s for Notes")
+
+            // Unlock app B (.afterFocusLossMinutes(1)) at t=110; still focused so its countdown hasn't started
+            let cMail = expectChallenge(in: engine.appActivated(mail, monotonicNow: 109))
+            _ = engine.passed(challengeID: cMail.id, monotonicNow: 110)
+            expect(engine.nextExpirationDelay(at: 115) == 285.0, "focused Mail must not start focus-loss countdown")
+
+            // App B loses focus at t=120 (expires at t=180, earlier than App A at t=400)
+            _ = engine.appActivated(safari, monotonicNow: 120)
+            let delay = engine.nextExpirationDelay(at: 130)
+            expect(delay == 50.0, "expected earliest expiration delay 50.0 at t=130, got \(String(describing: delay))")
+        }
+
+        r.test("delay-4: changing policy to .everyTime, calling lockAll(), or removing app from policies clears delay to nil") {
+            // Case A: tighten policy to .everyTime
+            var engineA = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engineA.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
+            let cA = expectChallenge(in: engineA.appActivated(notes, monotonicNow: 100))
+            _ = engineA.passed(challengeID: cA.id, monotonicNow: 101)
+            expect(engineA.nextExpirationDelay(at: 102) != nil, "timed session must have delay")
+            _ = engineA.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            expect(engineA.nextExpirationDelay(at: 102) == nil, "switching policy to .everyTime must return nil delay")
+
+            // Case B: lockAll()
+            var engineB = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engineB.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
+            let cB = expectChallenge(in: engineB.appActivated(notes, monotonicNow: 100))
+            _ = engineB.passed(challengeID: cB.id, monotonicNow: 101)
+            _ = engineB.lockAll()
+            expect(engineB.nextExpirationDelay(at: 102) == nil, "lockAll() must return nil delay")
+
+            // Case C: removing app from policies
+            var engineC = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engineC.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(5)])
+            let cC = expectChallenge(in: engineC.appActivated(notes, monotonicNow: 100))
+            _ = engineC.passed(challengeID: cC.id, monotonicNow: 101)
+            _ = engineC.configure(isEnabled: true, policies: [:])
+            expect(engineC.nextExpirationDelay(at: 102) == nil, "removing app from policies must return nil delay")
+        }
+
+        r.test("delay-5: expired-in-past deadline clamps to >= 0.05") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .afterMinutes(1)])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
+            _ = engine.passed(challengeID: c.id, monotonicNow: 100)
+            let delay = engine.nextExpirationDelay(at: 200)
+            expect(delay == 0.05, "past-due expiration must clamp to 0.05, got \(String(describing: delay))")
+        }
+
+        r.test("delay-6: reopenGrant contributes reopenGrantTTL deadline and clears after reconcile expiry") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn, reopenGrantTTL: 5.0)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
+            _ = engine.systemPromptRequested(challengeID: c.id)
+            _ = engine.systemPromptFinished(challengeID: c.id, success: true, monotonicNow: 100)
+
+            expect(engine.nextExpirationDelay(at: 102) == 3.0, "reopenGrant must report remaining TTL 3.0s")
+            expect(engine.nextExpirationDelay(at: 106) == 0.05, "expired reopenGrant must clamp to 0.05 before reconcile")
+            _ = engine.reconcile(frontmost: safari, running: [notes, safari], monotonicNow: 106)
+            expect(engine.nextExpirationDelay(at: 106) == nil, "reconcile past reopenGrantTTL must prune grant so delay becomes nil")
+        }
+
+        r.test("delay-7: hasActiveChallenge tracks .scanning and .systemPrompt phases accurately") {
+            var engine = AppLockEngine(ownBundleID: glanceOwn)
+            _ = engine.configure(isEnabled: true, policies: [notes.bundleID: .everyTime])
+            expect(!engine.hasActiveChallenge, "no active challenge initially")
+
+            let c = expectChallenge(in: engine.appActivated(notes, monotonicNow: 100))
+            expect(engine.hasActiveChallenge, "hasActiveChallenge must be true during .scanning")
+
+            _ = engine.systemPromptRequested(challengeID: c.id)
+            expect(engine.hasActiveChallenge, "hasActiveChallenge must remain true during .systemPrompt")
+
+            _ = engine.systemPromptFinished(challengeID: c.id, success: false, monotonicNow: 101)
+            expect(!engine.hasActiveChallenge, "hasActiveChallenge must be false after challenge finishes")
         }
     }
 }

@@ -12,6 +12,7 @@ import Foundation
 final class SessionAutoLocker {
     private let pocController: POCController
     private var timer: Timer?
+    private let observerBox = NotificationObserverBox()
 
     /// Coarse on purpose — the shortest selectable limit is a full day, and the decision compares timestamps, not ticks.
     private let checkInterval: TimeInterval = 5 * 60
@@ -22,13 +23,14 @@ final class SessionAutoLocker {
         let timer = Timer(timeInterval: checkInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.evaluate() }
         }
+        timer.tolerance = 30
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
 
         // Also evaluate on wake: no timer fires during sleep, but the elapsed time still counts as idle once compared.
-        NSWorkspace.shared.notificationCenter.addObserver(
+        observerBox.observe(
+            center: NSWorkspace.shared.notificationCenter,
             forName: NSWorkspace.didWakeNotification,
-            object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.evaluate() }
