@@ -172,6 +172,13 @@ struct NotchOverlayView: View {
         style == .pill && !visualIsPositioned ? NotchGeometry.pillEnterBlur : 0
     }
 
+    /// Dissolve blur applies only while transitioning into/out of the expanded state,
+    /// so an armed closed window holds no active offscreen blur pass.
+    private var dissolveBlurRadius: CGFloat {
+        if visualIsExpanded || controller.phase == .closed { return 0 }
+        return 16
+    }
+
     private var scanContentPaddingTop: CGFloat {
         style == .pill ? NotchGeometry.pillContentPaddingTop : NotchGeometry.notchContentPaddingTop
     }
@@ -264,7 +271,7 @@ struct NotchOverlayView: View {
             // Content dissolves (blur + fade) as the panel shrinks, rather than being
             // abruptly clipped by the collapsing shape. Rides the animation already
             // active on `visualIsExpanded` — no separate `.animation` needed.
-            .blur(radius: visualIsExpanded ? 0 : 40)
+            .blur(radius: dissolveBlurRadius)
             .opacity(visualIsExpanded ? 1 : 0)
             .scaleEffect(visualIsExpanded ? 1 : 0.3)
             .environment(\.notchPanelStyle, style)

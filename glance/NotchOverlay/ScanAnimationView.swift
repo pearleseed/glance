@@ -39,6 +39,8 @@ final class ScanAnimationHostView: NSView {
     private var currentCompact: Bool?
     private var readyObservation: NSKeyValueObservation?
     private var fallbackRevealWorkItem: DispatchWorkItem?
+    private var compositionTask: Task<Void, Never>?
+    private var playbackGeneration: UInt64 = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -59,6 +61,8 @@ final class ScanAnimationHostView: NSView {
     }
 
     deinit {
+        compositionTask?.cancel()
+        compositionTask = nil
         readyObservation?.invalidate()
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
@@ -89,11 +93,8 @@ final class ScanAnimationHostView: NSView {
         currentCompact = compact
 
         if colorChanged || compactChanged {
-            if let still = Self.loadStillFromBundle(compact: compact) {
-                stillImageLayer.contents = AnimationTint.apply(
-                    color.resolvedTintRGB(for: .idle),
-                    to: still
-                )
+            if let still = AnimationTint.cachedStill(for: color, compact: compact) {
+                stillImageLayer.contents = still
             }
         }
 
@@ -138,7 +139,22 @@ final class ScanAnimationHostView: NSView {
         showStillLayer()
 
         let item = AVPlayerItem(url: url)
-        item.videoComposition = AnimationTint.videoComposition(for: item.asset, rgb: tint)
+        guard let tint else {
+            attachAndPlay(item: item)
+            return
+        }
+
+        let generation = playbackGeneration
+        compositionTask = Task { [weak self] in
+            let composition = await AnimationTint.makeVideoComposition(for: item.asset, rgb: tint)
+            guard let self, !Task.isCancelled, self.playbackGeneration == generation else { return }
+            self.compositionTask = nil
+            item.videoComposition = composition
+            self.attachAndPlay(item: item)
+        }
+    }
+
+    private func attachAndPlay(item: AVPlayerItem) {
         let newPlayer = AVPlayer(playerItem: item)
         // This can play at the lock screen — never make noise.
         newPlayer.isMuted = true
@@ -171,6 +187,9 @@ final class ScanAnimationHostView: NSView {
     }
 
     func teardownPlayer() {
+        playbackGeneration &+= 1
+        compositionTask?.cancel()
+        compositionTask = nil
         readyObservation?.invalidate()
         readyObservation = nil
         fallbackRevealWorkItem?.cancel()
@@ -178,13 +197,5 @@ final class ScanAnimationHostView: NSView {
         player?.pause()
         player = nil
         playerLayer.player = nil
-    }
-
-    /// The asset lives in Resources/ rather than an asset catalog, so
-    /// `NSImage(named:)` won't find it — load by URL instead.
-    private static func loadStillFromBundle(compact: Bool) -> NSImage? {
-        let resource = compact ? "unlockstatic-small" : "unlockstatic"
-        guard let url = Bundle.main.url(forResource: resource, withExtension: "png") else { return nil }
-        return NSImage(contentsOf: url)
     }
 }

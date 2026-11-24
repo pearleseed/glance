@@ -34,11 +34,45 @@ struct NotchShape: Shape {
         }
     }
 
-    private func notchPath(in rect: CGRect) -> Path {
+    private nonisolated static func clampedRadii(
+        in rect: CGRect,
+        topRadius: CGFloat,
+        bottomRadius: CGFloat
+    ) -> (top: CGFloat, bottom: CGFloat, bodyRect: CGRect) {
         // Clamp so a small closed size can't produce self-intersecting
         // curves when the radii exceed half the available width/height.
         let top = max(0, min(topRadius, rect.width / 2))
         let bottom = max(0, min(bottomRadius, min(rect.width / 2 - top, rect.height)))
+        let bodyRect = CGRect(
+            x: rect.minX + top,
+            y: rect.minY,
+            width: rect.width - 2 * top,
+            height: rect.height
+        )
+        return (top, bottom, bodyRect)
+    }
+
+    /// Reports whether `notchPath(in:)` uses the zero-allocation cached unit-corner
+    /// Bézier fast path rather than clamped `UnevenRoundedRectangle` extraction.
+    nonisolated static func usesCachedUnitCornerFastPath(
+        in rect: CGRect,
+        topRadius: CGFloat,
+        bottomRadius: CGFloat
+    ) -> Bool {
+        let (_, bottom, bodyRect) = Self.clampedRadii(
+            in: rect,
+            topRadius: topRadius,
+            bottomRadius: bottomRadius
+        )
+        return ContinuousCorner.canUseFastPath(bodyRect: bodyRect, radius: bottom)
+    }
+
+    private func notchPath(in rect: CGRect) -> Path {
+        let (top, bottom, bodyRect) = Self.clampedRadii(
+            in: rect,
+            topRadius: topRadius,
+            bottomRadius: bottomRadius
+        )
 
         var path = Path()
 
@@ -49,22 +83,7 @@ struct NotchShape: Shape {
             control: CGPoint(x: rect.minX + top, y: rect.minY)
         )
 
-        if let corners = ContinuousCorner.bottomCorners(
-            bodyRect: CGRect(x: rect.minX + top, y: rect.minY, width: rect.width - 2 * top, height: rect.height),
-            radius: bottom
-        ) {
-            // Not simply `rect.maxY - bottom` — continuous corners reach further up
-            // the straight edge than a circular corner of the same radius would.
-            path.addLine(to: corners.leftEdgeReach)
-            for segment in corners.left {
-                path.addCurve(to: segment.to, control1: segment.control1, control2: segment.control2)
-            }
-            path.addLine(to: corners.bottomEdgeRightReach)
-            for segment in corners.right {
-                path.addCurve(to: segment.to, control1: segment.control1, control2: segment.control2)
-            }
-            path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY + top))
-        } else {
+        if !ContinuousCorner.addBottomCorners(to: &path, bodyRect: bodyRect, radius: bottom) {
             // Fallback if a future OS version changes how UnevenRoundedRectangle
             // emits its path: the original quad-curve approximation.
             path.addLine(to: CGPoint(x: rect.minX + top, y: rect.maxY - bottom))
@@ -77,8 +96,8 @@ struct NotchShape: Shape {
                 to: CGPoint(x: rect.maxX - top, y: rect.maxY - bottom),
                 control: CGPoint(x: rect.maxX - top, y: rect.maxY)
             )
-            path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY + top))
         }
+        path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY + top))
 
         // Top-right flare.
         path.addQuadCurve(
@@ -107,30 +126,145 @@ struct NotchShape: Shape {
 }
 
 /// There's no public API for "just the geometry of one continuous corner," so this
-/// builds a reference rect with only the two corners wanted (others pinned to 0)
-/// and reads its emitted path elements back out. Not memoized, so it stays exact
-/// through animated radius changes.
-private enum ContinuousCorner {
-    struct Segment {
+/// extracts unit-radius coefficients once from an unclamped `UnevenRoundedRectangle`
+/// into `unitCorner` and scales/translates them directly per frame with zero allocations.
+/// When a small rect clamps the corners (`reach > min(width/2, height)`), it falls back
+/// to live `UnevenRoundedRectangle` extraction so clamped geometry stays exact.
+private nonisolated enum ContinuousCorner {
+    struct Segment: Sendable {
         let control1: CGPoint
         let control2: CGPoint
         let to: CGPoint
     }
 
-    struct BottomCorners {
-        /// Where the left edge's straight run ends and the corner's curvature begins.
+    private struct ExtractedCorners: Sendable {
         let leftEdgeReach: CGPoint
-        /// Bottom-left corner, left edge → bottom edge (3 segments).
-        let left: [Segment]
-        /// Where the straight run between the two corners ends and the right corner begins.
+        let left0: Segment
+        let left1: Segment
+        let left2: Segment
         let bottomEdgeRightReach: CGPoint
-        /// Bottom-right corner, bottom edge → right edge (3 segments).
-        let right: [Segment]
+        let right0: Segment
+        let right1: Segment
+        let right2: Segment
+    }
+
+    private struct UnitCorner: Sendable {
+        /// Normalized reach from the corner vertex along the straight edge for `radius = 1`.
+        let reach: CGFloat
+        let left0: Segment
+        let left1: Segment
+        let left2: Segment
+        let right0: Segment
+        let right1: Segment
+        let right2: Segment
+    }
+
+    /// Extracted once for the lifetime of the process on an unclamped `1000×1000` square.
+    private static let unitCorner: UnitCorner? = {
+        let refRadius: CGFloat = 100
+        let refSize: CGFloat = 1000
+        let refRect = CGRect(x: 0, y: 0, width: refSize, height: refSize)
+        guard let raw = extractCorners(bodyRect: refRect, radius: refRadius) else {
+            return nil
+        }
+
+        func normLeft(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / refRadius, y: (point.y - refSize) / refRadius)
+        }
+        func normRight(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: (point.x - refSize) / refRadius, y: (point.y - refSize) / refRadius)
+        }
+        func normSegment(_ segment: Segment, map: (CGPoint) -> CGPoint) -> Segment {
+            Segment(control1: map(segment.control1), control2: map(segment.control2), to: map(segment.to))
+        }
+
+        return UnitCorner(
+            reach: (refSize - raw.leftEdgeReach.y) / refRadius,
+            left0: normSegment(raw.left0, map: normLeft),
+            left1: normSegment(raw.left1, map: normLeft),
+            left2: normSegment(raw.left2, map: normLeft),
+            right0: normSegment(raw.right0, map: normRight),
+            right1: normSegment(raw.right1, map: normRight),
+            right2: normSegment(raw.right2, map: normRight)
+        )
+    }()
+
+    static func canUseFastPath(bodyRect: CGRect, radius: CGFloat) -> Bool {
+        guard radius > 0 else { return true }
+        guard let unit = unitCorner else { return false }
+        let reach = unit.reach * radius
+        return reach <= bodyRect.width / 2 && reach <= bodyRect.height
+    }
+
+    static func addBottomCorners(to path: inout Path, bodyRect: CGRect, radius: CGFloat) -> Bool {
+        if radius <= 0 {
+            path.addLine(to: CGPoint(x: bodyRect.minX, y: bodyRect.maxY))
+            path.addLine(to: CGPoint(x: bodyRect.maxX, y: bodyRect.maxY))
+            return true
+        }
+
+        if let unit = unitCorner {
+            let reach = unit.reach * radius
+            if reach <= bodyRect.width / 2 && reach <= bodyRect.height {
+                emit(scaledCorners(unit: unit, bodyRect: bodyRect, radius: radius, reach: reach), to: &path)
+                return true
+            }
+        }
+
+        guard let corners = extractCorners(bodyRect: bodyRect, radius: radius) else {
+            return false
+        }
+        emit(corners, to: &path)
+        return true
+    }
+
+    private static func scaledCorners(
+        unit: UnitCorner,
+        bodyRect: CGRect,
+        radius: CGFloat,
+        reach: CGFloat
+    ) -> ExtractedCorners {
+        @inline(__always)
+        func scaleLeft(_ offset: CGPoint) -> CGPoint {
+            CGPoint(x: bodyRect.minX + offset.x * radius, y: bodyRect.maxY + offset.y * radius)
+        }
+        @inline(__always)
+        func scaleRight(_ offset: CGPoint) -> CGPoint {
+            CGPoint(x: bodyRect.maxX + offset.x * radius, y: bodyRect.maxY + offset.y * radius)
+        }
+        @inline(__always)
+        func scaleSegment(_ segment: Segment, map: (CGPoint) -> CGPoint) -> Segment {
+            Segment(control1: map(segment.control1), control2: map(segment.control2), to: map(segment.to))
+        }
+
+        // Not simply `bodyRect.maxY - radius` — continuous corners reach further up
+        // the straight edge (`unit.reach * radius`) than a circular corner would.
+        return ExtractedCorners(
+            leftEdgeReach: CGPoint(x: bodyRect.minX, y: bodyRect.maxY - reach),
+            left0: scaleSegment(unit.left0, map: scaleLeft),
+            left1: scaleSegment(unit.left1, map: scaleLeft),
+            left2: scaleSegment(unit.left2, map: scaleLeft),
+            bottomEdgeRightReach: CGPoint(x: bodyRect.maxX - reach, y: bodyRect.maxY),
+            right0: scaleSegment(unit.right0, map: scaleRight),
+            right1: scaleSegment(unit.right1, map: scaleRight),
+            right2: scaleSegment(unit.right2, map: scaleRight)
+        )
+    }
+
+    private static func emit(_ corners: ExtractedCorners, to path: inout Path) {
+        path.addLine(to: corners.leftEdgeReach)
+        path.addCurve(to: corners.left0.to, control1: corners.left0.control1, control2: corners.left0.control2)
+        path.addCurve(to: corners.left1.to, control1: corners.left1.control1, control2: corners.left1.control2)
+        path.addCurve(to: corners.left2.to, control1: corners.left2.control1, control2: corners.left2.control2)
+        path.addLine(to: corners.bottomEdgeRightReach)
+        path.addCurve(to: corners.right0.to, control1: corners.right0.control1, control2: corners.right0.control2)
+        path.addCurve(to: corners.right1.to, control1: corners.right1.control1, control2: corners.right1.control2)
+        path.addCurve(to: corners.right2.to, control1: corners.right2.control1, control2: corners.right2.control2)
     }
 
     /// `bodyRect` is the notch's inset-by-flare body, so extracted points already land
     /// on our own edges. Returns `nil` if a future OS version changes how the corner is emitted.
-    static func bottomCorners(bodyRect: CGRect, radius: CGFloat) -> BottomCorners? {
+    private static func extractCorners(bodyRect: CGRect, radius: CGFloat) -> ExtractedCorners? {
         let reference = UnevenRoundedRectangle(
             topLeadingRadius: 0,
             bottomLeadingRadius: radius,
@@ -159,19 +293,15 @@ private enum ContinuousCorner {
         // The reference traces right→left; our path needs left→right, so everything
         // is reversed: segment order flips within each corner, control points swap,
         // and the two corners swap ends.
-        return BottomCorners(
+        return ExtractedCorners(
             leftEdgeReach: p8,
-            left: [
-                Segment(control1: c8b, control2: c8a, to: p7),
-                Segment(control1: c7b, control2: c7a, to: p6),
-                Segment(control1: c6b, control2: c6a, to: l5)
-            ],
+            left0: Segment(control1: c8b, control2: c8a, to: p7),
+            left1: Segment(control1: c7b, control2: c7a, to: p6),
+            left2: Segment(control1: c6b, control2: c6a, to: l5),
             bottomEdgeRightReach: p4,
-            right: [
-                Segment(control1: c4b, control2: c4a, to: p3),
-                Segment(control1: c3b, control2: c3a, to: p2),
-                Segment(control1: c2b, control2: c2a, to: p1)
-            ]
+            right0: Segment(control1: c4b, control2: c4a, to: p3),
+            right1: Segment(control1: c3b, control2: c3a, to: p2),
+            right2: Segment(control1: c2b, control2: c2a, to: p1)
         )
     }
 }

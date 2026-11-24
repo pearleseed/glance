@@ -14,6 +14,7 @@
 //    9. `ObservationWaiter` & `ObservationSignal` event-driven `@Observable` waiting, timeout, and cancellation
 //   10. Task 5: native crop edge landmark remapping, cached `FaceIdentity.template`, glare integer pre-filter, `GeometryLiveness` early-exit, and zero-alloc homography equivalence
 //   11. Task 8: direct `Contents/Info.plist` app metadata parsing (`InstalledApps.readAppMetadata(at:)`) & TTL `refreshIfNeeded(maxAge:)`
+//   12. Task 10: `NotchShape` cached continuous-corner Bézier fast path & clamped fallback equivalence
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/performance_selftest \
@@ -41,6 +42,9 @@
 //        glance/Security/KeychainManager.swift \
 //        glance/Security/SecureCredentialManager.swift \
 //        glance/Security/SecureFaceStore.swift \
+//        glance/NotchOverlay/NotchPanelStyle.swift \
+//        glance/NotchOverlay/NotchGeometry.swift \
+//        glance/NotchOverlay/NotchShape.swift \
 //        tools/performance_selftest.swift \
 //      && /tmp/performance_selftest
 //
@@ -52,6 +56,7 @@ import CoreML
 import Foundation
 import Observation
 import os
+import SwiftUI
 
 private struct MockR50Embedder: FaceEmbedder {
     nonisolated let name = ArcFaceEmbedder.name
@@ -107,6 +112,7 @@ struct PerformanceSelfTest {
         await testGeometryLivenessEarlyExitWhenStill()
         testZeroAllocHomographyNumericalEquivalence()
         try await testInfoPlistAppMetadataReadsSystemAndUserApp()
+        testNotchShapePathMatchesReferenceContinuousCorner()
         print("\nAll performance self-tests passed.")
     }
 
@@ -1525,5 +1531,177 @@ struct PerformanceSelfTest {
         )
 
         print("PASS: InstalledApps Info.plist metadata parsing & TTL refreshIfNeeded")
+    }
+
+    // MARK: - Task 10 Tests
+
+    private static func cubicBezierPoint(
+        p0: CGPoint,
+        c1: CGPoint,
+        c2: CGPoint,
+        p3: CGPoint,
+        t: CGFloat
+    ) -> CGPoint {
+        let u = 1 - t
+        let uu = u * u
+        let tt = t * t
+        let w0 = uu * u
+        let w1 = 3 * uu * t
+        let w2 = 3 * u * tt
+        let w3 = tt * t
+        return CGPoint(
+            x: w0 * p0.x + w1 * c1.x + w2 * c2.x + w3 * p3.x,
+            y: w0 * p0.y + w1 * c1.y + w2 * c2.y + w3 * p3.y
+        )
+    }
+
+    private static func testNotchShapePathMatchesReferenceContinuousCorner() {
+        let fastRect = CGRect(x: 0, y: 0, width: 380, height: 260)
+        let clampedHeightRect = CGRect(x: 0, y: 0, width: 200, height: 32)
+        let closedNotchRect = CGRect(x: 0, y: 0, width: 200, height: 32)
+        let translatedOpenRect = CGRect(x: 24, y: 12, width: 252, height: 200)
+        let clampedWidthRect = CGRect(x: 0, y: 0, width: 120, height: 200)
+
+        precondition(
+            NotchShape.usesCachedUnitCornerFastPath(in: fastRect, topRadius: 16, bottomRadius: 42),
+            "FAIL: 380x260 (16, 42) must use cached unit-corner fast path"
+        )
+        precondition(
+            !NotchShape.usesCachedUnitCornerFastPath(in: clampedHeightRect, topRadius: 16, bottomRadius: 42),
+            "FAIL: 200x32 (16, 42) exceeds vertical reach and must use clamped fallback"
+        )
+        precondition(
+            NotchShape.usesCachedUnitCornerFastPath(in: closedNotchRect, topRadius: 8, bottomRadius: 12),
+            "FAIL: 200x32 (8, 12) closed notch must use cached unit-corner fast path"
+        )
+        precondition(
+            NotchShape.usesCachedUnitCornerFastPath(in: translatedOpenRect, topRadius: 16, bottomRadius: 60),
+            "FAIL: 252x200 (16, 60) open notch must use cached unit-corner fast path"
+        )
+        precondition(
+            !NotchShape.usesCachedUnitCornerFastPath(in: clampedWidthRect, topRadius: 16, bottomRadius: 42),
+            "FAIL: 120x200 (16, 42) exceeds half body width and must use clamped fallback"
+        )
+
+        let cases: [(label: String, rect: CGRect, top: CGFloat, bottom: CGFloat)] = [
+            ("open 380x260 fast-path", fastRect, 16, 42),
+            ("small 200x32 clamped-height", clampedHeightRect, 16, 42),
+            ("closed 200x32 fast-path", closedNotchRect, 8, 12),
+            ("translated 252x200 fast-path", translatedOpenRect, 16, 60),
+            ("narrow 120x200 clamped-width", clampedWidthRect, 16, 42),
+        ]
+
+        for (label, rect, topRadius, bottomRadius) in cases {
+            let shapePath = NotchShape(topRadius: topRadius, bottomRadius: bottomRadius, style: .notch).path(in: rect)
+            var shapeElements: [Path.Element] = []
+            shapePath.forEach { shapeElements.append($0) }
+
+            precondition(
+                shapeElements.count == 13,
+                "FAIL [\(label)]: expected 13 path elements, got \(shapeElements.count)"
+            )
+            guard
+                case .move(let m0) = shapeElements[0],
+                case .quadCurve(let q1To, let q1Ctrl) = shapeElements[1],
+                case .line(let leftReach) = shapeElements[2],
+                case .curve(let l1To, let l1c1, let l1c2) = shapeElements[3],
+                case .curve(let l2To, let l2c1, let l2c2) = shapeElements[4],
+                case .curve(let l3To, let l3c1, let l3c2) = shapeElements[5],
+                case .line(let rightReach) = shapeElements[6],
+                case .curve(let r1To, let r1c1, let r1c2) = shapeElements[7],
+                case .curve(let r2To, let r2c1, let r2c2) = shapeElements[8],
+                case .curve(let r3To, let r3c1, let r3c2) = shapeElements[9],
+                case .line(let rightTop) = shapeElements[10],
+                case .quadCurve(let q2To, let q2Ctrl) = shapeElements[11],
+                case .closeSubpath = shapeElements[12]
+            else {
+                fatalError("FAIL [\(label)]: unexpected NotchShape element layout: \(shapeElements)")
+            }
+
+            let top = max(0, min(topRadius, rect.width / 2))
+            let bottom = max(0, min(bottomRadius, min(rect.width / 2 - top, rect.height)))
+            let bodyRect = CGRect(x: rect.minX + top, y: rect.minY, width: rect.width - 2 * top, height: rect.height)
+
+            // Top flare & bounding parity
+            precondition(hypot(m0.x - rect.minX, m0.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-left start")
+            precondition(hypot(q1To.x - (rect.minX + top), q1To.y - (rect.minY + top)) < 1e-6, "FAIL [\(label)]: top-left flare end")
+            precondition(hypot(q1Ctrl.x - (rect.minX + top), q1Ctrl.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-left flare control")
+            precondition(hypot(rightTop.x - (rect.maxX - top), rightTop.y - (rect.minY + top)) < 1e-6, "FAIL [\(label)]: top-right flare start")
+            precondition(hypot(q2To.x - rect.maxX, q2To.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-right flare end")
+            precondition(hypot(q2Ctrl.x - (rect.maxX - top), q2Ctrl.y - rect.minY) < 1e-6, "FAIL [\(label)]: top-right flare control")
+
+            let refPath = UnevenRoundedRectangle(
+                topLeadingRadius: 0,
+                bottomLeadingRadius: bottom,
+                bottomTrailingRadius: bottom,
+                topTrailingRadius: 0,
+                style: .continuous
+            ).path(in: bodyRect)
+            var refElements: [Path.Element] = []
+            refPath.forEach { refElements.append($0) }
+            guard
+                refElements.count >= 9,
+                case .line(let p1) = refElements[1],
+                case .curve(let p2, let c2a, let c2b) = refElements[2],
+                case .curve(let p3, let c3a, let c3b) = refElements[3],
+                case .curve(let p4, let c4a, let c4b) = refElements[4],
+                case .line(let l5) = refElements[5],
+                case .curve(let p6, let c6a, let c6b) = refElements[6],
+                case .curve(let p7, let c7a, let c7b) = refElements[7],
+                case .curve(let p8, let c8a, let c8b) = refElements[8]
+            else {
+                fatalError("FAIL [\(label)]: unexpected reference UnevenRoundedRectangle element layout")
+            }
+
+            // Sample all 6 continuous-corner cubic segments at 11 points each against reversed reference segments.
+            let shapeSegments: [(CGPoint, CGPoint, CGPoint, CGPoint)] = [
+                (leftReach, l1c1, l1c2, l1To),
+                (l1To, l2c1, l2c2, l2To),
+                (l2To, l3c1, l3c2, l3To),
+                (rightReach, r1c1, r1c2, r1To),
+                (r1To, r2c1, r2c2, r2To),
+                (r2To, r3c1, r3c2, r3To),
+            ]
+            let refSegments: [(CGPoint, CGPoint, CGPoint, CGPoint)] = [
+                (p8, c8b, c8a, p7),
+                (p7, c7b, c7a, p6),
+                (p6, c6b, c6a, l5),
+                (p4, c4b, c4a, p3),
+                (p3, c3b, c3a, p2),
+                (p2, c2b, c2a, p1),
+            ]
+
+            for (segIdx, (sSeg, rSeg)) in zip(shapeSegments, refSegments).enumerated() {
+                for step in 0...10 {
+                    let t = CGFloat(step) / 10.0
+                    let sp = cubicBezierPoint(p0: sSeg.0, c1: sSeg.1, c2: sSeg.2, p3: sSeg.3, t: t)
+                    let rp = cubicBezierPoint(p0: rSeg.0, c1: rSeg.1, c2: rSeg.2, p3: rSeg.3, t: t)
+                    let err = hypot(sp.x - rp.x, sp.y - rp.y)
+                    precondition(
+                        err < 0.5,
+                        "FAIL [\(label)]: segment \(segIdx) t=\(t) contour error \(err) >= 0.5 pt (got \(sp), expected \(rp))"
+                    )
+                }
+            }
+
+            let bounds = shapePath.boundingRect
+            precondition(
+                abs(bounds.minX - rect.minX) < 0.5
+                    && abs(bounds.maxX - rect.maxX) < 0.5
+                    && abs(bounds.minY - rect.minY) < 0.5
+                    && abs(bounds.maxY - rect.maxY) < 0.5,
+                "FAIL [\(label)]: boundingRect \(bounds) diverged from rect \(rect)"
+            )
+        }
+
+        // Zero bottom radius edge case
+        let sharpRect = CGRect(x: 0, y: 0, width: 180, height: 60)
+        let sharpPath = NotchShape(topRadius: 10, bottomRadius: 0, style: .notch).path(in: sharpRect)
+        precondition(
+            abs(sharpPath.boundingRect.width - 180) < 0.5 && abs(sharpPath.boundingRect.height - 60) < 0.5,
+            "FAIL: zero bottom radius boundingRect mismatch: \(sharpPath.boundingRect)"
+        )
+
+        print("PASS: NotchShape cached continuous-corner fast path & clamped fallback match reference (< 0.5 pt)")
     }
 }
