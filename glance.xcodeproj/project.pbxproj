@@ -158,7 +158,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\nPAM_SRC=\"${SRCROOT}/sudo-support/pam_glance.c\"\nSCRIPT_SRC=\"${SRCROOT}/sudo-support/glance-sudo-setup.sh\"\nHELPERS_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nRESOURCES_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nPAM_OUT=\"${HELPERS_DIR}/pam_glance.so\"\nSCRIPT_OUT=\"${RESOURCES_DIR}/glance-sudo-setup.sh\"\n\n/bin/mkdir -p \"${HELPERS_DIR}\" \"${RESOURCES_DIR}\"\n\n/usr/bin/xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -O2 -Wall -Wextra -Werror -bundle -lpam \"${PAM_SRC}\" -o \"${PAM_OUT}\"\n\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" != \"-\" ]; then\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --options runtime --timestamp \"${PAM_OUT}\"\nelse\n  /usr/bin/codesign --force --sign - \"${PAM_OUT}\"\nfi\n\n/usr/bin/install -m 0644 \"${SCRIPT_SRC}\" \"${SCRIPT_OUT}\"\n";
+			shellScript = "set -euo pipefail\n\nPAM_SRC=\"${SRCROOT}/sudo-support/pam_glance.c\"\nSCRIPT_SRC=\"${SRCROOT}/sudo-support/glance-sudo-setup.sh\"\nHELPERS_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers\"\nRESOURCES_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nPAM_OUT=\"${HELPERS_DIR}/pam_glance.so\"\nSCRIPT_OUT=\"${RESOURCES_DIR}/glance-sudo-setup.sh\"\nTMP_PAM=\"${TARGET_TEMP_DIR}/pam_glance.so\"\n\n/bin/mkdir -p \"${HELPERS_DIR}\" \"${RESOURCES_DIR}\" \"${TARGET_TEMP_DIR}\"\n\n/usr/bin/xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -O2 -Wall -Wextra -Werror -bundle -lpam \"${PAM_SRC}\" -o \"${TMP_PAM}\"\n\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" != \"-\" ]; then\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --options runtime --timestamp \"${TMP_PAM}\"\nelse\n  /usr/bin/codesign --force --sign - \"${TMP_PAM}\"\nfi\n\n/usr/bin/install -m 0755 \"${TMP_PAM}\" \"${PAM_OUT}\"\n/usr/bin/install -m 0644 \"${SCRIPT_SRC}\" \"${SCRIPT_OUT}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -305,7 +305,7 @@
 				CODE_SIGN_ENTITLEMENTS = glance/glance.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
@@ -321,7 +321,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pearleseed.glance;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -342,7 +342,7 @@
 				CODE_SIGN_ENTITLEMENTS = glance/glance.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
@@ -358,7 +358,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pearleseed.glance;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

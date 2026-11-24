@@ -20,8 +20,8 @@ struct AboutSettingsPage: View {
 
     private var versionString: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "2.0.0"
-        let build = info?["CFBundleVersion"] as? String ?? "5"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "2.1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "6"
         return "Version \(short) (\(build))"
     }
 
