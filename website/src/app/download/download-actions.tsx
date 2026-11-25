@@ -4,7 +4,7 @@ import { Cpu, Download, ExternalLink, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import styles from "@/app/download/download.module.css";
-import { formatMegabytes } from "@/lib/github";
+import { resolveArchDownload } from "@/lib/download-model";
 import { GLANCE_REPO, type GlanceReleaseData } from "@/lib/glance-data";
 
 type MacArch = "arm64" | "x86_64" | null;
@@ -59,40 +59,48 @@ export function DownloadActions({ release }: { release: GlanceReleaseData }) {
     dialog.current.showModal();
   }
 
-  const arm64Size = formatMegabytes(release.arm64.sizeBytes);
-  const x86Size = formatMegabytes(release.x86_64.sizeBytes);
+  const archEntries = [
+    {
+      key: "arm64" as const,
+      buttonLabel: "Apple Silicon (arm64)",
+      sheetName: "Apple Silicon",
+      icon: Download,
+      action: resolveArchDownload(release.arm64, release),
+      isDark: true,
+    },
+    {
+      key: "x86_64" as const,
+      buttonLabel: "Intel (x86_64)",
+      sheetName: "Intel",
+      icon: Cpu,
+      action: resolveArchDownload(release.x86_64, release),
+      isDark: detectedArch === "x86_64",
+    },
+  ];
 
   return (
     <>
       <div className={`glance-shell ${styles.actions}`}>
         <div className={styles.downloadRow}>
-          <a
-            className={`glance-pill glance-pill-dark ${styles.downloadLink}`}
-            href={release.arm64.url}
-            onClick={showDownloadNotice}
-          >
-            <Download size={18} aria-hidden="true" />
-            <span>Apple Silicon (arm64)</span>
-            {arm64Size && <small className={styles.sizeTag}>{arm64Size}</small>}
-            {detectedArch === "arm64" && (
-              <span className={styles.matchBadge}>Your Mac</span>
-            )}
-          </a>
-
-          <a
-            className={`glance-pill ${
-              detectedArch === "x86_64" ? "glance-pill-dark" : ""
-            } ${styles.downloadLink}`}
-            href={release.x86_64.url}
-            onClick={showDownloadNotice}
-          >
-            <Cpu size={18} aria-hidden="true" />
-            <span>Intel (x86_64)</span>
-            {x86Size && <small className={styles.sizeTag}>{x86Size}</small>}
-            {detectedArch === "x86_64" && (
-              <span className={styles.matchBadge}>Your Mac</span>
-            )}
-          </a>
+          {archEntries.map(({ key, buttonLabel, icon: Icon, action, isDark }) => (
+            <a
+              key={key}
+              className={`glance-pill ${isDark ? "glance-pill-dark" : ""} ${styles.downloadLink}`}
+              href={action.href}
+              target={action.isDirectDownload ? undefined : "_blank"}
+              rel={action.isDirectDownload ? undefined : "noopener noreferrer"}
+              onClick={action.isDirectDownload ? showDownloadNotice : undefined}
+            >
+              <Icon size={18} aria-hidden="true" />
+              <span>{buttonLabel}</span>
+              {action.badgeText && (
+                <small className={styles.sizeTag}>{action.badgeText}</small>
+              )}
+              {detectedArch === key && (
+                <span className={styles.matchBadge}>Your Mac</span>
+              )}
+            </a>
+          ))}
 
           <a
             className="glance-pill"
@@ -108,15 +116,19 @@ export function DownloadActions({ release }: { release: GlanceReleaseData }) {
           <span>macOS 14 Sonoma or later</span>
           <span aria-hidden="true">·</span>
           <span>Version {release.version}</span>
-          <span aria-hidden="true">·</span>
-          <a
-            href={release.checksumsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ShieldCheck size={14} aria-hidden="true" />
-            SHA256SUMS.txt
-          </a>
+          {release.checksumsUrl !== null && (
+            <>
+              <span aria-hidden="true">·</span>
+              <a
+                href={release.checksumsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ShieldCheck size={14} aria-hidden="true" />
+                SHA256SUMS.txt
+              </a>
+            </>
+          )}
           <span aria-hidden="true">·</span>
           <a
             href={release.releaseUrl}
@@ -153,12 +165,17 @@ export function DownloadActions({ release }: { release: GlanceReleaseData }) {
             it, or download an installer directly:
           </p>
           <div className={styles.sheetLinks}>
-            <a className={styles.releaseLink} href={release.arm64.url}>
-              Apple Silicon ({release.arm64.name})
-            </a>
-            <a className={styles.releaseLink} href={release.x86_64.url}>
-              Intel ({release.x86_64.name})
-            </a>
+            {archEntries.map(({ key, sheetName, action }) => (
+              <a
+                key={key}
+                className={styles.releaseLink}
+                href={action.href}
+                target={action.isDirectDownload ? undefined : "_blank"}
+                rel={action.isDirectDownload ? undefined : "noopener noreferrer"}
+              >
+                {action.sheetLabel(sheetName)}
+              </a>
+            ))}
           </div>
           <form method="dialog">
             <button className="glance-pill glance-pill-dark" type="submit">

@@ -18,9 +18,9 @@ export interface GlanceReleaseData {
   version: string;
   releaseUrl: string;
   publishedAt: string | null;
-  arm64: ReleaseAsset;
-  x86_64: ReleaseAsset;
-  checksumsUrl: string;
+  arm64: ReleaseAsset | null;
+  x86_64: ReleaseAsset | null;
+  checksumsUrl: string | null;
   stars: number;
   downloads: number;
   source: "github" | "fallback";

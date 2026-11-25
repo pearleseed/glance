@@ -114,13 +114,13 @@ export function parseGitHubReleaseData(
     ? (latest.assets as GitHubAssetResponse[])
     : [];
 
-  const arm64 =
-    asAsset(latestAssets.find((asset) => typeof asset?.name === "string" && /arm64.*\.dmg$/i.test(asset.name))) ??
-    FALLBACK_RELEASE.arm64;
+  const arm64 = asAsset(
+    latestAssets.find((asset) => typeof asset?.name === "string" && /arm64.*\.dmg$/i.test(asset.name)),
+  );
 
-  const x86_64 =
-    asAsset(latestAssets.find((asset) => typeof asset?.name === "string" && /x86_64.*\.dmg$/i.test(asset.name))) ??
-    FALLBACK_RELEASE.x86_64;
+  const x86_64 = asAsset(
+    latestAssets.find((asset) => typeof asset?.name === "string" && /x86_64.*\.dmg$/i.test(asset.name)),
+  );
 
   const checksumsAsset = asAsset(
     latestAssets.find((asset) => typeof asset?.name === "string" && /SHA256SUMS/i.test(asset.name)),
@@ -138,7 +138,7 @@ export function parseGitHubReleaseData(
     publishedAt: typeof latest.published_at === "string" ? latest.published_at : null,
     arm64,
     x86_64,
-    checksumsUrl: checksumsAsset?.url ?? FALLBACK_RELEASE.checksumsUrl,
+    checksumsUrl: checksumsAsset?.url ?? null,
     stars,
     downloads: totalDownloads,
     source: "github",

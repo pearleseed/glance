@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolveArchDownload } from "@/lib/download-model";
 import { FALLBACK_RELEASE } from "@/lib/glance-data";
 import {
   formatCompactCount,
@@ -101,12 +102,12 @@ describe("parseGitHubReleaseData", () => {
     expect(data.version).toBe("v2.1.4");
     expect(data.stars).toBe(1450);
     expect(data.downloads).toBe(500);
-    expect(data.arm64.name).toBe("Glance-2.1.4-arm64.dmg");
-    expect(data.x86_64.name).toBe("Glance-2.1.4-x86_64.dmg");
+    expect(data.arm64?.name).toBe("Glance-2.1.4-arm64.dmg");
+    expect(data.x86_64?.name).toBe("Glance-2.1.4-x86_64.dmg");
     expect(data.checksumsUrl).toContain("v2.1.4/SHA256SUMS.txt");
   });
 
-  test("falls back per missing asset when x86_64 dmg is absent", () => {
+  test("does not mix fallback assets or checksums from another version when x86_64 and checksums are absent", () => {
     const releasesPayload = [
       {
         tag_name: "v2.1.5",
@@ -127,9 +128,80 @@ describe("parseGitHubReleaseData", () => {
 
     const data = parseGitHubReleaseData({ stargazers_count: 0 }, releasesPayload);
     expect(data.version).toBe("v2.1.5");
-    expect(data.arm64.name).toBe("Glance-2.1.5-arm64.dmg");
-    expect(data.x86_64).toEqual(FALLBACK_RELEASE.x86_64);
-    expect(data.checksumsUrl).toBe(FALLBACK_RELEASE.checksumsUrl);
+    expect(data.arm64?.name).toBe("Glance-2.1.5-arm64.dmg");
+    expect(data.x86_64).toBeNull();
+    expect(data.checksumsUrl).toBeNull();
+    expect(data.releaseUrl).toBe("https://github.com/pearleseed/glance/releases/tag/v2.1.5");
+  });
+
+  test("keeps checksums and available architecture bound to the same release when arm64 is absent", () => {
+    const releasesPayload = [
+      {
+        tag_name: "v2.1.5",
+        draft: false,
+        prerelease: false,
+        html_url: "https://github.com/pearleseed/glance/releases/tag/v2.1.5",
+        published_at: "2026-11-25T10:00:00Z",
+        assets: [
+          {
+            name: "Glance-2.1.5-x86_64.dmg",
+            browser_download_url: "https://github.com/pearleseed/glance/releases/download/v2.1.5/Glance-2.1.5-x86_64.dmg",
+            size: 44200000,
+            download_count: 5,
+          },
+          {
+            name: "SHA256SUMS.txt",
+            browser_download_url: "https://github.com/pearleseed/glance/releases/download/v2.1.5/SHA256SUMS.txt",
+            size: 180,
+            download_count: 3,
+          },
+        ],
+      },
+    ];
+
+    const data = parseGitHubReleaseData({ stargazers_count: 0 }, releasesPayload);
+    expect(data.arm64).toBeNull();
+    expect(data.x86_64?.url).toContain("v2.1.5");
+    expect(data.checksumsUrl).toContain("v2.1.5/SHA256SUMS.txt");
+  });
+
+  test("uses complete pinned fallback only when release metadata is unavailable", () => {
+    const data = parseGitHubReleaseData(null, []);
+    expect(data).toEqual(FALLBACK_RELEASE);
+    expect(data.version).toBe("v2.1.3");
+    expect(data.arm64?.url).toContain("v2.1.3");
+    expect(data.x86_64?.url).toContain("v2.1.3");
+    expect(data.checksumsUrl).toContain("v2.1.3");
+  });
+});
+
+describe("resolveArchDownload", () => {
+  test("links missing architecture to the current release page with an availability label", () => {
+    const release = {
+      version: "v2.1.5",
+      releaseUrl: "https://github.com/pearleseed/glance/releases/tag/v2.1.5",
+    };
+
+    const missing = resolveArchDownload(null, release);
+    expect(missing.href).toBe(release.releaseUrl);
+    expect(missing.isDirectDownload).toBe(false);
+    expect(missing.badgeText).toBe("Not in release");
+    expect(missing.sheetLabel("Intel")).toContain("View release assets");
+
+    const asset = {
+      name: "Glance-2.1.5-arm64.dmg",
+      url: "https://github.com/pearleseed/glance/releases/download/v2.1.5/Glance-2.1.5-arm64.dmg",
+      sizeBytes: 44000000,
+    };
+    const present = resolveArchDownload(asset, release);
+    expect(present.href).toBe(asset.url);
+    expect(present.isDirectDownload).toBe(true);
+    expect(present.badgeText).toBe(formatMegabytes(asset.sizeBytes) || null);
+    expect(present.sheetLabel("Apple Silicon")).toBe("Apple Silicon (Glance-2.1.5-arm64.dmg)");
+
+    const zeroSized = resolveArchDownload({ ...asset, sizeBytes: 0 }, release);
+    expect(zeroSized.isDirectDownload).toBe(true);
+    expect(zeroSized.badgeText).toBeNull();
   });
 });
 
