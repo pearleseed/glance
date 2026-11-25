@@ -13,6 +13,38 @@ import Foundation
 import Observation
 import SwiftUI
 
+nonisolated struct OnboardingCredentialService: Sendable {
+    let orphanedDataClassification: @Sendable () async -> OrphanedDataClassification
+    let deletePassword: @Sendable () async throws -> Void
+    let unlockSession: @Sendable (String) async throws -> Void
+    let savePassword: @Sendable (String) async throws -> Void
+
+    static let live = OnboardingCredentialService(
+        orphanedDataClassification: {
+            await Task.detached(priority: .userInitiated) {
+                SecureCredentialManager.orphanedDataClassification()
+            }.value
+        },
+        deletePassword: {
+            try await Task.detached(priority: .userInitiated) {
+                try SecureCredentialManager.deletePassword()
+            }.value
+        },
+        unlockSession: { reason in
+            try await SecureCredentialManager.unlockSession(reason: reason)
+        },
+        savePassword: { plaintext in
+            try await Task.detached(priority: .userInitiated) {
+                guard var bytes = plaintext.data(using: .utf8) else {
+                    throw SecureCredentialError.emptyPassword
+                }
+                defer { bytes.resetBytes(in: 0..<bytes.count) }
+                try SecureCredentialManager.savePassword(bytes)
+            }.value
+        }
+    )
+}
+
 @Observable
 @MainActor
 final class OnboardingController {
@@ -61,10 +93,14 @@ final class OnboardingController {
         return manager
     }
     let pipeline: FaceRecognitionPipeline?
-    let store = FaceEnrollmentStore.shared
+    let store: FaceEnrollmentStore
+    let credentialService: OnboardingCredentialService
+    let onDismissOnboarding: @MainActor () -> Void
+    let completionDismissDelay: Duration
     let sweepWindow = EnrollmentSweepWindowController()
     @ObservationIgnored private var isObservingFrames = false
     @ObservationIgnored private var isTornDown = false
+    @ObservationIgnored private var completionDismissTask: Task<Void, Never>?
     @ObservationIgnored private(set) var enrollGeneration: UInt64 = 0
     @MainActor private static var isPreparingEnrollment = false
     static let enrollmentUnavailableReason = "Face model unavailable — cannot enroll right now."
@@ -102,6 +138,11 @@ final class OnboardingController {
     /// security-notice step for users who completed onboarding before it existed.
     let isPostUpdateNotice: Bool
     let enrollmentTarget: EnrollmentTarget
+    private(set) var committedIdentityID: UUID?
+
+    var activeEnrollmentIdentityID: UUID? {
+        committedIdentityID ?? enrollmentTarget.identityID
+    }
 
     /// True only for the genuine first-run flow (also true when replayed via Face Lab's
     /// "Start Onboarding" debug button). Gates whether `step`'s `didSet` persists a resume point.
@@ -202,12 +243,20 @@ final class OnboardingController {
 
     init(
         pipeline: FaceRecognitionPipeline?,
+        store: FaceEnrollmentStore? = nil,
+        credentialService: OnboardingCredentialService = .live,
+        onDismissOnboarding: (@MainActor () -> Void)? = nil,
+        completionDismissDelay: Duration? = nil,
         isEnrollmentOnly: Bool = false,
         isPasswordOnly: Bool = false,
         isPostUpdateNotice: Bool = false,
         enrollmentTarget: EnrollmentTarget = .newIdentity
     ) {
         self.pipeline = pipeline
+        self.store = store ?? .shared
+        self.credentialService = credentialService
+        self.onDismissOnboarding = onDismissOnboarding ?? { NotchOverlayController.shared.dismissOnboarding() }
+        self.completionDismissDelay = completionDismissDelay ?? .seconds(OnboardingMetrics.completeScreenDismissDelay)
         self.isEnrollmentOnly = isEnrollmentOnly
         self.isPasswordOnly = isPasswordOnly
         self.isPostUpdateNotice = isPostUpdateNotice
@@ -235,6 +284,7 @@ final class OnboardingController {
     /// and permissions polling. Idempotent.
     func teardown() {
         isTornDown = true
+        cancelCompletionDismissTask()
         bumpEnrollGeneration()
         stopPermissionsPolling()
         stopCameraIfCreated()
@@ -253,6 +303,24 @@ final class OnboardingController {
 
     var shouldObserveFrames: Bool {
         !isTornDown
+    }
+
+    var hasBeenTornDown: Bool {
+        isTornDown
+    }
+
+    func setCommittedIdentityID(_ id: UUID?) {
+        committedIdentityID = id
+    }
+
+    func setCompletionDismissTask(_ task: Task<Void, Never>?) {
+        completionDismissTask?.cancel()
+        completionDismissTask = task
+    }
+
+    func cancelCompletionDismissTask() {
+        completionDismissTask?.cancel()
+        completionDismissTask = nil
     }
 
     func markFrameObservationStartedIfNeeded() -> Bool {

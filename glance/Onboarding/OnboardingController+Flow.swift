@@ -88,7 +88,7 @@ extension OnboardingController {
 
     private func cancelOnboarding() {
         teardown()
-        NotchOverlayController.shared.dismissOnboarding()
+        onDismissOnboarding()
     }
 
     // MARK: - Permissions
@@ -152,13 +152,14 @@ extension OnboardingController {
             nameError = "Enter a name."
             return
         }
-        guard !store.nameIsTaken(trimmed, excluding: enrollmentTarget.identityID) else {
+        guard !store.nameIsTaken(trimmed, excluding: activeEnrollmentIdentityID) else {
             nameError = "A face named \"\(trimmed)\" is already enrolled."
             return
         }
         nameError = nil
 
         guard isEnrollmentOnly else {
+            passwordError = nil
             navDirection = .forward
             withAnimation(OnboardingMetrics.stepAnimation) { step = .password }
             return
@@ -183,12 +184,17 @@ extension OnboardingController {
         let samples = collectedSamples.map {
             FaceSample(embedding: $0.embedding, pose: $0.pose.name, capturedAt: $0.capturedAt, quality: $0.quality)
         }
-        try store.commitEnrollment(
-            replacing: enrollmentTarget.identityID,
-            name: name,
-            samples: samples,
-            embedder: pipeline.currentEmbedder()
-        )
+        guard
+            let committed = try store.commitEnrollment(
+                replacing: activeEnrollmentIdentityID,
+                name: name,
+                samples: samples,
+                embedder: pipeline.currentEmbedder()
+            )
+        else {
+            throw OnboardingEnrollmentError.emptyEnrollmentResult
+        }
+        setCommittedIdentityID(committed.id)
     }
 
     // MARK: - Password
@@ -219,28 +225,23 @@ extension OnboardingController {
     }
 
     private func unlockSessionAndClearOrphans() async throws {
-        let hadOrphanedData = try await Task.detached(priority: .userInitiated) {
-            switch SecureCredentialManager.orphanedDataClassification() {
-            case .confirmedOrphaned:
-                try SecureCredentialManager.deletePassword()
-                return true
-            case .indeterminate(let status):
-                throw KeychainError.osStatus(status)
-            case .noEncryptedData, .keyPresent:
-                return false
-            }
-        }.value
-        if hadOrphanedData {
+        switch await credentialService.orphanedDataClassification() {
+        case .confirmedOrphaned:
+            try await credentialService.deletePassword()
             try store.deleteAll()
+        case .indeterminate(let status):
+            throw KeychainError.osStatus(status)
+        case .noEncryptedData, .keyPresent:
+            break
         }
-        try await SecureCredentialManager.unlockSession(reason: "Set up Glance")
+        try await credentialService.unlockSession("Set up Glance")
         store.reloadIfUnlocked()
     }
 
     private func commitPendingEnrollmentIfNeeded() throws -> Bool {
         guard !collectedSamples.isEmpty else { return true }
         let name = pendingName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !store.nameIsTaken(name, excluding: enrollmentTarget.identityID) else {
+        guard !store.nameIsTaken(name, excluding: activeEnrollmentIdentityID) else {
             nameError = "A face named \"\(name)\" is already enrolled."
             navDirection = .backward
             withAnimation(OnboardingMetrics.stepAnimation) { step = .name }
@@ -251,40 +252,44 @@ extension OnboardingController {
     }
 
     private func persistPassword(_ plaintext: String) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            guard var bytes = plaintext.data(using: .utf8) else {
-                throw SecureCredentialError.emptyPassword
-            }
-            defer { bytes.resetBytes(in: 0..<bytes.count) }
-            try SecureCredentialManager.savePassword(bytes)
-        }.value
+        try await credentialService.savePassword(plaintext)
     }
 
     /// The "You're all set" screen has no controls — it dismisses itself, then hands off
     /// to `onFirstRunComplete` once the notch is gone, for first-run and the post-update
     /// notice alike.
     func scheduleCompletionDismiss() {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(OnboardingMetrics.completeScreenDismissDelay))
-            guard let self else { return }
-            let shouldFireCompletion = self.isFirstRunFlow || self.isPostUpdateNotice
-            let onComplete = self.onFirstRunComplete
-            self.teardown()
-            NotchOverlayController.shared.dismissOnboarding()
-            if shouldFireCompletion {
-                onComplete?()
+        let delay = completionDismissDelay
+        setCompletionDismissTask(
+            Task { [weak self] in
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled, !self.hasBeenTornDown else { return }
+                let shouldFireCompletion = self.isFirstRunFlow || self.isPostUpdateNotice
+                let onComplete = self.onFirstRunComplete
+                self.teardown()
+                self.onDismissOnboarding()
+                if shouldFireCompletion {
+                    onComplete?()
+                }
             }
-        }
+        )
     }
 }
 
-private enum OnboardingEnrollmentError: LocalizedError {
+enum OnboardingEnrollmentError: LocalizedError, Equatable {
     case pipelineUnavailable
+    case emptyEnrollmentResult
 
     var errorDescription: String? {
         switch self {
         case .pipelineUnavailable:
             return "Face recognition pipeline is unavailable."
+        case .emptyEnrollmentResult:
+            return "Couldn't save face enrollment — make sure a valid name and face samples were captured."
         }
     }
 }

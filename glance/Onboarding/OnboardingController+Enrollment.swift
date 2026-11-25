@@ -90,6 +90,7 @@ extension OnboardingController {
     func resetEnrollmentState() {
         bumpEnrollGeneration()
         collectedSamples = []
+        setCommittedIdentityID(nil)
         nameError = nil
         poseEvaluator = EnrollmentPoseEvaluator()
         isCenterCaptured = false
