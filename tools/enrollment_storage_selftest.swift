@@ -106,5 +106,63 @@ struct EnrollmentStorageSelfTest {
                 hasEncryptedData: true
             ) == .indeterminate(errSecIO)
         )
+
+        // 4. Password-blob + face-store combined orphan classification
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .absent,
+                passwordBlobExistence: .indeterminate(errSecIO),
+                hasFaceStore: false
+            ) == .indeterminate(errSecIO)
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .present,
+                passwordBlobExistence: .indeterminate(errSecAuthFailed),
+                hasFaceStore: false
+            ) == .indeterminate(errSecAuthFailed)
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .absent,
+                passwordBlobExistence: .indeterminate(errSecIO),
+                hasFaceStore: true
+            ) == .confirmedOrphaned
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .present,
+                passwordBlobExistence: .indeterminate(errSecIO),
+                hasFaceStore: true
+            ) == .keyPresent
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .absent,
+                passwordBlobExistence: .absent,
+                hasFaceStore: false
+            ) == .noEncryptedData
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .absent,
+                passwordBlobExistence: .present,
+                hasFaceStore: false
+            ) == .confirmedOrphaned
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .present,
+                passwordBlobExistence: .present,
+                hasFaceStore: false
+            ) == .keyPresent
+        )
+        expect(
+            SecureCredentialManager.classifyOrphanedData(
+                sessionKeyExistence: .indeterminate(errSecUserCanceled),
+                passwordBlobExistence: .present,
+                hasFaceStore: false
+            ) == .indeterminate(errSecUserCanceled)
+        )
     }
 }

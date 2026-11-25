@@ -330,12 +330,33 @@ enum SecureCredentialManager {
         }
     }
 
+    nonisolated static func classifyOrphanedData(
+        sessionKeyExistence: @autoclosure () -> KeychainExistence,
+        passwordBlobExistence: @autoclosure () -> KeychainExistence,
+        hasFaceStore: Bool
+    ) -> OrphanedDataClassification {
+        if !hasFaceStore {
+            switch passwordBlobExistence() {
+            case .present:
+                break
+            case .absent:
+                return .noEncryptedData
+            case .indeterminate(let status):
+                return .indeterminate(status)
+            }
+        }
+        return classifyOrphanedData(
+            sessionKeyExistence: sessionKeyExistence(),
+            hasEncryptedData: true
+        )
+    }
+
     nonisolated static func orphanedDataClassification() -> OrphanedDataClassification {
         _ = legacyMigration
-        guard hasSessionEncryptedData else { return .noEncryptedData }
         return classifyOrphanedData(
             sessionKeyExistence: KeychainManager.existence(account: sessionKeyAccount),
-            hasEncryptedData: true
+            passwordBlobExistence: KeychainManager.existence(account: passwordBlobAccount),
+            hasFaceStore: SecureFaceStore.exists
         )
     }
 
