@@ -343,11 +343,12 @@ extension SudoFaceAuthenticator {
                 return interruption
             }
 
-            let extracted = await extractFrameWithBackpressure(
-                frame: frame,
+            let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
+            let extracted = await evaluator.extractFrameWithBackpressure(
+                from: frame,
                 camera: camera,
-                generation: generation,
-                evaluator: evaluator
+                strictCloseRangeOnly: strictCloseRangeOnly,
+                isCurrentGeneration: { generation == self.scanGeneration }
             )
 
             if let interruption = activeScanInterruption(
@@ -390,29 +391,6 @@ extension SudoFaceAuthenticator {
         }
         guard canAuthenticateNow() else { return .hardFailure }
         return nil
-    }
-
-    private func extractFrameWithBackpressure(
-        frame: CameraFrame,
-        camera: CameraManager,
-        generation: UInt64,
-        evaluator: FaceAuthEvaluator
-    ) async -> ExtractedAuthFrame {
-        camera.setConsumerBusy(true)
-        defer {
-            if generation == scanGeneration {
-                camera.setConsumerBusy(false)
-            }
-        }
-        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
-        return await FaceAuthEvaluator.extractFrame(
-            from: frame,
-            pipeline: pipeline,
-            previousBoundingBox: evaluator.lastFaceBoundingBox,
-            strictCloseRangeOnly: strictCloseRangeOnly,
-            livenessEnabled: true,
-            geometryContext: evaluator.geometryContextIfNeeded()
-        )
     }
 
     private func yieldMainQueue() async {

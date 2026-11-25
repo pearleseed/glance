@@ -19,7 +19,7 @@ WITH_WEBSITE=0
 LIST_ONLY=0
 SELECTED_SUITES=()
 
-# Single centralized registry of all 13 Swift self-test suites.
+# Single centralized registry of all 14 Swift self-test suites.
 # Format: "name|kind|entry_mode|source1 source2 ..."
 #   kind:       "offline" | "integration"
 #   entry_mode: "library" (-parse-as-library for @main) | "script"
@@ -203,6 +203,50 @@ glance/Unlock/KeystrokeInjector.swift \
 glance/NotchOverlay/NotchPanelStyle.swift \
 glance/NotchOverlay/NotchGeometry.swift \
 tools/unlock_reliability_selftest.swift"
+
+    "lifecycle_concurrency|offline|library|\
+glance/Core/GlobalHotKey.swift \
+glance/Core/NotificationObserverBox.swift \
+glance/AppLock/AppLockBlacklist.swift \
+glance/AppLock/LockedApp.swift \
+glance/AppLock/RelockPolicy.swift \
+glance/Settings/SettingsModels.swift \
+glance/NotchOverlay/NotchPanelStyle.swift \
+glance/NotchOverlay/DisplayContext.swift \
+glance/NotchOverlay/NotchGeometry.swift \
+glance/NotchOverlay/NotchGeometry+Screen.swift \
+glance/NotchOverlay/AnimationTint.swift \
+glance/Onboarding/OnboardingStep.swift \
+glance/Onboarding/OnboardingMetrics.swift \
+glance/Settings/GlanceSettings.swift \
+glance/Camera/SharedCoreImageContext.swift \
+glance/Camera/CameraFrame.swift \
+glance/Camera/CameraCaptureSession.swift \
+glance/Camera/CameraDeviceCatalog.swift \
+glance/Camera/CameraManager.swift \
+glance/Liveness/LandmarkGeometry.swift \
+glance/Liveness/DeviceBezelDetector.swift \
+glance/Liveness/GlareFaceRegion.swift \
+glance/Liveness/GlareCue.swift \
+glance/Liveness/GlareCueExtractor.swift \
+glance/Liveness/LivenessFeatures.swift \
+glance/Liveness/GeometryLiveness.swift \
+glance/Liveness/LivenessScoring.swift \
+glance/Liveness/LivenessCues.swift \
+glance/Liveness/LivenessAnalyzer.swift \
+glance/NightBoost/SceneLuminance.swift \
+glance/NightBoost/LowLightEnhancer.swift \
+glance/Recognition/FaceEmbedder.swift \
+glance/Recognition/FaceDetector.swift \
+glance/Recognition/FaceAligner.swift \
+glance/Recognition/ArcFaceEmbedder.swift \
+glance/Recognition/FaceRecognitionPipeline.swift \
+glance/Recognition/FaceEnrollmentStore.swift \
+glance/Security/KeychainManager.swift \
+glance/Security/SecureFaceStore.swift \
+glance/Security/SecureCredentialManager.swift \
+glance/Recognition/FaceAuthSession.swift \
+tools/lifecycle_concurrency_selftest.swift"
 
     "sudo_protocol|integration|library|\
 glance/SudoAuth/SudoAuthProtocol.swift \

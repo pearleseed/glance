@@ -238,12 +238,13 @@ extension FaceUnlockCoordinator {
                 return .noResolution
             }
 
-            let extracted = await extractFrameWithBackpressure(
-                frame: frame,
-                generation: generation,
-                evaluator: evaluator,
-                livenessEnabled: livenessEnabled,
-                nightBoostEnabled: nightBoostEnabled
+            let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
+            let extracted = await evaluator.extractFrameWithBackpressure(
+                from: frame,
+                camera: camera,
+                strictCloseRangeOnly: strictCloseRangeOnly,
+                nightBoostEnabled: nightBoostEnabled,
+                isCurrentGeneration: { generation == self.scanGeneration }
             )
 
             guard isScanWindowActive(generation: generation, requireOverlayScanning: requireOverlayScanning),
@@ -288,31 +289,6 @@ extension FaceUnlockCoordinator {
         !Task.isCancelled
             && generation == scanGeneration
             && (!requireOverlayScanning || NotchOverlayController.shared.phase == .scanning)
-    }
-
-    private func extractFrameWithBackpressure(
-        frame: CameraFrame,
-        generation: Int,
-        evaluator: FaceAuthEvaluator,
-        livenessEnabled: Bool,
-        nightBoostEnabled: Bool
-    ) async -> ExtractedAuthFrame {
-        camera.setConsumerBusy(true)
-        defer {
-            if generation == scanGeneration {
-                camera.setConsumerBusy(false)
-            }
-        }
-        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
-        return await FaceAuthEvaluator.extractFrame(
-            from: frame,
-            pipeline: pipeline,
-            previousBoundingBox: evaluator.lastFaceBoundingBox,
-            strictCloseRangeOnly: strictCloseRangeOnly,
-            livenessEnabled: livenessEnabled,
-            nightBoostEnabled: nightBoostEnabled,
-            geometryContext: evaluator.geometryContextIfNeeded()
-        )
     }
 
     private func completeMatchedUnlock(

@@ -180,12 +180,12 @@ final class AppLockFaceScanner {
                 return .failed(gateFailure, canRetry: false)
             }
 
-            let extracted = await extractFrameWithBackpressure(
-                frame: frame,
+            let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
+            let extracted = await evaluator.extractFrameWithBackpressure(
+                from: frame,
                 camera: camera,
-                generation: generation,
-                evaluator: evaluator,
-                livenessEnabled: livenessEnabled
+                strictCloseRangeOnly: strictCloseRangeOnly,
+                isCurrentGeneration: { generation == self.scanGeneration }
             )
 
             guard isScanActive(generation: generation, challengeID: challengeID) else {
@@ -219,29 +219,5 @@ final class AppLockFaceScanner {
         return isScanActive(generation: generation, challengeID: challengeID)
             ? .failed("No face detected.", canRetry: true)
             : .cancelled
-    }
-
-    private func extractFrameWithBackpressure(
-        frame: CameraFrame,
-        camera: CameraManager,
-        generation: UInt64,
-        evaluator: FaceAuthEvaluator,
-        livenessEnabled: Bool
-    ) async -> ExtractedAuthFrame {
-        camera.setConsumerBusy(true)
-        defer {
-            if generation == scanGeneration {
-                camera.setConsumerBusy(false)
-            }
-        }
-        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
-        return await FaceAuthEvaluator.extractFrame(
-            from: frame,
-            pipeline: pipeline,
-            previousBoundingBox: evaluator.lastFaceBoundingBox,
-            strictCloseRangeOnly: strictCloseRangeOnly,
-            livenessEnabled: livenessEnabled,
-            geometryContext: evaluator.geometryContextIfNeeded()
-        )
     }
 }

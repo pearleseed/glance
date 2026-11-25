@@ -193,3 +193,5 @@ final class CameraManager {
         }
     }
 }
+
+extension CameraManager: FrameBackpressureTarget {}

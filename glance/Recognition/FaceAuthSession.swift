@@ -41,6 +41,11 @@ enum FaceAuthStepOutcome {
 }
 
 @MainActor
+protocol FrameBackpressureTarget: AnyObject {
+    func setConsumerBusy(_ busy: Bool)
+}
+
+@MainActor
 final class FaceAuthEvaluator {
     private let pipeline: FaceRecognitionPipeline
     private let livenessEnabled: Bool
@@ -143,6 +148,51 @@ final class FaceAuthEvaluator {
                 geometryGeneration: geometryContext?.generation
             )
         }.value
+    }
+
+    /// Runs `extract` with camera consumer backpressure active, clearing the busy flag only if
+    /// this call is still the active generation when `extract` finishes or cancels.
+    func extractFrameWithBackpressure(
+        camera: any FrameBackpressureTarget,
+        isCurrentGeneration: () -> Bool,
+        extract: @escaping @Sendable () async -> ExtractedAuthFrame
+    ) async -> ExtractedAuthFrame {
+        camera.setConsumerBusy(true)
+        defer {
+            if isCurrentGeneration() {
+                camera.setConsumerBusy(false)
+            }
+        }
+        return await extract()
+    }
+
+    /// Extracts features and optional liveness from `frame` while managing camera backpressure
+    /// for the caller's scan generation.
+    func extractFrameWithBackpressure(
+        from frame: CameraFrame,
+        camera: any FrameBackpressureTarget,
+        strictCloseRangeOnly: Bool,
+        nightBoostEnabled: Bool = false,
+        isCurrentGeneration: () -> Bool
+    ) async -> ExtractedAuthFrame {
+        let pipeline = self.pipeline
+        let previousBoundingBox = self.lastFaceBoundingBox
+        let livenessEnabled = self.livenessEnabled
+        let geometryContext = self.geometryContextIfNeeded()
+        return await extractFrameWithBackpressure(
+            camera: camera,
+            isCurrentGeneration: isCurrentGeneration
+        ) {
+            await Self.extractFrame(
+                from: frame,
+                pipeline: pipeline,
+                previousBoundingBox: previousBoundingBox,
+                strictCloseRangeOnly: strictCloseRangeOnly,
+                livenessEnabled: livenessEnabled,
+                nightBoostEnabled: nightBoostEnabled,
+                geometryContext: geometryContext
+            )
+        }
     }
 
     /// Evaluates one freshly extracted frame while preserving identity-bound liveness invariants.
