@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-SWIFT_VERSION="5"
+SWIFT_VERSION="6"
 RUN_BUILD=1
 RUN_LINT=1
 SKIP_INTEGRATION=0
@@ -225,7 +225,7 @@ Options:
   --no-build                    Skip the Xcode Debug build and GlanceTests (xcodebuild test)
   --no-lint                     Skip SwiftLint, swift-format, PAM C syntax, and bash syntax checks
   --skip-integration            Compile-check integration suites (sudo_protocol, sudo_installer) without executing
-  --swift-version <5|6>         Swift language version for swiftc and xcodebuild (default: 5)
+  --swift-version <5|6>         Swift language version for swiftc and xcodebuild (default: 6)
   --with-website                Also run bun test, bun run lint, and bunx tsc --noEmit in website/
   -h, --help                    Show this help
 EOF
