@@ -310,12 +310,52 @@ nonisolated struct CycleMetrics: Codable, Sendable {
     let startToFirstFrameMs: Double
     let totalScanDurationMs: Double
     let totalPerFrame: DistributionStats
-    let workingRender640: DistributionStats
+    let workingRender640: DistributionStats?
     let recognition: DistributionStats
     let livenessExtraction: DistributionStats
     let mainThread: DistributionStats
     let droppedFrames: DroppedFramesSummary
     let memory: MemoryCheckpoints
+
+    enum CodingKeys: String, CodingKey {
+        case cycle
+        case framesProcessed
+        case facesDetected
+        case fivePointAlignments
+        case nightBoostEnhancedFrames
+        case coldModelLoadMs
+        case warmModelLoadMs
+        case startToFirstFrameMs
+        case totalScanDurationMs
+        case totalPerFrame
+        case workingRender640
+        case recognition
+        case livenessExtraction
+        case mainThread
+        case droppedFrames
+        case memory
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(cycle, forKey: .cycle)
+        try container.encode(framesProcessed, forKey: .framesProcessed)
+        try container.encode(facesDetected, forKey: .facesDetected)
+        try container.encode(fivePointAlignments, forKey: .fivePointAlignments)
+        try container.encode(nightBoostEnhancedFrames, forKey: .nightBoostEnhancedFrames)
+        try container.encodeIfPresent(coldModelLoadMs, forKey: .coldModelLoadMs)
+        try container.encodeIfPresent(warmModelLoadMs, forKey: .warmModelLoadMs)
+        try container.encode(startToFirstFrameMs, forKey: .startToFirstFrameMs)
+        try container.encode(totalScanDurationMs, forKey: .totalScanDurationMs)
+        try container.encode(totalPerFrame, forKey: .totalPerFrame)
+        // Always emit `workingRender640` (null in `--live-camera`, stats object in `--synthetic`).
+        try container.encode(workingRender640, forKey: .workingRender640)
+        try container.encode(recognition, forKey: .recognition)
+        try container.encode(livenessExtraction, forKey: .livenessExtraction)
+        try container.encode(mainThread, forKey: .mainThread)
+        try container.encode(droppedFrames, forKey: .droppedFrames)
+        try container.encode(memory, forKey: .memory)
+    }
 }
 
 nonisolated struct BenchmarkMetadata: Codable, Sendable {
@@ -1005,20 +1045,6 @@ private nonisolated struct ExtractedFrameResult: @unchecked Sendable {
 }
 
 private nonisolated enum StageRunner {
-    static func renderWorkingFrame640(from source: CIImage) -> Double {
-        let clock = ContinuousClock()
-        let start = clock.now
-        var ciImage = source
-        let maxLongEdge: CGFloat = 640
-        let longEdge = max(ciImage.extent.width, ciImage.extent.height)
-        if longEdge > maxLongEdge {
-            let scale = maxLongEdge / longEdge
-            ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        }
-        _ = SharedCoreImageContext.srgb.createCGImage(ciImage, from: ciImage.extent)
-        return SystemProbe.durationMs(from: start, to: clock.now)
-    }
-
     static func extractStages(
         from frame: CameraFrame,
         pipeline: FaceRecognitionPipeline,
@@ -1116,7 +1142,7 @@ private final class CycleAccumulator {
         livenessAnalyzer: LivenessAnalyzer?,
         livenessEnabled: Bool,
         publishMainMs: Double,
-        workingRenderMs: Double
+        workingRenderMs: Double?
     ) {
         let evalStart = ContinuousClock.now
         if let result = extracted.recognition {
@@ -1161,8 +1187,10 @@ private final class CycleAccumulator {
             nightBoostEnhancedFrames += 1
         }
         let mainMs = publishMainMs + evalMainMs
-        let totalMs = workingRenderMs + extracted.recognitionMs + extracted.livenessMs + mainMs
-        workingRenderSamples.append(workingRenderMs)
+        let totalMs = (workingRenderMs ?? 0) + extracted.recognitionMs + extracted.livenessMs + mainMs
+        if let workingRenderMs {
+            workingRenderSamples.append(workingRenderMs)
+        }
         recognitionSamples.append(extracted.recognitionMs)
         livenessSamples.append(extracted.livenessMs)
         mainThreadSamples.append(mainMs)
@@ -1401,10 +1429,6 @@ private enum PipelineBenchmarkRunner {
                 let geometryContext = livenessAnalyzer?.heavyGeometryContextIfNeeded()
                 let preExtractMs = SystemProbe.durationMs(from: preExtractStart, to: ContinuousClock.now)
 
-                let renderProbeMs = await Task.detached(priority: .userInitiated) {
-                    StageRunner.renderWorkingFrame640(from: frame.source)
-                }.value
-
                 let extracted = await runBackpressuredExtraction(
                     evaluator: evaluator,
                     target: camera,
@@ -1422,7 +1446,7 @@ private enum PipelineBenchmarkRunner {
                     livenessAnalyzer: livenessAnalyzer,
                     livenessEnabled: livenessEnabled,
                     publishMainMs: preExtractMs,
-                    workingRenderMs: renderProbeMs
+                    workingRenderMs: nil
                 )
             }
 
@@ -1613,7 +1637,8 @@ private enum PipelineBenchmarkRunner {
             startToFirstFrameMs: startToFirstFrameMs,
             totalScanDurationMs: totalScanDurationMs,
             totalPerFrame: DistributionStats.summarize(accumulator.totalFrameSamples),
-            workingRender640: DistributionStats.summarize(accumulator.workingRenderSamples),
+            workingRender640: accumulator.workingRenderSamples.isEmpty
+                ? nil : DistributionStats.summarize(accumulator.workingRenderSamples),
             recognition: DistributionStats.summarize(accumulator.recognitionSamples),
             livenessExtraction: DistributionStats.summarize(accumulator.livenessSamples),
             mainThread: DistributionStats.summarize(accumulator.mainThreadSamples),
@@ -1690,11 +1715,22 @@ nonisolated enum ReportFormatter {
                 "\(fmt(cycle.memory.beforeStart.residentSizeMB)) / "
                 + "\(fmt(cycle.memory.peakDuringScan.residentSizeMB)) / "
                 + "\(fmt(cycle.memory.afterStopAndSettle.residentSizeMB))"
+            let render640Cell =
+                cycle.workingRender640.map(medP95) ?? "n/a (upstream in CameraFramePublisher)"
             lines.append(
                 "| Run \(cycle.cycle) | \(facesCell) | \(loadCell) | \(fmt(cycle.startToFirstFrameMs)) | "
-                    + "\(medP95(cycle.totalPerFrame)) | \(medP95(cycle.workingRender640)) | "
+                    + "\(medP95(cycle.totalPerFrame)) | \(render640Cell) | "
                     + "\(medP95(cycle.recognition)) | \(medP95(cycle.livenessExtraction)) | "
                     + "\(medP95(cycle.mainThread)) | \(dropped) | \(physMem) | \(rssMem) |"
+            )
+        }
+        if m.mode == .liveCamera {
+            lines.append("")
+            lines.append(
+                "*Note (`--live-camera`): Stage 1 (640px working-frame render) runs upstream inside "
+                    + "`CameraFramePublisher.captureOutput` before `nextFrame` delivery; `totalPerFrame` "
+                    + "measures consumer stages (`recognition + liveness + mainThread`), while upstream "
+                    + "Stage 1 cost is reflected in `startToFirstFrameMs` and inter-frame cadence.*"
             )
         }
         return lines.joined(separator: "\n")
