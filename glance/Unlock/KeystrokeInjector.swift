@@ -48,7 +48,13 @@ enum KeystrokeInjector {
     /// Types the UTF-8 bytes into whatever has keyboard focus, then presses Return.
     /// Decodes UTF-8 directly into `[UInt16]` (never `Swift.String`) and wipes it with `memset_s` on exit.
     /// When `requireLockedScreen` is true, checks authoritative lock state before each phase and key event. Blocking.
-    nonisolated static func typeAndReturn(_ passwordBytes: Data, requireLockedScreen: Bool = true) throws {
+    /// - Parameter singleGraphemeMode: Uses conservative per-grapheme events and longer settle delays
+    ///   (used automatically on retry if the fast batched path left the screen locked).
+    nonisolated static func typeAndReturn(
+        _ passwordBytes: Data,
+        requireLockedScreen: Bool = true,
+        singleGraphemeMode: Bool = false
+    ) throws {
         guard isAccessibilityTrusted() else { throw KeystrokeError.accessibilityNotGranted }
         guard var utf16 = decodeUTF8ToUTF16(passwordBytes) else { throw KeystrokeError.invalidUTF8Password }
         defer { zeroizeUTF16Buffer(&utf16) }
@@ -57,13 +63,20 @@ enum KeystrokeInjector {
         let source = CGEventSource(stateID: .privateState)
         try clearFocusedField(source: source, requireLockedScreen: requireLockedScreen)
         if requireLockedScreen {
-            // Give loginwindow a brief beat to dismiss an active Auto Unlock spinner and
-            // unhide/focus the secure password field before characters start arriving.
-            Thread.sleep(forTimeInterval: postClearSettleInterval)
+            // Give loginwindow a brief beat to unhide/focus the secure password field
+            // after `clearFocusedField` wakes it (measured ~10ms in practice; 80ms on conservative retry).
+            let settle = singleGraphemeMode ? retryPostClearSettleInterval : fastPostClearSettleInterval
+            Thread.sleep(forTimeInterval: settle)
         }
         try verifyScreenLockedIfNeeded(requireLockedScreen)
-        try postUnicodeBuffer(utf16, source: source, requireLockedScreen: requireLockedScreen)
-        Thread.sleep(forTimeInterval: preReturnSettleInterval)
+        try postUnicodeBuffer(
+            utf16,
+            source: source,
+            requireLockedScreen: requireLockedScreen,
+            singleGraphemeMode: singleGraphemeMode
+        )
+        let preReturn = singleGraphemeMode ? retryPreReturnSettleInterval : fastPreReturnSettleInterval
+        Thread.sleep(forTimeInterval: preReturn)
         try verifyScreenLockedIfNeeded(requireLockedScreen)
         try postReturn(source: source)
     }
@@ -248,7 +261,7 @@ enum KeystrokeInjector {
             }
             commandDown.flags = .maskCommand
             commandDown.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.012)
+            Thread.sleep(forTimeInterval: controlKeyInterval)
         }
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
             let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
@@ -258,16 +271,16 @@ enum KeystrokeInjector {
         keyDown.flags = flags
         keyUp.flags = flags
         keyDown.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.012)
+        Thread.sleep(forTimeInterval: controlKeyInterval)
         keyUp.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.012)
+        Thread.sleep(forTimeInterval: controlKeyInterval)
         if usesCommand {
             guard let commandUp = CGEvent(keyboardEventSource: source, virtualKey: command, keyDown: false) else {
                 throw KeystrokeError.eventCreationFailed
             }
             commandUp.flags = []
             commandUp.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.012)
+            Thread.sleep(forTimeInterval: controlKeyInterval)
         }
     }
 
@@ -306,19 +319,24 @@ enum KeystrokeInjector {
 
     /// Quartz reliably delivers only a small Unicode payload per keyboard event.
     /// Batching at this conservative limit avoids the undocumented truncation seen
-    /// with longer payloads.
+    /// with longer payloads while keeping lock-screen typing fast (~1 event for ≤20 chars).
     nonisolated static let maximumUnicodeBatchLength = 20
-    nonisolated private static let unicodeEventInterval: TimeInterval = 0.004
-    nonisolated private static let postClearSettleInterval: TimeInterval = 0.09
-    nonisolated private static let preReturnSettleInterval: TimeInterval = 0.035
+    nonisolated private static let controlKeyInterval: TimeInterval = 0.008
+    nonisolated private static let unicodeEventInterval: TimeInterval = 0.003
+    nonisolated private static let fastPostClearSettleInterval: TimeInterval = 0.025
+    nonisolated private static let retryPostClearSettleInterval: TimeInterval = 0.08
+    nonisolated private static let fastPreReturnSettleInterval: TimeInterval = 0.015
+    nonisolated private static let retryPreReturnSettleInterval: TimeInterval = 0.03
 
-    /// Posts the UTF-16 password buffer one grapheme cluster per event, verifying lock state before each event.
+    /// Posts the UTF-16 password buffer in surrogate/grapheme-safe batches (or single-grapheme events on retry),
+    /// verifying lock state before each event.
     private nonisolated static func postUnicodeBuffer(
         _ utf16: [UInt16],
         source: CGEventSource?,
-        requireLockedScreen: Bool
+        requireLockedScreen: Bool,
+        singleGraphemeMode: Bool
     ) throws {
-        let ranges = splitUTF16GraphemeRanges(utf16)
+        let ranges = singleGraphemeMode ? splitUTF16GraphemeRanges(utf16) : splitUTF16BatchRanges(utf16)
         try utf16.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
             for range in ranges {

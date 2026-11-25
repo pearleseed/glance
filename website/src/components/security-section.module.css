@@ -1,0 +1,317 @@
+.section {
+  --gutter: calc((100% - var(--glance-site-width, min(1060px, 100% - 120px))) / 2);
+  --card-width: 390px;
+  --card-height: calc(var(--card-width) * 505 / 424);
+  --security-card: #1b1c1d;
+  padding-block: 240px;
+  overflow-x: clip;
+  background: #09090a;
+}
+
+.heading {
+  padding-inline: 20px;
+}
+
+.title {
+  margin: 0;
+  color: #515151;
+  font-size: clamp(32px, 4.16vw, 60px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.025;
+}
+
+.title span {
+  display: block;
+}
+
+.title strong {
+  color: white;
+  font-weight: inherit;
+}
+
+.carousel {
+  margin-block-start: 66px;
+}
+
+.track {
+  position: relative;
+  display: flex;
+  gap: 29.5px;
+  margin-block: -12px;
+  padding-block: 12px;
+  padding-inline: var(--gutter) calc(100% - var(--gutter) - var(--card-width));
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline-start: var(--gutter);
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  touch-action: pan-x pan-y;
+}
+
+.track:focus-visible {
+  outline: 2px solid var(--glance-blue, #3499ff);
+  outline-offset: -2px;
+}
+
+.track::-webkit-scrollbar {
+  display: none;
+}
+
+.card {
+  position: relative;
+  flex: 0 0 var(--card-width);
+  height: var(--card-height);
+  perspective: 1600px;
+  scroll-snap-align: start;
+}
+
+.track[data-entered="true"] .card {
+  animation: enter 680ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: perspective(1600px) rotateY(-85deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(1600px) rotateY(0);
+  }
+}
+
+.cardInner {
+  display: grid;
+  grid-template: 1fr / 1fr;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 700ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.card[data-expanded="true"] .cardInner {
+  transform: rotateY(-180deg);
+}
+
+.front,
+.back {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  padding: 50px 44px 54px;
+  overflow: hidden;
+  border-radius: 48px;
+  background: var(--security-card);
+  backface-visibility: hidden;
+}
+
+.back {
+  transform: rotateY(180deg);
+}
+
+.icon {
+  display: flex;
+  flex: 0 0 92px;
+  align-items: flex-start;
+  margin-block-end: 24px;
+}
+
+.icon img {
+  width: auto;
+  height: auto;
+  max-width: 92px;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: left top;
+}
+
+.featureTitle,
+.subtitle {
+  margin: 0;
+  font-size: clamp(28px, 2.95vw, 35.5px);
+  font-weight: 700;
+  line-height: 1.03;
+  letter-spacing: -0.02em;
+}
+
+.featureTitle {
+  color: var(--glance-blue, #3499ff);
+}
+
+.subtitle {
+  margin-block-start: 6px;
+  color: #edeff1;
+}
+
+.details {
+  max-width: 280px;
+  margin: 22px 0 0;
+  color: #ffffff96;
+  font-size: 17.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.24;
+}
+
+.apple {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.9em;
+  margin-inline-end: 0.12em;
+  background: currentColor;
+  mask: url("/media/hero/appleicon.svg") center / contain no-repeat;
+  vertical-align: -0.08em;
+}
+
+.flip {
+  position: absolute;
+  right: 25px;
+  bottom: 27px;
+  width: 37px;
+  height: 37px;
+  padding: 0;
+  cursor: pointer;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.flip:hover {
+  filter: brightness(1.15);
+}
+
+.flip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.flip:focus-visible,
+.controls button:focus-visible {
+  outline: 2px solid var(--glance-blue, #3499ff);
+  outline-offset: 3px;
+}
+
+.controls {
+  display: none;
+}
+
+.notice {
+  margin-block-start: 86px;
+}
+
+@media (max-width: 1020px) {
+  .controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-block-start: 16px;
+  }
+
+  .controls button {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 50%;
+    background: #eaeaea;
+    color: #313131;
+    font-size: 27px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .controls button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+}
+
+@media (max-width: 900px) {
+  .section {
+    --card-width: min(390px, 84vw);
+    padding-block: 88px;
+  }
+
+  .heading {
+    padding-inline: 0;
+  }
+
+  .carousel {
+    margin-block-start: 40px;
+  }
+
+  .front,
+  .back {
+    padding: 33px 26px 60px;
+    border-radius: clamp(26px, 8vw, 48px);
+  }
+
+  .details {
+    font-size: 16px;
+  }
+
+  .notice {
+    margin-block-start: 42px;
+  }
+}
+
+@media (max-width: 700px) {
+  .section {
+    --gutter: calc((100% - var(--glance-site-width, 100% - 32px)) / 2);
+    --card-width: min(390px, 78vw);
+    --card-height: calc(var(--card-width) * 505 / 424 + 54px);
+    padding-block: 84px;
+  }
+
+  .track {
+    gap: 16px;
+    padding-inline: var(--gutter);
+    scroll-padding-inline: var(--gutter);
+  }
+
+  .card {
+    scroll-snap-align: center;
+  }
+
+  .card:first-child {
+    scroll-snap-align: start;
+  }
+
+  .card:last-child {
+    scroll-snap-align: end;
+  }
+
+  .icon {
+    flex-basis: 74px;
+    margin-block-end: 22px;
+  }
+
+  .flip {
+    right: 18px;
+    bottom: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track {
+    scroll-behavior: auto;
+  }
+
+  .track[data-entered="true"] .card {
+    animation: none;
+  }
+
+  .cardInner,
+  .card[data-expanded="true"] .cardInner,
+  .back {
+    transform: none;
+    transition: none;
+  }
+
+  .front[aria-hidden="true"],
+  .back[aria-hidden="true"] {
+    visibility: hidden;
+  }
+}

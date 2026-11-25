@@ -57,3 +57,10 @@ RELEASING.md
 .worktrees/
 docs/superpowers/
 docs/upgrade-plan/
+
+# Website (Next.js / Bun / Vercel)
+website/node_modules/
+website/.next/
+website/out/
+website/.vercel/
+website/*.tsbuildinfo

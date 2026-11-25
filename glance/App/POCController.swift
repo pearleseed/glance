@@ -193,24 +193,20 @@ final class POCController {
     /// auto-trigger path), refuses to inject unless the CGSession dictionary
     /// confirms the screen is actually locked.
     @discardableResult
-    func injectStoredPassword(requireAuthoritativeLock: Bool = false) async -> Result<Void, UnlockInjectionFailure> {
+    func injectStoredPassword(
+        requireAuthoritativeLock: Bool = false,
+        singleGraphemeMode: Bool = false
+    ) async -> Result<Void, UnlockInjectionFailure> {
         let trusted = KeystrokeInjector.isAccessibilityTrusted()
         accessibilityGranted = trusted
         guard trusted else {
-            let failure = UnlockInjectionFailure.accessibilityNotGranted
-            lastInjectionError = failure
-            statusMessage = failure.localizedDescription
-            UnlockLog.logger.error(
-                "Password injection blocked: Accessibility not granted (check stale ad-hoc TCC entry)"
+            return recordInjectionFailure(
+                .accessibilityNotGranted,
+                logMessage: "Password injection blocked: Accessibility not granted (check stale ad-hoc TCC entry)"
             )
-            return .failure(failure)
         }
         guard SecureCredentialManager.isSessionUnlocked else {
-            let failure = UnlockInjectionFailure.sessionLocked
-            lastInjectionError = failure
-            statusMessage = failure.localizedDescription
-            UnlockLog.logger.error("Password injection blocked: session is locked")
-            return .failure(failure)
+            return recordInjectionFailure(.sessionLocked, logMessage: "Password injection blocked: session is locked")
         }
 
         if requireAuthoritativeLock {
@@ -229,7 +225,11 @@ final class POCController {
                     nonInteractiveKeychainFallback: requireAuthoritativeLock
                 )
                 defer { bytes.resetBytes(in: 0..<bytes.count) }
-                try KeystrokeInjector.typeAndReturn(bytes, requireLockedScreen: requireAuthoritativeLock)
+                try KeystrokeInjector.typeAndReturn(
+                    bytes,
+                    requireLockedScreen: requireAuthoritativeLock,
+                    singleGraphemeMode: singleGraphemeMode
+                )
             }.value
             lastInjectionError = nil
             statusMessage = "Injected stored password + Return at \(Date().formatted(date: .omitted, time: .standard))"
@@ -241,23 +241,30 @@ final class POCController {
             UnlockLog.logger.info("Screen unlocked while password injection was in progress")
             return .success(())
         } catch let error as KeychainError {
-            let failure = UnlockInjectionFailure.credentialReadFailed(error.localizedDescription)
-            lastInjectionError = failure
-            statusMessage = failure.localizedDescription
-            UnlockLog.logger.error("Password injection failed reading Keychain: \(error.localizedDescription, privacy: .public)")
-            return .failure(failure)
+            return recordInjectionFailure(
+                .credentialReadFailed(error.localizedDescription),
+                logMessage: "Password injection failed reading Keychain: \(error.localizedDescription)"
+            )
         } catch let error as SecureCredentialError {
-            let failure = UnlockInjectionFailure.credentialReadFailed(error.localizedDescription)
-            lastInjectionError = failure
-            statusMessage = failure.localizedDescription
-            UnlockLog.logger.error("Password injection failed decrypting credential: \(error.localizedDescription, privacy: .public)")
-            return .failure(failure)
+            return recordInjectionFailure(
+                .credentialReadFailed(error.localizedDescription),
+                logMessage: "Password injection failed decrypting credential: \(error.localizedDescription)"
+            )
         } catch {
-            let failure = UnlockInjectionFailure.keystrokeFailed(error.localizedDescription)
-            lastInjectionError = failure
-            statusMessage = failure.localizedDescription
-            UnlockLog.logger.error("Password injection failed posting keystrokes: \(error.localizedDescription, privacy: .public)")
-            return .failure(failure)
+            return recordInjectionFailure(
+                .keystrokeFailed(error.localizedDescription),
+                logMessage: "Password injection failed posting keystrokes: \(error.localizedDescription)"
+            )
         }
+    }
+
+    private func recordInjectionFailure(
+        _ failure: UnlockInjectionFailure,
+        logMessage: String
+    ) -> Result<Void, UnlockInjectionFailure> {
+        lastInjectionError = failure
+        statusMessage = failure.localizedDescription
+        UnlockLog.logger.error("\(logMessage, privacy: .public)")
+        return .failure(failure)
     }
 }

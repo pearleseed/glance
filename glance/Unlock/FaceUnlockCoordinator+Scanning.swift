@@ -20,8 +20,8 @@ extension FaceUnlockCoordinator {
     }
 
     private var postDisplayWakeClearGuard: Duration { .milliseconds(150) }
-    private var postInjectionVerifyTimeout: Duration { .milliseconds(1_400) }
-    private var postInjectionVerifyPollInterval: Duration { .milliseconds(50) }
+    private var postInjectionVerifyTimeout: Duration { .milliseconds(1_000) }
+    private var postInjectionVerifyPollInterval: Duration { .milliseconds(25) }
 
     /// `generation` is what makes overlapping cycles safe: `Task.cancel()` is cooperative, so a superseded cycle still runs to the
     /// end of this function, and its global side effects (`camera.stop()` etc.) could otherwise land on the newer cycle instead
@@ -53,25 +53,22 @@ extension FaceUnlockCoordinator {
             return
         }
 
-        // Expand the scan UI immediately instead of staying invisible while the camera wakes up (~1s after sleep).
         let showsUI = self.showsUI
-        if showsUI {
-            NotchOverlayController.shared.beginScanning()
-        }
-        statusMessage = "Looking for your face…"
-
+        // Wait for the prewarmed camera before expanding the scanning UI so the notch doesn't sit idle
+        // while the sensor cold-starts; still surface a visible failure if camera startup fails.
         guard await prepareCamera(for: generation) else {
             guard generation == scanGeneration, !Task.isCancelled else { return }
             if showsUI {
+                NotchOverlayController.shared.beginScanning()
                 NotchOverlayController.shared.finish(success: false)
             }
             return
         }
 
-        // Reset the overlay collapse countdown now that camera frames are actually flowing.
         if showsUI {
-            NotchOverlayController.shared.resetScanTimeout()
+            NotchOverlayController.shared.beginScanning()
         }
+        statusMessage = "Looking for your face…"
 
         let outcome = await observeScanWindow(
             generation: generation,
@@ -107,7 +104,7 @@ extension FaceUnlockCoordinator {
                 "Camera start failed on first attempt (\(initialError, privacy: .public)) — retrying once"
             )
             camera.stop()
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(150))
             guard generation == scanGeneration, !Task.isCancelled, canArmOrScan else { return false }
             await camera.start()
             guard generation == scanGeneration else { return false }
@@ -345,13 +342,30 @@ extension FaceUnlockCoordinator {
             }
         }
 
+        let showsUI = self.showsUI
         for attempt in 1...2 {
-            let result = await pocController.injectStoredPassword(requireAuthoritativeLock: true)
+            let isRetry = attempt == 2
+            if isRetry, showsUI {
+                // Re-enter scanning briefly while the conservative retry runs so the overlay won't collapse early.
+                NotchOverlayController.shared.beginScanning()
+            }
+            let result = await pocController.injectStoredPassword(
+                requireAuthoritativeLock: true,
+                singleGraphemeMode: isRetry
+            )
             if case .failure(let failure) = result {
                 if failure == .screenNotLocked {
                     return .matchedAndUnlocked
                 }
                 return .injectionFailed(failure.localizedDescription)
+            }
+
+            // Keystrokes were accepted with valid Accessibility + decrypted credentials — start the
+            // completion animation right away so it runs in parallel with loginwindow's ~200ms auth
+            // instead of waiting until after the desktop already appears. If the screen unexpectedly
+            // remains locked, the retry/failure branch below overrides the overlay cleanly.
+            if showsUI && NotchOverlayController.shared.phase != .success {
+                NotchOverlayController.shared.finish(success: true)
             }
 
             if await waitForScreenToUnlock(generation: generation) {
@@ -361,7 +375,7 @@ extension FaceUnlockCoordinator {
 
             if attempt == 1 {
                 UnlockLog.logger.warning(
-                    "Screen remained locked after first password injection — retrying once"
+                    "Screen remained locked after fast password injection — retrying in single-grapheme mode"
                 )
             }
         }
