@@ -362,25 +362,46 @@ extension OnboardingController {
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 
+    private func canContinueEnrollmentFinish(generation: UInt64) -> Bool {
+        !Task.isCancelled && !isTornDown && shouldObserveFrames && generation == enrollGeneration && step == .enroll
+    }
+
+    private func sleepEnrollmentStep(for duration: Duration, generation: UInt64) async -> Bool {
+        try? await Task.sleep(for: duration)
+        return canContinueEnrollmentFinish(generation: generation)
+    }
+
     /// Runs the camera-complete sequence (instructions fade, preview fades, checkmark
     /// draws) then auto-advances to naming. Samples stay in memory here.
-    private func finishEnrollment() async {
+    func finishEnrollment() async {
+        let generation = enrollGeneration
+        guard canContinueEnrollmentFinish(generation: generation) else { return }
+
         enrollmentComplete = true
         sweepWindow.dismiss()
-        try? await Task.sleep(for: .seconds(OnboardingMetrics.guideOverlayFadeOut))
+        guard await sleepEnrollmentStep(for: enrollmentFinishTimings.guideOverlayFadeOut, generation: generation)
+        else {
+            return
+        }
 
         cameraPreviewVisible = false
-        try? await Task.sleep(for: .seconds(OnboardingMetrics.previewFadeOut))
+        guard await sleepEnrollmentStep(for: enrollmentFinishTimings.previewFadeOut, generation: generation) else {
+            return
+        }
 
-        try? await Task.sleep(for: .seconds(OnboardingMetrics.checkmarkDelay))
+        guard await sleepEnrollmentStep(for: enrollmentFinishTimings.checkmarkDelay, generation: generation) else {
+            return
+        }
         showCheckmark = true
 
         let elapsed =
-            OnboardingMetrics.guideOverlayFadeOut
-            + OnboardingMetrics.previewFadeOut
-            + OnboardingMetrics.checkmarkDelay
-        let remaining = max(OnboardingMetrics.cameraCompleteToNameDelay - elapsed, 0)
-        try? await Task.sleep(for: .seconds(remaining))
+            enrollmentFinishTimings.guideOverlayFadeOut
+            + enrollmentFinishTimings.previewFadeOut
+            + enrollmentFinishTimings.checkmarkDelay
+        let remaining = max(enrollmentFinishTimings.cameraCompleteToNameDelay - elapsed, .zero)
+        guard await sleepEnrollmentStep(for: remaining, generation: generation) else {
+            return
+        }
 
         stopCameraIfCreated()
         navDirection = .forward

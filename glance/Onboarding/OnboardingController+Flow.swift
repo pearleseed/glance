@@ -259,24 +259,26 @@ extension OnboardingController {
     /// to `onFirstRunComplete` once the notch is gone, for first-run and the post-update
     /// notice alike.
     func scheduleCompletionDismiss() {
+        guard !isTornDown else { return }
         let delay = completionDismissDelay
-        setCompletionDismissTask(
-            Task { [weak self] in
-                do {
-                    try await Task.sleep(for: delay)
-                } catch {
-                    return
-                }
-                guard let self, !Task.isCancelled, !self.hasBeenTornDown else { return }
-                let shouldFireCompletion = self.isFirstRunFlow || self.isPostUpdateNotice
-                let onComplete = self.onFirstRunComplete
-                self.teardown()
-                self.onDismissOnboarding()
-                if shouldFireCompletion {
-                    onComplete?()
-                }
+        let generation = enrollGeneration
+        completionDismissTask?.cancel()
+        completionDismissTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
             }
-        )
+            guard let self, !Task.isCancelled, !self.isTornDown, generation == self.enrollGeneration else { return }
+            let shouldFireCompletion = self.isFirstRunFlow || self.isPostUpdateNotice
+            let onComplete = self.onFirstRunComplete
+            self.completionDismissTask = nil
+            self.teardown()
+            self.onDismissOnboarding()
+            if shouldFireCompletion {
+                onComplete?()
+            }
+        }
     }
 }
 

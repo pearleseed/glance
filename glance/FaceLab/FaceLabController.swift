@@ -31,7 +31,50 @@ struct CalibrationSample: Identifiable {
 @Observable
 @MainActor
 final class FaceLabController {
-    let camera = CameraManager()
+    /// Output of one off-actor Face Lab recognition + liveness extraction pass.
+    nonisolated struct ExtractedFrame: Sendable {
+        let result: FaceRecognitionResult
+        let livenessFrame: LivenessFrame
+        let precomputedGeometry: GeometryLivenessResult?
+
+        init(
+            result: FaceRecognitionResult,
+            livenessFrame: LivenessFrame,
+            precomputedGeometry: GeometryLivenessResult? = nil
+        ) {
+            self.result = result
+            self.livenessFrame = livenessFrame
+            self.precomputedGeometry = precomputedGeometry
+        }
+    }
+
+    /// Seam allowing tests to inject delayed or synthetic frame extraction while production reads
+    /// per-frame `@MainActor` settings before dispatching work off-actor.
+    typealias FrameExtractor =
+        @MainActor (
+            CameraFrame,
+            FaceRecognitionPipeline,
+            LivenessAnalyzer.GeometryEvaluationContext?
+        ) async throws -> ExtractedFrame
+
+    static let defaultFrameExtractor: FrameExtractor = { cameraFrame, pipeline, geometryContext in
+        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
+        return try await Task.detached(priority: .userInitiated) {
+            let result = try pipeline.recognize(in: cameraFrame, strictCloseRangeOnly: strictCloseRangeOnly)
+            let faceCrop = FaceAuthEvaluator.glareCrop(from: cameraFrame, recognition: result)
+            let livenessFrame = LivenessFeatureExtractor.extract(
+                from: result, frame: cameraFrame.image, faceCrop: faceCrop
+            )
+            let precomputedGeometry = geometryContext?.computeGeometry(appending: livenessFrame)
+            return ExtractedFrame(
+                result: result,
+                livenessFrame: livenessFrame,
+                precomputedGeometry: precomputedGeometry
+            )
+        }.value
+    }
+
+    let camera: CameraManager
     let store = FaceEnrollmentStore.shared
     let pipeline: FaceRecognitionPipeline
 
@@ -83,10 +126,28 @@ final class FaceLabController {
     private(set) var logLines: [String] = []
     private(set) var sessionError: String?
 
-    private var isProcessingFrame = false
+    private(set) var captureGeneration: UInt64 = 0
+    private var activeProcessingGeneration: UInt64?
 
-    init(pipeline: FaceRecognitionPipeline) {
+    private let frameExtractor: FrameExtractor
+    private let isCameraRunning: @MainActor () -> Bool
+    private let startCamera: @MainActor () async -> Void
+    private let stopCamera: @MainActor () -> Void
+
+    init(
+        pipeline: FaceRecognitionPipeline,
+        frameExtractor: FrameExtractor? = nil,
+        isCameraRunning: (@MainActor () -> Bool)? = nil,
+        startCamera: (@MainActor () async -> Void)? = nil,
+        stopCamera: (@MainActor () -> Void)? = nil
+    ) {
+        let camera = CameraManager()
+        self.camera = camera
         self.pipeline = pipeline
+        self.frameExtractor = frameExtractor ?? Self.defaultFrameExtractor
+        self.isCameraRunning = isCameraRunning ?? { camera.isRunning }
+        self.startCamera = startCamera ?? { await camera.start() }
+        self.stopCamera = stopCamera ?? { camera.stop() }
         observeFrames()
         livenessAnalyzer.keepsComputingConfirmCuesAfterConfirmation = true
         livenessAnalyzer.modeProvider = { [weak self] in self?.livenessMode ?? .heavy }
@@ -117,8 +178,22 @@ final class FaceLabController {
         }
     }
 
+    @discardableResult
+    func bumpCaptureGeneration() -> UInt64 {
+        captureGeneration &+= 1
+        return captureGeneration
+    }
+
+    private func stopCaptureSession() {
+        bumpCaptureGeneration()
+        activeProcessingGeneration = nil
+        stopCamera()
+    }
+
     func start() async {
-        await camera.start()
+        let generation = bumpCaptureGeneration()
+        await startCamera()
+        guard generation == captureGeneration else { return }
         if let error = camera.errorMessage {
             log(error)
         } else {
@@ -127,7 +202,7 @@ final class FaceLabController {
     }
 
     func stop() {
-        camera.stop()
+        stopCaptureSession()
         detectedFaces = []
         currentResult = nil
         livenessAnalyzer.reset()
@@ -163,43 +238,46 @@ final class FaceLabController {
 
     /// Skips frames that arrive mid-processing — an "always work on the latest frame" throttle instead of a timer.
     private func processLatestFrame() async {
-        guard !isProcessingFrame, let cameraFrame = camera.currentFrame else { return }
-        isProcessingFrame = true
-        defer { isProcessingFrame = false }
+        guard let cameraFrame = camera.currentFrame else { return }
+        await processFrame(cameraFrame)
+    }
+
+    /// Runs recognition and liveness extraction for one frame, discarding any results if the capture
+    /// generation changed or the camera stopped while off-actor work was in flight.
+    func processFrame(_ cameraFrame: CameraFrame) async {
+        let generation = captureGeneration
+        guard isCameraRunning(), activeProcessingGeneration != generation else { return }
+        activeProcessingGeneration = generation
+        defer {
+            if activeProcessingGeneration == generation {
+                activeProcessingGeneration = nil
+            }
+        }
 
         let pipeline = self.pipeline
         if pipeline.loadState == .loading {
             await pipeline.waitUntilReady()
-            guard camera.isRunning else { return }
+            guard isCameraRunning(), generation == captureGeneration else { return }
         }
         let geometryContext = livenessAnalyzer.heavyGeometryContextIfNeeded()
-        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
         do {
-            let (result, livenessFrame, precomputedGeometry) = try await Task.detached(priority: .userInitiated) {
-                let result = try pipeline.recognize(in: cameraFrame, strictCloseRangeOnly: strictCloseRangeOnly)
-                let faceCrop = FaceAuthEvaluator.glareCrop(from: cameraFrame, recognition: result)
-                let livenessFrame = LivenessFeatureExtractor.extract(
-                    from: result, frame: cameraFrame.image, faceCrop: faceCrop
-                )
-                let precomputedGeometry = geometryContext?.computeGeometry(appending: livenessFrame)
-                return (result, livenessFrame, precomputedGeometry)
-            }.value
-            guard camera.isRunning else { return }
-            detectedFaces = [result.face]
-            currentResult = result
-            lastLivenessFrame = livenessFrame
+            let extracted = try await frameExtractor(cameraFrame, pipeline, geometryContext)
+            guard isCameraRunning(), generation == captureGeneration else { return }
+            detectedFaces = [extracted.result.face]
+            currentResult = extracted.result
+            lastLivenessFrame = extracted.livenessFrame
             currentLiveness = livenessAnalyzer.observe(
-                livenessFrame,
-                precomputedGeometry: precomputedGeometry,
+                extracted.livenessFrame,
+                precomputedGeometry: extracted.precomputedGeometry,
                 sourceGeneration: geometryContext?.generation
             )
             currentGeometry = livenessAnalyzer.lastGeometry
         } catch FaceRecognitionPipelineError.noFaceDetected {
-            guard camera.isRunning else { return }
+            guard isCameraRunning(), generation == captureGeneration else { return }
             detectedFaces = []
             currentResult = nil
         } catch {
-            guard camera.isRunning else { return }
+            guard isCameraRunning(), generation == captureGeneration else { return }
             detectedFaces = []
             currentResult = nil
             log("Detection error: \(error.localizedDescription)")
@@ -253,13 +331,13 @@ final class FaceLabController {
     /// Face Lab and onboarding each own a separate `CameraManager` on the same device — stop ours first to avoid
     /// two live sessions with different configurations.
     func startFullOnboarding() {
-        camera.stop()
+        stopCaptureSession()
         log("Starting the full onboarding flow.")
         OnboardingController.startFlow(pipeline: pipeline)
     }
 
     func startAddIdentity() {
-        camera.stop()
+        stopCaptureSession()
         log("Starting guided enrollment for a new identity.")
         OnboardingController.startAddIdentity(
             pipeline: pipeline,
@@ -268,7 +346,7 @@ final class FaceLabController {
     }
 
     func startRecapture(of identity: FaceIdentity) {
-        camera.stop()
+        stopCaptureSession()
         log("Starting guided re-capture of \"\(identity.name)\".")
         OnboardingController.startRecapture(
             of: identity,

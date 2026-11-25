@@ -84,6 +84,21 @@ final class OnboardingController {
         case ready(FaceRecognitionResult)
     }
 
+    /// Delays driving the camera-complete fade/checkmark sequence; injectable for fast lifecycle tests.
+    struct EnrollmentFinishTimings: Sendable {
+        let guideOverlayFadeOut: Duration
+        let previewFadeOut: Duration
+        let checkmarkDelay: Duration
+        let cameraCompleteToNameDelay: Duration
+
+        static let `default` = EnrollmentFinishTimings(
+            guideOverlayFadeOut: .seconds(OnboardingMetrics.guideOverlayFadeOut),
+            previewFadeOut: .seconds(OnboardingMetrics.previewFadeOut),
+            checkmarkDelay: .seconds(OnboardingMetrics.checkmarkDelay),
+            cameraCompleteToNameDelay: .seconds(OnboardingMetrics.cameraCompleteToNameDelay)
+        )
+    }
+
     @ObservationIgnored private var lazyCamera: CameraManager?
     /// Lazily constructed only when `.enroll` actually runs so password-only and security-notice flows never touch AVFoundation.
     var camera: CameraManager {
@@ -97,10 +112,11 @@ final class OnboardingController {
     let credentialService: OnboardingCredentialService
     let onDismissOnboarding: @MainActor () -> Void
     let completionDismissDelay: Duration
+    let enrollmentFinishTimings: EnrollmentFinishTimings
     let sweepWindow = EnrollmentSweepWindowController()
     @ObservationIgnored private var isObservingFrames = false
-    @ObservationIgnored private var isTornDown = false
-    @ObservationIgnored private var completionDismissTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var isTornDown = false
+    @ObservationIgnored var completionDismissTask: Task<Void, Never>?
     @ObservationIgnored private(set) var enrollGeneration: UInt64 = 0
     @MainActor private static var isPreparingEnrollment = false
     static let enrollmentUnavailableReason = "Face model unavailable — cannot enroll right now."
@@ -247,6 +263,7 @@ final class OnboardingController {
         credentialService: OnboardingCredentialService = .live,
         onDismissOnboarding: (@MainActor () -> Void)? = nil,
         completionDismissDelay: Duration? = nil,
+        enrollmentFinishTimings: EnrollmentFinishTimings? = nil,
         isEnrollmentOnly: Bool = false,
         isPasswordOnly: Bool = false,
         isPostUpdateNotice: Bool = false,
@@ -257,6 +274,7 @@ final class OnboardingController {
         self.credentialService = credentialService
         self.onDismissOnboarding = onDismissOnboarding ?? { NotchOverlayController.shared.dismissOnboarding() }
         self.completionDismissDelay = completionDismissDelay ?? .seconds(OnboardingMetrics.completeScreenDismissDelay)
+        self.enrollmentFinishTimings = enrollmentFinishTimings ?? .default
         self.isEnrollmentOnly = isEnrollmentOnly
         self.isPasswordOnly = isPasswordOnly
         self.isPostUpdateNotice = isPostUpdateNotice
@@ -284,7 +302,8 @@ final class OnboardingController {
     /// and permissions polling. Idempotent.
     func teardown() {
         isTornDown = true
-        cancelCompletionDismissTask()
+        completionDismissTask?.cancel()
+        completionDismissTask = nil
         bumpEnrollGeneration()
         stopPermissionsPolling()
         stopCameraIfCreated()
@@ -305,22 +324,8 @@ final class OnboardingController {
         !isTornDown
     }
 
-    var hasBeenTornDown: Bool {
-        isTornDown
-    }
-
     func setCommittedIdentityID(_ id: UUID?) {
         committedIdentityID = id
-    }
-
-    func setCompletionDismissTask(_ task: Task<Void, Never>?) {
-        completionDismissTask?.cancel()
-        completionDismissTask = task
-    }
-
-    func cancelCompletionDismissTask() {
-        completionDismissTask?.cancel()
-        completionDismissTask = nil
     }
 
     func markFrameObservationStartedIfNeeded() -> Bool {
