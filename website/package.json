@@ -1,6 +1,6 @@
 {
   "name": "glance-website",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "private": true,
   "description": "Official landing website for Glance — Face Unlock, App Lock, and Face-for-sudo for Mac.",
   "license": "MIT",

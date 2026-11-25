@@ -27,20 +27,20 @@ export interface GlanceReleaseData {
 }
 
 export const FALLBACK_RELEASE: GlanceReleaseData = {
-  version: "v2.1.3",
-  releaseUrl: `${GLANCE_REPO.url}/releases/tag/v2.1.3`,
-  publishedAt: "2026-11-24T13:33:56Z",
+  version: "v2.1.4",
+  releaseUrl: `${GLANCE_REPO.url}/releases/tag/v2.1.4`,
+  publishedAt: null,
   arm64: {
-    name: "Glance-2.1.3-arm64.dmg",
-    url: `${GLANCE_REPO.url}/releases/download/v2.1.3/Glance-2.1.3-arm64.dmg`,
-    sizeBytes: 44305881,
+    name: "Glance-2.1.4-arm64.dmg",
+    url: `${GLANCE_REPO.url}/releases/download/v2.1.4/Glance-2.1.4-arm64.dmg`,
+    sizeBytes: 44946569,
   },
   x86_64: {
-    name: "Glance-2.1.3-x86_64.dmg",
-    url: `${GLANCE_REPO.url}/releases/download/v2.1.3/Glance-2.1.3-x86_64.dmg`,
-    sizeBytes: 44483803,
+    name: "Glance-2.1.4-x86_64.dmg",
+    url: `${GLANCE_REPO.url}/releases/download/v2.1.4/Glance-2.1.4-x86_64.dmg`,
+    sizeBytes: 45100154,
   },
-  checksumsUrl: `${GLANCE_REPO.url}/releases/download/v2.1.3/SHA256SUMS.txt`,
+  checksumsUrl: `${GLANCE_REPO.url}/releases/download/v2.1.4/SHA256SUMS.txt`,
   stars: 0,
   downloads: 0,
   source: "fallback",

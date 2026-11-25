@@ -8,7 +8,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT="${REPO_ROOT}/glance.xcodeproj"
-PBXPROJ="${PROJECT}/project.pbxproj"
 INFO_PLIST="${REPO_ROOT}/glance/Info.plist"
 OUTPUT_DIR="${REPO_ROOT}/build/release"
 SOURCE_PACKAGES_DIR="${REPO_ROOT}/build/SourcePackages"
@@ -55,22 +54,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-read_pbxproj_value() {
-    local key="$1"
-    python3 - "$PBXPROJ" "$key" <<'PY'
-import re, sys
-text = open(sys.argv[1], encoding="utf-8").read()
-key = sys.argv[2]
-matches = sorted(set(re.findall(rf"\b{re.escape(key)}\s*=\s*([^;]+);", text)))
-if len(matches) != 1:
-    sys.exit(f"Expected exactly 1 unique value for {key} in project.pbxproj, found: {matches}")
-print(matches[0].strip().strip('"'))
-PY
-}
+XCODE_RELEASE_ARGS=(
+    -project "${PROJECT}"
+    -scheme glance
+    -configuration Release
+    -clonedSourcePackagesDirPath "${SOURCE_PACKAGES_DIR}"
+    -destination "generic/platform=macOS"
+)
 
-VERSION="$(read_pbxproj_value MARKETING_VERSION)"
-BUILD="$(read_pbxproj_value CURRENT_PROJECT_VERSION)"
-BUNDLE_ID="$(read_pbxproj_value PRODUCT_BUNDLE_IDENTIFIER)"
+RELEASE_METADATA="$(
+    xcodebuild "${XCODE_RELEASE_ARGS[@]}" -showBuildSettings -json | python3 -c '
+import json
+import sys
+
+targets = [entry["buildSettings"] for entry in json.load(sys.stdin) if entry.get("target") == "glance"]
+if len(targets) != 1:
+    sys.exit(f"Expected one glance target in Release build settings, found {len(targets)}")
+
+keys = ("MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "PRODUCT_BUNDLE_IDENTIFIER")
+values = [targets[0].get(key) for key in keys]
+if not all(values):
+    sys.exit("Missing marketing version, build number, or bundle identifier for glance")
+print(*values, sep="\t")
+'
+)"
+IFS=$'\t' read -r VERSION BUILD BUNDLE_ID <<< "${RELEASE_METADATA}"
 EXPECTED_FEED_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/appcast.xml"
 EXPECTED_PUB_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "${INFO_PLIST}")"
 CONFIGURED_FEED_URL="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "${INFO_PLIST}")"
@@ -114,13 +122,8 @@ build_and_package_arch() {
     local stage_dir
 
     echo "==> Building ${arch} Release..."
-    xcodebuild \
-        -project "${PROJECT}" \
-        -scheme glance \
-        -configuration Release \
+    xcodebuild "${XCODE_RELEASE_ARGS[@]}" \
         -derivedDataPath "${arch_derived}" \
-        -clonedSourcePackagesDirPath "${SOURCE_PACKAGES_DIR}" \
-        -destination "generic/platform=macOS" \
         ARCHS="${arch}" \
         ONLY_ACTIVE_ARCH=NO \
         CODE_SIGNING_ALLOWED=NO \
@@ -155,16 +158,18 @@ build_and_package_arch() {
     fi
 
     local app_plist="${app_dst}/Contents/Info.plist"
-    local actual_pub_key actual_feed actual_ver actual_build
+    local actual_pub_key actual_feed actual_ver actual_build actual_bundle_id
     actual_pub_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "${app_plist}")"
     actual_feed="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "${app_plist}")"
     actual_ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${app_plist}")"
     actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${app_plist}")"
+    actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app_plist}")"
 
     if [[ "${actual_pub_key}" != "${EXPECTED_PUB_KEY}" || \
           "${actual_feed}" != "${EXPECTED_FEED_URL}" || \
           "${actual_ver}" != "${VERSION}" || \
-          "${actual_build}" != "${BUILD}" ]]; then
+          "${actual_build}" != "${BUILD}" || \
+          "${actual_bundle_id}" != "${BUNDLE_ID}" ]]; then
         echo "ERROR: Built Info.plist metadata mismatch in ${app_plist}" >&2
         exit 1
     fi

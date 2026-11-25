@@ -168,10 +168,10 @@ describe("parseGitHubReleaseData", () => {
   test("uses complete pinned fallback only when release metadata is unavailable", () => {
     const data = parseGitHubReleaseData(null, []);
     expect(data).toEqual(FALLBACK_RELEASE);
-    expect(data.version).toBe("v2.1.3");
-    expect(data.arm64?.url).toContain("v2.1.3");
-    expect(data.x86_64?.url).toContain("v2.1.3");
-    expect(data.checksumsUrl).toContain("v2.1.3");
+    expect(data.version).toBe("v2.1.4");
+    expect(data.arm64?.url).toContain("/v2.1.4/Glance-2.1.4-arm64.dmg");
+    expect(data.x86_64?.url).toContain("/v2.1.4/Glance-2.1.4-x86_64.dmg");
+    expect(data.checksumsUrl).toContain("/v2.1.4/SHA256SUMS.txt");
   });
 });
 
