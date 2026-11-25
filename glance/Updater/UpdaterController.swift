@@ -44,8 +44,8 @@ final class UpdaterController {
         // `Task { @MainActor in }` since the KVO closure itself carries no actor isolation the compiler can see.
         canCheckForUpdatesObservation = controller.updater.observe(
             \.canCheckForUpdates, options: [.initial, .new]
-        ) { [weak self] updater, _ in
-            let value = updater.canCheckForUpdates
+        ) { [weak self] _, change in
+            guard let value = change.newValue else { return }
             Task { @MainActor [weak self] in
                 self?.canCheckForUpdates = value
             }

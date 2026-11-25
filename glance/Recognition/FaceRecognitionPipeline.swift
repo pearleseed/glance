@@ -10,7 +10,7 @@ import Foundation
 import Observation
 import os
 
-nonisolated struct FaceRecognitionResult {
+nonisolated struct FaceRecognitionResult: Sendable {
     let embedding: [Float]
     /// What was actually fed to the embedder, for debug UIs to inspect.
     let alignedImage: CGImage

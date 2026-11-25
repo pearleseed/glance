@@ -188,11 +188,19 @@ nonisolated final class CameraSessionBox: @unchecked Sendable {
     }
 }
 
+private nonisolated final class MainActorOwnerBox: Sendable {
+    @MainActor weak var owner: CameraManager?
+}
+
 /// Sample-buffer callbacks arrive on `sessionQueue`, off the main actor; this delegate converts there,
 /// coalesces to the latest unconsumed frame, and hops to `@MainActor` at most once per drain cycle.
 nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    weak var owner: CameraManager?
+    @MainActor var owner: CameraManager? {
+        get { ownerBox.owner }
+        set { ownerBox.owner = newValue }
+    }
     let publishesFrames: Bool
+    private let ownerBox = MainActorOwnerBox()
     /// Detection only needs a modest resolution; the live preview renders from the capture session directly and
     /// is unaffected. The undownscaled `source` is kept alongside for callers needing native pixels (`renderCrop`).
     private let maxLongEdge: CGFloat = 640
@@ -259,19 +267,13 @@ nonisolated final class CameraFramePublisher: NSObject, AVCaptureVideoDataOutput
         }
 
         if shouldSchedule {
-            Task { @MainActor [weak self] in
-                self?.drainPendingFrame()
+            let pendingState = self.pendingState
+            let ownerBox = self.ownerBox
+            Task { @MainActor in
+                if let frame = pendingState.withLock({ $0.drainPending() }) {
+                    ownerBox.owner?.publish(frame: frame)
+                }
             }
-        }
-    }
-
-    @MainActor
-    private func drainPendingFrame() {
-        let frame = pendingState.withLock { state in
-            state.drainPending()
-        }
-        if let frame {
-            owner?.publish(frame: frame)
         }
     }
 }

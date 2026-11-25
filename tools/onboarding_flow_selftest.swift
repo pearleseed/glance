@@ -357,7 +357,7 @@ struct OnboardingFlowSelfTest {
         isPasswordOnly: Bool = false,
         isPostUpdateNotice: Bool = false,
         enrollmentTarget: OnboardingController.EnrollmentTarget = .newIdentity,
-        onDismiss: @escaping () -> Void = {}
+        onDismiss: @escaping @MainActor () -> Void = {}
     ) -> OnboardingController {
         OnboardingController(
             pipeline: pipeline,

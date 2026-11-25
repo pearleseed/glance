@@ -12,6 +12,7 @@
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/security_selftest \
+//        glance/Core/NotificationObserverBox.swift \
 //        glance/Liveness/LandmarkGeometry.swift \
 //        glance/Liveness/DeviceBezelDetector.swift \
 //        glance/Camera/SharedCoreImageContext.swift \

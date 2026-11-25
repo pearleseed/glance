@@ -9,6 +9,7 @@
 
 import AppKit
 import SwiftUI
+import os
 
 /// A closure `onPreferenceChange` can actually consume — that API requires
 /// `Value: Equatable`, which a bare closure can never be. Equality is by
@@ -317,9 +318,41 @@ private struct SettingsTabSwipeRecognizer: NSViewRepresentable {
     }
 }
 
+private nonisolated final class LocalEventMonitorBox: Sendable {
+    private nonisolated struct Monitor: @unchecked Sendable {
+        let token: Any
+    }
+
+    private let state = OSAllocatedUnfairLock<Monitor?>(initialState: nil)
+
+    var isInstalled: Bool {
+        state.withLock { $0 != nil }
+    }
+
+    func install(_ token: Any?) {
+        let monitor = token.map { Monitor(token: $0) }
+        let previous = state.withLock { current in
+            let old = current
+            current = monitor
+            return old
+        }
+        if let previous {
+            NSEvent.removeMonitor(previous.token)
+        }
+    }
+
+    func remove() {
+        install(nil)
+    }
+
+    deinit {
+        remove()
+    }
+}
+
 private final class SwipeHostingView: NSView {
     var onSwipe: (SettingsTabSwipeDirection) -> Void
-    private var eventMonitor: Any?
+    private let eventMonitorBox = LocalEventMonitorBox()
     private var observerBox: NotificationObserverBox?
     private weak var observedWindow: NSWindow?
     private var accumulatedHorizontalScroll: CGFloat = 0
@@ -355,14 +388,15 @@ private final class SwipeHostingView: NSView {
     }
 
     func installEventMonitorIfNeeded() {
-        guard window != nil, eventMonitor == nil else { return }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+        guard window != nil, !eventMonitorBox.isInstalled else { return }
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === self.window, event.hasPreciseScrollingDeltas else {
                 return event
             }
             self.handleTrackpadScroll(event)
             return event
         }
+        eventMonitorBox.install(monitor)
     }
 
     private func installWindowCloseObserver(for window: NSWindow) {
@@ -377,10 +411,7 @@ private final class SwipeHostingView: NSView {
     }
 
     private func removeEventMonitor() {
-        if let eventMonitor {
-            NSEvent.removeMonitor(eventMonitor)
-            self.eventMonitor = nil
-        }
+        eventMonitorBox.remove()
         resetSwipeTracking()
     }
 
@@ -412,12 +443,6 @@ private final class SwipeHostingView: NSView {
         accumulatedHorizontalScroll = 0
         accumulatedVerticalScroll = 0
         didNavigateThisGesture = false
-    }
-
-    deinit {
-        if let eventMonitor {
-            NSEvent.removeMonitor(eventMonitor)
-        }
     }
 }
 

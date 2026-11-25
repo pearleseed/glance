@@ -159,7 +159,7 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
     }
 }
 
-enum FaceEnrollmentStoreError: LocalizedError, Equatable {
+nonisolated enum FaceEnrollmentStoreError: LocalizedError, Equatable {
     case sessionLocked
     case storeUnreadable
 

@@ -14,7 +14,7 @@
 
 import SwiftUI
 
-struct NotchShape: Shape {
+nonisolated struct NotchShape: Shape {
     var topRadius: CGFloat
     var bottomRadius: CGFloat
     var style: NotchPanelStyle = .notch

@@ -56,8 +56,9 @@ final class CameraManager {
         observerBox.observe(forName: AVCaptureDevice.wasDisconnectedNotification) { [weak box] _ in
             // Always flag rebind on sessionQueue even while stopped so unplug/replug
             // between scans never keeps a stale AVCaptureDeviceInput with the same uniqueID.
+            let capturedBox = box
             queue.async {
-                box?.markDeviceRebindNeeded()
+                capturedBox?.markDeviceRebindNeeded()
             }
             reconcileIfRunning()
         }

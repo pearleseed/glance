@@ -7,7 +7,7 @@
 //
 
 import CoreGraphics
-import Vision
+import Foundation
 
 nonisolated enum LivenessFeatureExtractor {
     /// Never fails — a face with no landmarks still yields a frame; cues that need landmarks abstain.
@@ -54,28 +54,15 @@ nonisolated enum LivenessFeatureExtractor {
         let interocular = LandmarkGeometry.interocularDistance(
             from: landmarks, imageSize: landmarkImageSize, mappedTo: mappingRect
         )
-        let leftEAR = landmarks.leftEye.flatMap {
+        let leftEAR = landmarks.regions[.leftEye].flatMap {
             LandmarkGeometry.eyeAspectRatio(of: $0, imageSize: landmarkImageSize, mappedTo: mappingRect)
         }
-        let rightEAR = landmarks.rightEye.flatMap {
+        let rightEAR = landmarks.regions[.rightEye].flatMap {
             LandmarkGeometry.eyeAspectRatio(of: $0, imageSize: landmarkImageSize, mappedTo: mappingRect)
         }
-
-        let eyeLeft = LandmarkGeometry.eyeCenter(
-            pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: landmarkImageSize, mappedTo: mappingRect)
-        let eyeRight = LandmarkGeometry.eyeCenter(
-            pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: landmarkImageSize, mappedTo: mappingRect)
-
-        var noseOffsetRatio: CGFloat?
-        if let eyeLeft, let eyeRight,
-            let nose = landmarks.nose,
-            let noseCenter = LandmarkGeometry.centroid(
-                of: nose, imageSize: landmarkImageSize, mappedTo: mappingRect)
-        {
-            noseOffsetRatio = LandmarkGeometry.eyeAlignedNoseOffsetRatio(
-                eyeA: eyeLeft, eyeB: eyeRight, noseCenter: noseCenter
-            )
-        }
+        let noseOffsetRatio = noseOffsetRatio(
+            from: landmarks, imageSize: landmarkImageSize, mappedTo: mappingRect
+        )
 
         return LivenessFrame(
             timestamp: timestamp,
@@ -90,15 +77,34 @@ nonisolated enum LivenessFeatureExtractor {
         )
     }
 
+    private static func noseOffsetRatio(
+        from landmarks: DetectedFaceLandmarks,
+        imageSize: CGSize,
+        mappedTo mappingRect: CGRect?
+    ) -> CGFloat? {
+        guard
+            let eyeLeft = LandmarkGeometry.eyeCenter(
+                pupil: landmarks.leftPupil, eye: landmarks.regions[.leftEye],
+                imageSize: imageSize, mappedTo: mappingRect),
+            let eyeRight = LandmarkGeometry.eyeCenter(
+                pupil: landmarks.rightPupil, eye: landmarks.regions[.rightEye],
+                imageSize: imageSize, mappedTo: mappingRect),
+            let nose = landmarks.regions[.nose],
+            let noseCenter = LandmarkGeometry.centroid(of: nose, imageSize: imageSize, mappedTo: mappingRect)
+        else { return nil }
+        return LandmarkGeometry.eyeAlignedNoseOffsetRatio(eyeA: eyeLeft, eyeB: eyeRight, noseCenter: noseCenter)
+    }
+
     private static func extractGlare(
         faceCrop: CGImage,
         landmarkFace: DetectedFace,
         workingFace: DetectedFace,
         mappingRect: CGRect?
     ) -> GlareSample? {
-        let faceRegion = landmarkFace.landmarks?.faceContour.flatMap { contour in
-            let points = LandmarkGeometry.imagePoints(
-                of: contour,
+        let faceRegion = landmarkFace.landmarks.flatMap { landmarks -> [CGPoint]? in
+            let points = LandmarkGeometry.points(
+                for: .faceContour,
+                in: landmarks,
                 imageSize: landmarkFace.imageSize,
                 mappedTo: mappingRect
             )

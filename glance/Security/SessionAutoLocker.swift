@@ -11,21 +11,24 @@ import Foundation
 @MainActor
 final class SessionAutoLocker {
     private let pocController: POCController
-    private var timer: Timer?
+    private let checkTaskBox = CancellableTaskBox()
     private let observerBox = NotificationObserverBox()
 
     /// Coarse on purpose — the shortest selectable limit is a full day, and the decision compares timestamps, not ticks.
-    private let checkInterval: TimeInterval = 5 * 60
+    private let checkInterval: Duration = .seconds(5 * 60)
 
     init(pocController: POCController) {
         self.pocController = pocController
-        // `.common` so the countdown keeps being checked during tracking runloop modes (an open menu, a drag).
-        let timer = Timer(timeInterval: checkInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.evaluate() }
-        }
-        timer.tolerance = 30
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        let interval = checkInterval
+        checkTaskBox.replace(
+            with: Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval, tolerance: .seconds(30))
+                    guard !Task.isCancelled, let self else { return }
+                    self.evaluate()
+                }
+            }
+        )
 
         // Also evaluate on wake: no timer fires during sleep, but the elapsed time still counts as idle once compared.
         observerBox.observe(
@@ -37,10 +40,6 @@ final class SessionAutoLocker {
         }
 
         evaluate()
-    }
-
-    deinit {
-        timer?.invalidate()
     }
 
     /// Routed through `POCController.lockSession()` rather than `SecureCredentialManager` directly, so the Settings UI's

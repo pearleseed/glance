@@ -32,10 +32,10 @@ struct LoopingVideoView: NSViewRepresentable {
 final class LoopingVideoHostView: NSView {
     private var player: AVPlayer?
     private let playerLayer = AVPlayerLayer()
-    private var endObserver: NSObjectProtocol?
+    private let observerBox = NotificationObserverBox()
+    private let restartBox = CancellableTaskBox()
     private var currentResourceName: String?
     private var pauseBetweenLoops: TimeInterval = 2.0
-    private var pendingRestart: DispatchWorkItem?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -50,15 +50,8 @@ final class LoopingVideoHostView: NSView {
     }
 
     deinit {
-        pendingRestart?.cancel()
-        pendingRestart = nil
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
-        endObserver = nil
         player?.pause()
         player = nil
-        playerLayer.player = nil
     }
 
     override func layout() {
@@ -88,36 +81,37 @@ final class LoopingVideoHostView: NSView {
         playerLayer.player = newPlayer
         player = newPlayer
 
-        endObserver = NotificationCenter.default.addObserver(
+        let token = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleRestart()
+            MainActor.assumeIsolated {
+                self?.scheduleRestart()
+            }
         }
+        observerBox.add(token)
 
         newPlayer.seek(to: .zero)
         newPlayer.play()
     }
 
     private func scheduleRestart() {
-        pendingRestart?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, let player = self.player else { return }
-            player.seek(to: .zero)
-            player.play()
-        }
-        pendingRestart = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + pauseBetweenLoops, execute: work)
+        let delay = pauseBetweenLoops
+        restartBox.replace(
+            with: Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self, let player = self.player else { return }
+                _ = await player.seek(to: .zero)
+                guard !Task.isCancelled else { return }
+                player.play()
+            }
+        )
     }
 
     func teardown() {
-        pendingRestart?.cancel()
-        pendingRestart = nil
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
-        endObserver = nil
+        restartBox.cancel()
+        observerBox.removeAll()
         player?.pause()
         player = nil
         playerLayer.player = nil

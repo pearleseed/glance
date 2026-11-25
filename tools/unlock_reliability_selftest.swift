@@ -14,6 +14,7 @@
 //
 //  Compile and run from repo root:
 //      swiftc -O -o /tmp/unlock_reliability_selftest \
+//        glance/Core/NotificationObserverBox.swift \
 //        glance/Settings/SettingsModels.swift \
 //        glance/Recognition/FaceEmbedder.swift \
 //        glance/Recognition/FaceEnrollmentStore.swift \

@@ -7,16 +7,35 @@
 //
 
 import CoreGraphics
-import Vision
 
-/// Every landmark region this app reads from `VNFaceLandmarks2D`. Includes several regions
+/// Every landmark region this app reads from Vision. Includes several regions
 /// `FaceAligner` never needed — liveness samples more of them for its residual-coherence check.
-enum LandmarkRegion: String, CaseIterable, Hashable, Sendable {
+nonisolated enum LandmarkRegion: String, CaseIterable, Hashable, Sendable {
     case leftEye, rightEye
     case leftEyebrow, rightEyebrow
     case nose, noseCrest
     case outerLips, innerLips
     case faceContour, medianLine
+}
+
+/// Plain, `Sendable` snapshot of facial landmarks with every region already
+/// converted once from Vision's bottom-left/y-up space into top-left/y-down pixel
+/// coordinates (`0...imageSize`). Keeps Vision's non-`Sendable` landmark types
+/// strictly confined to `FaceDetector.swift`.
+nonisolated struct DetectedFaceLandmarks: Sendable, Equatable {
+    let regions: [LandmarkRegion: [CGPoint]]
+    let leftPupil: [CGPoint]
+    let rightPupil: [CGPoint]
+
+    init(
+        regions: [LandmarkRegion: [CGPoint]] = [:],
+        leftPupil: [CGPoint] = [],
+        rightPupil: [CGPoint] = []
+    ) {
+        self.regions = regions
+        self.leftPupil = leftPupil
+        self.rightPupil = rightPupil
+    }
 }
 
 /// One landmark point, tagged with where it came from. `indexInRegion` lets two frames'
@@ -44,42 +63,48 @@ nonisolated enum LandmarkGeometry {
         )
     }
 
-    /// Vision returns points in bottom-left-origin, y-up; flipped here to top-left/y-down
-    /// to match `DetectedFace.boundingBox`. When `workingRect` is provided, maps crop-space
-    /// points linearly into working-frame coordinates.
-    static func imagePoints(
-        of region: VNFaceLandmarkRegion2D,
+    /// Maps pre-extracted top-left/y-down points linearly into working-frame
+    /// coordinates when `workingRect` is provided.
+    static func mapPoints(
+        _ points: [CGPoint],
         imageSize: CGSize,
         mappedTo workingRect: CGRect? = nil
     ) -> [CGPoint] {
-        let points = region.pointsInImage(imageSize: imageSize).map {
-            CGPoint(x: $0.x, y: imageSize.height - $0.y)
-        }
         guard let workingRect else { return points }
         return points.map { mapPointFromCrop($0, cropSize: imageSize, toWorkingRect: workingRect) }
     }
 
-    static func centroid(
-        of region: VNFaceLandmarkRegion2D,
+    static func points(
+        for region: LandmarkRegion,
+        in landmarks: DetectedFaceLandmarks,
         imageSize: CGSize,
         mappedTo workingRect: CGRect? = nil
+    ) -> [CGPoint] {
+        guard let regionPoints = landmarks.regions[region] else { return [] }
+        return mapPoints(regionPoints, imageSize: imageSize, mappedTo: workingRect)
+    }
+
+    static func centroid(
+        of points: [CGPoint],
+        imageSize: CGSize = .zero,
+        mappedTo workingRect: CGRect? = nil
     ) -> CGPoint? {
-        let points = imagePoints(of: region, imageSize: imageSize, mappedTo: workingRect)
-        guard !points.isEmpty else { return nil }
-        let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
-        return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
+        let resolved = mapPoints(points, imageSize: imageSize, mappedTo: workingRect)
+        guard !resolved.isEmpty else { return nil }
+        let sum = resolved.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+        return CGPoint(x: sum.x / CGFloat(resolved.count), y: sum.y / CGFloat(resolved.count))
     }
 
     /// Prefers the pupil landmark (a precise point) over the eye outline's
     /// centroid (an approximation from eyelid boundary points) when Vision
     /// provides one.
     static func eyeCenter(
-        pupil: VNFaceLandmarkRegion2D?,
-        eye: VNFaceLandmarkRegion2D?,
-        imageSize: CGSize,
+        pupil: [CGPoint],
+        eye: [CGPoint]?,
+        imageSize: CGSize = .zero,
         mappedTo workingRect: CGRect? = nil
     ) -> CGPoint? {
-        if let pupil, let center = centroid(of: pupil, imageSize: imageSize, mappedTo: workingRect) { return center }
+        if let center = centroid(of: pupil, imageSize: imageSize, mappedTo: workingRect) { return center }
         if let eye { return centroid(of: eye, imageSize: imageSize, mappedTo: workingRect) }
         return nil
     }
@@ -87,15 +112,17 @@ nonisolated enum LandmarkGeometry {
     /// Distance between the two eye centers — the normalization scale used throughout
     /// liveness scoring so scores stay comparable regardless of camera distance.
     static func interocularDistance(
-        from landmarks: VNFaceLandmarks2D,
+        from landmarks: DetectedFaceLandmarks,
         imageSize: CGSize,
         mappedTo workingRect: CGRect? = nil
     ) -> CGFloat? {
         guard
             let left = eyeCenter(
-                pupil: landmarks.leftPupil, eye: landmarks.leftEye, imageSize: imageSize, mappedTo: workingRect),
+                pupil: landmarks.leftPupil, eye: landmarks.regions[.leftEye],
+                imageSize: imageSize, mappedTo: workingRect),
             let right = eyeCenter(
-                pupil: landmarks.rightPupil, eye: landmarks.rightEye, imageSize: imageSize, mappedTo: workingRect)
+                pupil: landmarks.rightPupil, eye: landmarks.regions[.rightEye],
+                imageSize: imageSize, mappedTo: workingRect)
         else { return nil }
         return hypot(left.x - right.x, left.y - right.y)
     }
@@ -139,11 +166,11 @@ nonisolated enum LandmarkGeometry {
     }
 
     static func eyeAspectRatio(
-        of eyeRegion: VNFaceLandmarkRegion2D,
+        of eyePoints: [CGPoint],
         imageSize: CGSize,
         mappedTo workingRect: CGRect? = nil
     ) -> CGFloat? {
-        contourAspectRatio(points: imagePoints(of: eyeRegion, imageSize: imageSize, mappedTo: workingRect))
+        contourAspectRatio(points: mapPoints(eyePoints, imageSize: imageSize, mappedTo: workingRect))
     }
 
     /// Projects the nose-to-eye-midpoint vector onto the inter-eye unit axis and normalizes
@@ -162,33 +189,18 @@ nonisolated enum LandmarkGeometry {
         return ((noseCenter.x - midX) * ux + (noseCenter.y - midY) * uy) / iod
     }
 
-    static func region(_ region: LandmarkRegion, of landmarks: VNFaceLandmarks2D) -> VNFaceLandmarkRegion2D? {
-        switch region {
-        case .leftEye: return landmarks.leftEye
-        case .rightEye: return landmarks.rightEye
-        case .leftEyebrow: return landmarks.leftEyebrow
-        case .rightEyebrow: return landmarks.rightEyebrow
-        case .nose: return landmarks.nose
-        case .noseCrest: return landmarks.noseCrest
-        case .outerLips: return landmarks.outerLips
-        case .innerLips: return landmarks.innerLips
-        case .faceContour: return landmarks.faceContour
-        case .medianLine: return landmarks.medianLine
-        }
-    }
-
     /// Every point Vision detected, tagged by region and position so a later frame's
     /// points can be matched back up; a region missing this frame just contributes nothing.
     static func allPoints(
-        from landmarks: VNFaceLandmarks2D,
+        from landmarks: DetectedFaceLandmarks,
         imageSize: CGSize,
         mappedTo workingRect: CGRect? = nil
     ) -> [LandmarkPoint] {
         var result: [LandmarkPoint] = []
         for regionCase in LandmarkRegion.allCases {
-            guard let vnRegion = region(regionCase, of: landmarks) else { continue }
-            let points = imagePoints(of: vnRegion, imageSize: imageSize, mappedTo: workingRect)
-            for (index, point) in points.enumerated() {
+            let regionPoints = points(
+                for: regionCase, in: landmarks, imageSize: imageSize, mappedTo: workingRect)
+            for (index, point) in regionPoints.enumerated() {
                 result.append(LandmarkPoint(point: point, region: regionCase, indexInRegion: index))
             }
         }

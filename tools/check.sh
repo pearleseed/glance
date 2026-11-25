@@ -167,6 +167,7 @@ glance/NotchOverlay/NotchShape.swift \
 tools/performance_selftest.swift"
 
     "security|offline|library|\
+glance/Core/NotificationObserverBox.swift \
 glance/Liveness/LandmarkGeometry.swift \
 glance/Liveness/DeviceBezelDetector.swift \
 glance/Camera/SharedCoreImageContext.swift \
@@ -190,6 +191,7 @@ glance/Settings/SettingsMetrics.swift \
 glance/Settings/Components/SettingsWindowHelpers.swift"
 
     "unlock_reliability|offline|library|\
+glance/Core/NotificationObserverBox.swift \
 glance/Settings/SettingsModels.swift \
 glance/Recognition/FaceEmbedder.swift \
 glance/Recognition/FaceEnrollmentStore.swift \

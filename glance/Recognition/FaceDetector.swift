@@ -8,7 +8,7 @@
 import CoreGraphics
 import Vision
 
-struct DetectedFace {
+nonisolated struct DetectedFace: Sendable, Equatable {
     /// Pixel-space bounding box, top-left origin — ready to crop with.
     let boundingBox: CGRect
     /// Vision's original normalized box — kept as-is since it's the exact format `layerRectConverted(fromMetadataOutputRect:)` expects.
@@ -22,13 +22,13 @@ struct DetectedFace {
     let yaw: Float?
     let roll: Float?
     let pitch: Float?
-    /// Facial landmarks (eyes, nose, mouth, etc.), when available. Feeds
-    /// `FaceAligner` for canonical 112x112 alignment ahead of ArcFace.
-    nonisolated let landmarks: VNFaceLandmarks2D?
-    /// Needed by `landmarks.pointsInImage(_:)` to convert normalized landmark points into `boundingBox`'s pixel space.
+    /// Facial landmarks (eyes, nose, mouth, etc.) in top-left/y-down pixel space, when available.
+    /// Feeds `FaceAligner` for canonical 112x112 alignment ahead of ArcFace and liveness geometry extraction.
+    let landmarks: DetectedFaceLandmarks?
+    /// Pixel dimensions of the frame in which `boundingBox` and `landmarks` were detected.
     let imageSize: CGSize
 
-    nonisolated func withQuality(_ quality: Float?) -> DetectedFace {
+    func withQuality(_ quality: Float?) -> DetectedFace {
         DetectedFace(
             boundingBox: boundingBox,
             normalizedBoundingBox: normalizedBoundingBox,
@@ -91,6 +91,7 @@ nonisolated enum FaceDetector {
 
         return faceObservations.enumerated().map { index, observation in
             let pixelRect = convertToImageSpace(observation.boundingBox, imageSize: imageSize)
+            let vnLandmarks = landmarkResults.indices.contains(index) ? landmarkResults[index].landmarks : nil
             return DetectedFace(
                 boundingBox: pixelRect,
                 normalizedBoundingBox: observation.boundingBox,
@@ -98,7 +99,7 @@ nonisolated enum FaceDetector {
                 yaw: observation.yaw?.floatValue,
                 roll: observation.roll?.floatValue,
                 pitch: observation.pitch?.floatValue,
-                landmarks: landmarkResults.indices.contains(index) ? landmarkResults[index].landmarks : nil,
+                landmarks: vnLandmarks.map { DetectedFaceLandmarks(from: $0, imageSize: imageSize) },
                 imageSize: imageSize
             )
         }
@@ -123,5 +124,44 @@ nonisolated enum FaceDetector {
         let padded = face.boundingBox.insetBy(dx: -padX, dy: -padY).intersection(imageBounds)
         guard !padded.isEmpty else { return nil }
         return image.cropping(to: padded)
+    }
+}
+
+extension DetectedFaceLandmarks {
+    /// Converts Vision's bottom-left/y-up landmark regions once into top-left/y-down pixel space.
+    fileprivate nonisolated init(from vnLandmarks: VNFaceLandmarks2D, imageSize: CGSize) {
+        func extract(_ region: VNFaceLandmarkRegion2D?) -> [CGPoint] {
+            guard let region else { return [] }
+            return region.pointsInImage(imageSize: imageSize).map {
+                CGPoint(x: $0.x, y: imageSize.height - $0.y)
+            }
+        }
+
+        let regionPairs: [(LandmarkRegion, VNFaceLandmarkRegion2D?)] = [
+            (.leftEye, vnLandmarks.leftEye),
+            (.rightEye, vnLandmarks.rightEye),
+            (.leftEyebrow, vnLandmarks.leftEyebrow),
+            (.rightEyebrow, vnLandmarks.rightEyebrow),
+            (.nose, vnLandmarks.nose),
+            (.noseCrest, vnLandmarks.noseCrest),
+            (.outerLips, vnLandmarks.outerLips),
+            (.innerLips, vnLandmarks.innerLips),
+            (.faceContour, vnLandmarks.faceContour),
+            (.medianLine, vnLandmarks.medianLine)
+        ]
+
+        var extractedRegions: [LandmarkRegion: [CGPoint]] = [:]
+        for (regionCase, vnRegion) in regionPairs {
+            let points = extract(vnRegion)
+            if !points.isEmpty {
+                extractedRegions[regionCase] = points
+            }
+        }
+
+        self.init(
+            regions: extractedRegions,
+            leftPupil: extract(vnLandmarks.leftPupil),
+            rightPupil: extract(vnLandmarks.rightPupil)
+        )
     }
 }

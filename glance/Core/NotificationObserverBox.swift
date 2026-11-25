@@ -10,14 +10,16 @@ import Foundation
 import os
 
 nonisolated final class NotificationObserverBox: Sendable {
-    private struct State: @unchecked Sendable {
-        var entries: [(center: NotificationCenter, token: NSObjectProtocol)] = []
+    private nonisolated struct Entry: @unchecked Sendable {
+        let center: NotificationCenter
+        let token: NSObjectProtocol
     }
 
-    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let state = OSAllocatedUnfairLock(initialState: [Entry]())
 
     func add(_ token: NSObjectProtocol, center: NotificationCenter = .default) {
-        state.withLock { $0.entries.append((center, token)) }
+        let entry = Entry(center: center, token: token)
+        state.withLock { $0.append(entry) }
     }
 
     func observe(
@@ -31,14 +33,41 @@ nonisolated final class NotificationObserverBox: Sendable {
         add(token, center: center)
     }
 
-    deinit {
-        let entries = state.withLock { state in
-            let current = state.entries
-            state.entries.removeAll()
+    func removeAll() {
+        let entries = state.withLock { entries in
+            let current = entries
+            entries.removeAll()
             return current
         }
         for entry in entries {
             entry.center.removeObserver(entry.token)
         }
+    }
+
+    deinit {
+        removeAll()
+    }
+}
+
+/// Thread-safe box holding a cancellable `Task<Void, Never>` that cancels the
+/// previous task on replacement and cancels any active task on `deinit` outside `@MainActor`.
+nonisolated final class CancellableTaskBox: Sendable {
+    private let task = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+
+    func replace(with newTask: Task<Void, Never>?) {
+        let previous = task.withLock { current in
+            let old = current
+            current = newTask
+            return old
+        }
+        previous?.cancel()
+    }
+
+    func cancel() {
+        replace(with: nil)
+    }
+
+    deinit {
+        cancel()
     }
 }

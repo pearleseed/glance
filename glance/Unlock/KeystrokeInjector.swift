@@ -40,8 +40,7 @@ enum KeystrokeInjector {
     /// Triggers the system prompt to grant Accessibility (deep links to System Settings).
     @discardableResult
     nonisolated static func promptForAccessibility() -> Bool {
-        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
-        let options = [promptKey: true] as CFDictionary
+        let options = ["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
 

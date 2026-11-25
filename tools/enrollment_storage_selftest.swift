@@ -361,7 +361,7 @@ struct EnrollmentStorageSelfTest {
         )
     }
 
-    private static func isStoreUnreadable(_ error: Error) -> Bool {
+    private nonisolated static func isStoreUnreadable(_ error: Error) -> Bool {
         if case FaceEnrollmentStoreError.storeUnreadable = error {
             return true
         }

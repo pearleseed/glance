@@ -58,7 +58,7 @@ import Observation
 import SwiftUI
 import os
 
-private struct MockR50Embedder: FaceEmbedder {
+private nonisolated struct MockR50Embedder: FaceEmbedder {
     nonisolated let name = ArcFaceEmbedder.name
     nonisolated let modelIdentifier = ArcFaceEmbedder.modelIdentifier
     nonisolated let embeddingDimension = 512

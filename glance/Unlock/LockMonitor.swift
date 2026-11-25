@@ -47,25 +47,12 @@ final class LockMonitor {
     private(set) var lastEvent: LockEventKind?
     private(set) var eventCount: Int = 0
 
-    private var distributedObservers: [NSObjectProtocol] = []
-    private var workspaceObservers: [NSObjectProtocol] = []
-    private var returnWatchTimer: Timer?
+    private let observerBox = NotificationObserverBox()
+    private let returnWatchBox = CancellableTaskBox()
     private var lastIdleSeconds: Double = 0
 
     init() {
         startMonitoring()
-    }
-
-    deinit {
-        returnWatchTimer?.invalidate()
-        let distributed = DistributedNotificationCenter.default()
-        for observer in distributedObservers {
-            distributed.removeObserver(observer)
-        }
-        let workspace = NSWorkspace.shared.notificationCenter
-        for observer in workspaceObservers {
-            workspace.removeObserver(observer)
-        }
     }
 
     private func startMonitoring() {
@@ -75,48 +62,51 @@ final class LockMonitor {
 
     private func registerDistributedObservers() {
         let distributed = DistributedNotificationCenter.default()
-        distributedObservers.append(
-            distributed.addObserver(
-                forName: Notification.Name("com.apple.screenIsLocked"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+        observerBox.observe(
+            center: distributed,
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isScreenLocked = true
                 if !self.isSleeping && !self.isDisplayAsleep {
                     self.startReturnWatch()
                 }
                 self.record(.screenLocked)
-            })
-        distributedObservers.append(
-            distributed.addObserver(
-                forName: Notification.Name("com.apple.screenIsUnlocked"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+            }
+        }
+        observerBox.observe(
+            center: distributed,
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isScreenLocked = false
                 self.isSleeping = false
                 self.isDisplayAsleep = false
                 self.stopReturnWatch()
                 self.record(.screenUnlocked)
-            })
-        distributedObservers.append(
-            distributed.addObserver(
-                forName: Notification.Name("com.apple.screensaver.didstart"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+            }
+        }
+        observerBox.observe(
+            center: distributed,
+            forName: Notification.Name("com.apple.screensaver.didstart"),
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 self?.startReturnWatch()
-            })
+            }
+        }
         // Observing the key press that dismissed the screensaver isn't possible — Secure Event Input suppresses keyboard taps
         // on the lock screen regardless of Accessibility trust — so this notification stands in for it.
-        distributedObservers.append(
-            distributed.addObserver(
-                forName: Notification.Name("com.apple.screensaver.didstop"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+        observerBox.observe(
+            center: distributed,
+            forName: Notification.Name("com.apple.screensaver.didstop"),
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isSleeping = false
                 self.isDisplayAsleep = false
@@ -125,37 +115,42 @@ final class LockMonitor {
                     self.startReturnWatch()
                 }
                 self.record(.wake)
-            })
+            }
+        }
     }
 
     private func registerWorkspaceObservers() {
         let workspace = NSWorkspace.shared.notificationCenter
-        workspaceObservers.append(
-            workspace.addObserver(
-                forName: NSWorkspace.willSleepNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                self?.isSleeping = true
-                self?.stopReturnWatch()
-                self?.record(.willSleep)
-            })
-        workspaceObservers.append(
-            workspace.addObserver(
-                forName: NSWorkspace.screensDidSleepNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                self?.isDisplayAsleep = true
-                self?.stopReturnWatch()
-            })
+        observerBox.observe(
+            center: workspace,
+            forName: NSWorkspace.willSleepNotification,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isSleeping = true
+                self.stopReturnWatch()
+                self.record(.willSleep)
+            }
+        }
+        observerBox.observe(
+            center: workspace,
+            forName: NSWorkspace.screensDidSleepNotification,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isDisplayAsleep = true
+                self.stopReturnWatch()
+            }
+        }
         // Display- and system-level wake are treated as equivalent triggers — they land within ~100ms of each other in either order.
-        workspaceObservers.append(
-            workspace.addObserver(
-                forName: NSWorkspace.screensDidWakeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+        observerBox.observe(
+            center: workspace,
+            forName: NSWorkspace.screensDidWakeNotification,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isDisplayAsleep = false
                 self.lastDisplayWakeAt = .now
@@ -163,13 +158,14 @@ final class LockMonitor {
                 if Self.isScreenActuallyLocked() {
                     self.startReturnWatch()
                 }
-            })
-        workspaceObservers.append(
-            workspace.addObserver(
-                forName: NSWorkspace.didWakeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+            }
+        }
+        observerBox.observe(
+            center: workspace,
+            forName: NSWorkspace.didWakeNotification,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.isDisplayAsleep = false
                 self.lastSystemWakeAt = .now
@@ -177,23 +173,25 @@ final class LockMonitor {
                 if Self.isScreenActuallyLocked() {
                     self.startReturnWatch()
                 }
-            })
+            }
+        }
     }
 
     private func startReturnWatch() {
         stopReturnWatch()
         lastIdleSeconds = 0
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.checkUserReturned()
+        let task = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1), tolerance: .milliseconds(250))
+                guard !Task.isCancelled, let self else { return }
+                self.checkUserReturned()
+            }
         }
-        timer.tolerance = 0.25
-        RunLoop.main.add(timer, forMode: .common)
-        returnWatchTimer = timer
+        returnWatchBox.replace(with: task)
     }
 
     private func stopReturnWatch() {
-        returnWatchTimer?.invalidate()
-        returnWatchTimer = nil
+        returnWatchBox.cancel()
     }
 
     private func checkUserReturned() {

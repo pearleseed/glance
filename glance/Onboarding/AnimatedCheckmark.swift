@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-private struct CheckmarkShape: Shape {
+private nonisolated struct CheckmarkShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         let w = rect.width

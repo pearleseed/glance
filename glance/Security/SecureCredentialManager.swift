@@ -46,7 +46,7 @@ extension Notification.Name {
         "SecureCredentialManager.sessionDidChange")
 }
 
-enum LoginKeyUnlockResult: Equatable, Sendable {
+nonisolated enum LoginKeyUnlockResult: Equatable, Sendable {
     case unlocked
     case notConfigured
     case transientFailure
@@ -64,7 +64,9 @@ enum SecureCredentialManager {
     nonisolated private static let sessionKeyAccount = "sessionKey"
     nonisolated private static let loginKeyAccount = "sessionKeyAtLogin"
     nonisolated private static let passwordBlobAccount = "encryptedPassword"
-    nonisolated private static let passwordBlobAccessible: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    nonisolated private static var passwordBlobAccessible: CFString {
+        kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    }
 
     /// Runs once (thread-safe via Swift `static let` dispatch-once initialization) to move
     /// pre-v1.3 password blobs from the legacy keychain into the Data Protection Keychain
@@ -431,10 +433,6 @@ enum SecureCredentialManager {
 
         setCachedKey(candidateKey, passwordCiphertext: ciphertext)
         return .unlocked
-    }
-
-    nonisolated static func unlockSessionFromLoginKey() -> Bool {
-        unlockSessionFromLoginKeyResult() == .unlocked
     }
 
     /// Clears the cached session key and encrypted password blob. Next save/read requires Touch ID again.

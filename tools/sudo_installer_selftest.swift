@@ -15,6 +15,7 @@
 
 import Darwin
 import Foundation
+import os
 
 @main
 struct SudoInstallerSelfTest {
@@ -1750,21 +1751,23 @@ struct SudoInstallerSelfTest {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
-        var outData = Data()
-        var errData = Data()
+        let outBox = OSAllocatedUnfairLock(initialState: Data())
+        let errBox = OSAllocatedUnfairLock(initialState: Data())
         let group = DispatchGroup()
 
         try! process.run()
 
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            outBox.withLock { $0 = data }
             group.leave()
         }
 
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let data = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errBox.withLock { $0 = data }
             group.leave()
         }
 
@@ -1773,8 +1776,8 @@ struct SudoInstallerSelfTest {
 
         return (
             process.terminationStatus,
-            String(decoding: outData, as: UTF8.self),
-            String(decoding: errData, as: UTF8.self)
+            String(decoding: outBox.withLock { $0 }, as: UTF8.self),
+            String(decoding: errBox.withLock { $0 }, as: UTF8.self)
         )
     }
 

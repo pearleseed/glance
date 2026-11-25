@@ -38,7 +38,7 @@ final class ScanAnimationHostView: NSView {
     private var currentColor: UnlockAnimationColor?
     private var currentCompact: Bool?
     private var readyObservation: NSKeyValueObservation?
-    private var fallbackRevealWorkItem: DispatchWorkItem?
+    private let fallbackRevealBox = CancellableTaskBox()
     private var compositionTask: Task<Void, Never>?
     private var playbackGeneration: UInt64 = 0
 
@@ -65,11 +65,8 @@ final class ScanAnimationHostView: NSView {
         compositionTask = nil
         readyObservation?.invalidate()
         readyObservation = nil
-        fallbackRevealWorkItem?.cancel()
-        fallbackRevealWorkItem = nil
         player?.pause()
         player = nil
-        playerLayer.player = nil
     }
 
     override func layout() {
@@ -168,9 +165,8 @@ final class ScanAnimationHostView: NSView {
         // real decode time and produced a black-frame flash.
         readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, change in
             guard change.newValue == true else { return }
-            DispatchQueue.main.async {
-                self?.fallbackRevealWorkItem?.cancel()
-                self?.fallbackRevealWorkItem = nil
+            Task { @MainActor [weak self] in
+                self?.fallbackRevealBox.cancel()
                 self?.revealPlayerLayer()
                 self?.readyObservation?.invalidate()
                 self?.readyObservation = nil
@@ -178,9 +174,13 @@ final class ScanAnimationHostView: NSView {
         }
         // Safety net only — if isReadyForDisplay never fires for some
         // reason, don't get stuck on the still forever.
-        let fallback = DispatchWorkItem { [weak self] in self?.revealPlayerLayer() }
-        fallbackRevealWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: fallback)
+        fallbackRevealBox.replace(
+            with: Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(0.6))
+                guard !Task.isCancelled, let self else { return }
+                self.revealPlayerLayer()
+            }
+        )
 
         newPlayer.seek(to: .zero)
         newPlayer.play()
@@ -192,8 +192,7 @@ final class ScanAnimationHostView: NSView {
         compositionTask = nil
         readyObservation?.invalidate()
         readyObservation = nil
-        fallbackRevealWorkItem?.cancel()
-        fallbackRevealWorkItem = nil
+        fallbackRevealBox.cancel()
         player?.pause()
         player = nil
         playerLayer.player = nil
