@@ -202,13 +202,22 @@ struct PasswordSettingsPage: View {
     private func removePassword() {
         do {
             try SecureCredentialManager.deletePassword()
-            FaceEnrollmentStore.shared.deleteAll()
-            sessionError = nil
-            pocController.sessionError = nil
-            pocController.refreshCredentialStatus()
-            statusMessage = "Password and face enrollment removed."
         } catch {
             statusMessage = "Couldn't remove: \(error.localizedDescription)"
+            return
+        }
+
+        sessionError = nil
+        pocController.sessionError = nil
+        pocController.refreshCredentialStatus()
+
+        do {
+            try FaceEnrollmentStore.shared.deleteAll()
+            statusMessage = "Password and face enrollment removed."
+        } catch {
+            statusMessage =
+                "Password removed from Keychain, but enrolled faces couldn't be deleted: "
+                + error.localizedDescription
         }
     }
 }

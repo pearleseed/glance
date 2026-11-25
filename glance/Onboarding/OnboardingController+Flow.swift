@@ -220,12 +220,18 @@ extension OnboardingController {
 
     private func unlockSessionAndClearOrphans() async throws {
         let hadOrphanedData = try await Task.detached(priority: .userInitiated) {
-            guard SecureCredentialManager.isSessionKeyMissingWithOrphanedData else { return false }
-            try SecureCredentialManager.deletePassword()
-            return true
+            switch SecureCredentialManager.orphanedDataClassification() {
+            case .confirmedOrphaned:
+                try SecureCredentialManager.deletePassword()
+                return true
+            case .indeterminate(let status):
+                throw KeychainError.osStatus(status)
+            case .noEncryptedData, .keyPresent:
+                return false
+            }
         }.value
         if hadOrphanedData {
-            store.deleteAll()
+            try store.deleteAll()
         }
         try await SecureCredentialManager.unlockSession(reason: "Set up Glance")
         store.reloadIfUnlocked()

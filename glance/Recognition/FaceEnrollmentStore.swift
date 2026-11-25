@@ -159,11 +159,14 @@ struct FaceIdentity: Codable, Identifiable, Equatable {
     }
 }
 
-enum FaceEnrollmentStoreError: LocalizedError {
+enum FaceEnrollmentStoreError: LocalizedError, Equatable {
+    case sessionLocked
     case storeUnreadable
 
     var errorDescription: String? {
         switch self {
+        case .sessionLocked:
+            return "Session is locked. Authenticate with Touch ID to modify enrolled faces."
         case .storeUnreadable:
             return "Your enrolled faces couldn't be read, so nothing was saved — writing now would overwrite them."
         }
@@ -173,58 +176,93 @@ enum FaceEnrollmentStoreError: LocalizedError {
 @Observable
 @MainActor
 final class FaceEnrollmentStore {
+    nonisolated enum LoadState: Equatable, Sendable {
+        case locked
+        case ready
+        case failed(String)
+    }
+
+    nonisolated struct Storage: Sendable {
+        let isSessionUnlocked: @Sendable () -> Bool
+        let load: @Sendable () throws -> [FaceIdentity]
+        let save: @Sendable ([FaceIdentity]) throws -> Void
+        let deleteAll: @Sendable () throws -> Void
+
+        static let live = Storage(
+            isSessionUnlocked: { SecureCredentialManager.isSessionUnlocked },
+            load: { try SecureFaceStore.load() },
+            save: { try SecureFaceStore.save($0) },
+            deleteAll: { try SecureFaceStore.deleteAll() }
+        )
+    }
+
     /// Shared so the Face Lab tab and onboarding window observe and persist the same identities, not diverging copies.
     static let shared = FaceEnrollmentStore()
 
     private(set) var identities: [FaceIdentity] = []
+    private(set) var loadState: LoadState = .locked
+
     /// True until a successful load — distinguishes "nothing enrolled yet" from "locked, needs Touch ID."
-    private(set) var isLocked = true
+    var isLocked: Bool {
+        loadState == .locked
+    }
 
     /// Non-nil when unlocked but the encrypted store still couldn't be read (decrypt/decode failure, not a missing key) —
     /// unlike `isLocked`, unlocking again won't fix this.
-    private(set) var loadFailure: String?
+    var loadFailure: String? {
+        if case .failed(let message) = loadState {
+            return message
+        }
+        return nil
+    }
 
-    /// False until a load succeeds. Guards `persist()` so an unreadable store is never overwritten by an empty array.
-    private var hasLoadedSuccessfully = false
+    private let storage: Storage
+    @ObservationIgnored nonisolated(unsafe) private var sessionObserver: (any NSObjectProtocol)?
 
     /// Everyone the user hasn't switched off — what unlock actually scores against. `identities` stays the full list.
     var activeIdentities: [FaceIdentity] {
         identities.filter(\.isEnabled)
     }
 
-    private init() {
+    init(storage: Storage = .live, observeSessionNotifications: Bool = true) {
+        self.storage = storage
         reloadIfUnlocked()
-        // Reload whenever the session key changes, regardless of call site, so this store can't go stale
-        // relative to whichever UI changed the session.
-        NotificationCenter.default.addObserver(
-            forName: .secureCredentialSessionDidChange,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.reloadIfUnlocked()
+        if observeSessionNotifications {
+            // Reload whenever the session key changes, regardless of call site, so this store can't go stale
+            // relative to whichever UI changed the session.
+            sessionObserver = NotificationCenter.default.addObserver(
+                forName: .secureCredentialSessionDidChange,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.reloadIfUnlocked()
+                }
             }
         }
     }
 
-    /// Re-attempts loading from encrypted storage. A no-op (leaves
-    /// `isLocked = true`) if the session isn't unlocked yet.
+    deinit {
+        if let sessionObserver {
+            NotificationCenter.default.removeObserver(sessionObserver)
+        }
+    }
+
+    /// Re-attempts loading from encrypted storage. Transitions to `.locked` when the session isn't unlocked yet.
     func reloadIfUnlocked() {
-        guard SecureCredentialManager.isSessionUnlocked else {
-            isLocked = true
+        guard storage.isSessionUnlocked() else {
+            loadState = .locked
             return
         }
         do {
-            identities = try SecureFaceStore.load()
-            hasLoadedSuccessfully = true
-            loadFailure = nil
+            identities = try storage.load()
+            loadState = .ready
         } catch {
             // Deliberately not `(try? load()) ?? []` — a store we couldn't read isn't an empty store, and the next
             // write must not persist an empty array over a file that still holds every sample.
             identities = []
-            loadFailure = error.localizedDescription
+            loadState = .failed(error.localizedDescription)
         }
-        isLocked = false
     }
 
     /// Adds one captured sample to `name`'s identity (creating it if new). Existing samples from a different embedder
@@ -236,18 +274,19 @@ final class FaceEnrollmentStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
+        var candidate = identities
         let sample = FaceSample(embedding: embedding, pose: pose, capturedAt: Date(), quality: quality)
 
-        if let index = identities.firstIndex(where: { $0.name == trimmed }) {
-            if identities[index].modelIdentifier != embedder.modelIdentifier {
-                identities[index].samples = [sample]
+        if let index = candidate.firstIndex(where: { $0.name == trimmed }) {
+            if candidate[index].modelIdentifier != embedder.modelIdentifier {
+                candidate[index].samples = [sample]
             } else {
-                identities[index].samples.append(sample)
+                candidate[index].samples.append(sample)
             }
-            identities[index].modelIdentifier = embedder.modelIdentifier
-            identities[index].embeddingDimension = embedder.embeddingDimension
+            candidate[index].modelIdentifier = embedder.modelIdentifier
+            candidate[index].embeddingDimension = embedder.embeddingDimension
         } else {
-            identities.append(
+            candidate.append(
                 FaceIdentity(
                     id: UUID(),
                     name: trimmed,
@@ -257,7 +296,7 @@ final class FaceEnrollmentStore {
                     createdAt: Date()
                 ))
         }
-        try persist()
+        try saveTransaction(candidate)
         return true
     }
 
@@ -273,15 +312,15 @@ final class FaceEnrollmentStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !samples.isEmpty else { return nil }
 
-        // Local copy, only assigned once the write succeeds — otherwise a locked session would show an unsaved save.
-        var updated = identities
+        // Local copy, only assigned once the write succeeds — otherwise a locked or failed store would show an unsaved save.
+        var candidate = identities
         let committed: FaceIdentity
-        if let existingID, let index = updated.firstIndex(where: { $0.id == existingID }) {
-            updated[index].name = trimmed
-            updated[index].samples = samples
-            updated[index].modelIdentifier = embedder.modelIdentifier
-            updated[index].embeddingDimension = embedder.embeddingDimension
-            committed = updated[index]
+        if let existingID, let index = candidate.firstIndex(where: { $0.id == existingID }) {
+            candidate[index].name = trimmed
+            candidate[index].samples = samples
+            candidate[index].modelIdentifier = embedder.modelIdentifier
+            candidate[index].embeddingDimension = embedder.embeddingDimension
+            committed = candidate[index]
         } else {
             // Also the fallback if `existingID` no longer resolves (deleted mid-flow) — saving as new beats discarding.
             committed = FaceIdentity(
@@ -292,10 +331,9 @@ final class FaceEnrollmentStore {
                 embeddingDimension: embedder.embeddingDimension,
                 createdAt: Date()
             )
-            updated.append(committed)
+            candidate.append(committed)
         }
-        try SecureFaceStore.save(updated)
-        identities = updated
+        try saveTransaction(candidate)
         return committed
     }
 
@@ -310,39 +348,44 @@ final class FaceEnrollmentStore {
         }
     }
 
-    /// Reverts the in-memory flag if the encrypted write fails, rather than showing a toggle state that isn't on disk.
+    /// Only updates the in-memory flag if the encrypted write succeeds, rather than showing a toggle state that isn't on disk.
     func setEnabled(_ isEnabled: Bool, for identityID: UUID) throws {
-        guard let index = identities.firstIndex(where: { $0.id == identityID }) else { return }
-        let previous = identities[index].isEnabled
-        guard previous != isEnabled else { return }
-        identities[index].isEnabled = isEnabled
-        do {
-            try persist()
-        } catch {
-            identities[index].isEnabled = previous
-            throw error
-        }
+        try requireReadyForWrite()
+        var candidate = identities
+        guard let index = candidate.firstIndex(where: { $0.id == identityID }) else { return }
+        guard candidate[index].isEnabled != isEnabled else { return }
+        candidate[index].isEnabled = isEnabled
+        try saveTransaction(candidate)
     }
 
     func delete(_ identity: FaceIdentity) throws {
-        identities.removeAll { $0.id == identity.id }
-        try persist()
+        var candidate = identities
+        candidate.removeAll { $0.id == identity.id }
+        try saveTransaction(candidate)
     }
 
     /// Removes the file outright (rather than writing an empty array) — the teardown path when the session key
     /// itself is being removed, so no orphaned encrypted file is left behind for the next setup to trip over.
-    func deleteAll() {
+    func deleteAll() throws {
+        try storage.deleteAll()
         identities.removeAll()
-        SecureFaceStore.deleteAll()
-        loadFailure = nil
-        hasLoadedSuccessfully = true
+        loadState = storage.isSessionUnlocked() ? .ready : .locked
     }
 
-    private func persist() throws {
-        // Refuses to write when the last load failed, so an unreadable store can't be silently replaced by an empty array.
-        guard hasLoadedSuccessfully else {
+    private func requireReadyForWrite() throws {
+        switch loadState {
+        case .locked:
+            throw FaceEnrollmentStoreError.sessionLocked
+        case .failed:
             throw FaceEnrollmentStoreError.storeUnreadable
+        case .ready:
+            break
         }
-        try SecureFaceStore.save(identities)
+    }
+
+    private func saveTransaction(_ candidate: [FaceIdentity]) throws {
+        try requireReadyForWrite()
+        try storage.save(candidate)
+        identities = candidate
     }
 }
