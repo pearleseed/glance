@@ -886,7 +886,8 @@ struct PerformanceSelfTest {
         // Marker centered at (60.0, 50.0) in working-frame top-left coordinates (inside face & 0.15 pad),
         // plus an outer margin marker at (200.0, 190.0) inside 0.5 pad but OUTSIDE 0.15 pad.
         let innerMarker = CGRect(x: 52, y: 42, width: 16, height: 16)  // center (60, 50)
-        let outerMarginMarker = CGRect(x: 192, y: 182, width: 16, height: 16)  // center (200, 190), 0.15 pad ends at (171, 173)
+        // center (200, 190), 0.15 pad ends at (171, 173)
+        let outerMarginMarker = CGRect(x: 192, y: 182, width: 16, height: 16)
         let nativeTopLeftImg = makeMarkerImage(width: Int(nativeSize.width), height: Int(nativeSize.height)) { x, y in
             let wx = CGFloat(x) / scale
             let wy = CGFloat(y) / scale
@@ -1655,6 +1656,13 @@ struct PerformanceSelfTest {
         )
     }
 
+    private static func pathElements(of path: Path) -> [Path.Element] {
+        var elements: [Path.Element] = []
+        // swift-format-ignore: ReplaceForEachWithForLoop
+        path.forEach { elements.append($0) }
+        return elements
+    }
+
     private static func testNotchShapePathMatchesReferenceContinuousCorner() {
         let fastRect = CGRect(x: 0, y: 0, width: 380, height: 260)
         let clampedHeightRect = CGRect(x: 0, y: 0, width: 200, height: 32)
@@ -1693,8 +1701,7 @@ struct PerformanceSelfTest {
 
         for (label, rect, topRadius, bottomRadius) in cases {
             let shapePath = NotchShape(topRadius: topRadius, bottomRadius: bottomRadius, style: .notch).path(in: rect)
-            var shapeElements: [Path.Element] = []
-            shapePath.forEach { shapeElements.append($0) }
+            let shapeElements = pathElements(of: shapePath)
 
             precondition(
                 shapeElements.count == 13,
@@ -1745,8 +1752,7 @@ struct PerformanceSelfTest {
                 topTrailingRadius: 0,
                 style: .continuous
             ).path(in: bodyRect)
-            var refElements: [Path.Element] = []
-            refPath.forEach { refElements.append($0) }
+            let refElements = pathElements(of: refPath)
             guard
                 refElements.count >= 9,
                 case .line(let p1) = refElements[1],

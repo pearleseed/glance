@@ -283,6 +283,7 @@ private nonisolated enum ContinuousCorner {
         ).path(in: bodyRect)
 
         var elements: [Path.Element] = []
+        // swift-format-ignore: ReplaceForEachWithForLoop
         reference.forEach { elements.append($0) }
 
         // Emitted order (verified empirically): move → line down the right edge (to p1,

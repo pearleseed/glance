@@ -35,7 +35,12 @@ import Security
 private var passed = 0
 private var failed = 0
 
-private func check(_ condition: @autoclosure () -> Bool, _ message: String, file: StaticString = #file, line: UInt = #line) {
+private func check(
+    _ condition: @autoclosure () -> Bool,
+    _ message: String,
+    file: StaticString = #file,
+    line: UInt = #line
+) {
     if condition() {
         passed += 1
     } else {
@@ -81,7 +86,10 @@ private func testGraphemeSplitting() {
     var oversized: [UInt16] = [0x0061]  // 'a'
     oversized.append(contentsOf: Array(repeating: 0x0301, count: 25))  // 25 combining acutes
     let oversizedRanges = KeystrokeInjector.splitUTF16GraphemeRanges(oversized, maxClusterLength: 10)
-    check(oversizedRanges.count == 3, "26-unit cluster with maxClusterLength=10 should split into 3 chunks, got \(oversizedRanges)")
+    check(
+        oversizedRanges.count == 3,
+        "26-unit cluster with maxClusterLength=10 should split into 3 chunks, got \(oversizedRanges)"
+    )
     check(oversizedRanges.allSatisfy { $0.count <= 10 }, "No chunk may exceed maxClusterLength")
     check(oversizedRanges.map(\.count).reduce(0, +) == oversized.count, "Chunks must cover entire buffer")
 }
