@@ -26,8 +26,12 @@ produces the model file; wiring it in is a separate, reviewable step.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import sys
 from pathlib import Path
+from typing import Callable
+from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "glance" / "Models" / "ArcFace.mlpackage"
@@ -90,7 +94,20 @@ def locate_or_download_onnx(variant: str, explicit_path: str | None) -> Path:
     return matches[0]
 
 
-def convert_to_coreml(onnx_path: Path, output_path: Path, *, variant: str, quantize: str) -> tuple:
+class ConversionError(RuntimeError):
+    """Raised when Core ML conversion or parity verification fails."""
+
+
+def _remove_path(path: Path) -> None:
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path)
+
+
+def convert_to_coreml(onnx_path: Path, output_path: Path, *, variant: str, quantize: str) -> Path:
     import coremltools as ct
     from onnx2torch import convert
     import onnx
@@ -149,21 +166,27 @@ def convert_to_coreml(onnx_path: Path, output_path: Path, *, variant: str, quant
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mlmodel.save(str(output_path))
     print(f"Saved {output_path}")
-    return mlmodel, onnx_path
+    return output_path
 
 
-def verify_parity(mlmodel, onnx_path: Path, *, min_cosine: float = 0.999) -> float:
-    """The real correctness check: feed identical random pixels through both
-    the original ONNX graph and the converted Core ML model, and confirm
-    they agree. Shape-only checks would miss a channel-order or scale bug —
-    exactly the kind of mistake that silently wrecks ArcFace accuracy
-    without ever throwing an error.
+def verify_parity(package_path: Path, onnx_path: Path, *, min_cosine: float = 0.999) -> float:
+    """The real correctness check: reload the saved Core ML package from disk,
+    feed identical random pixels through both the original ONNX graph and the
+    reloaded Core ML model, and confirm they agree. Shape-only checks would miss
+    a channel-order or scale bug — exactly the kind of mistake that silently
+    wrecks ArcFace accuracy without ever throwing an error.
     """
+    import coremltools as ct
     import numpy as np
     import onnxruntime as ort
     from PIL import Image
 
-    print("\nVerifying ONNX <-> Core ML numerical parity on random input...")
+    print(f"\nVerifying ONNX <-> Core ML numerical parity on saved package {package_path}...")
+    try:
+        mlmodel = ct.models.MLModel(str(package_path))
+    except Exception as exc:
+        raise ConversionError(f"Failed to load saved Core ML package {package_path}: {exc}") from exc
+
     rng = np.random.default_rng(0)
     pixels = rng.integers(0, 256, size=(112, 112, 3), dtype=np.uint8)
 
@@ -178,18 +201,78 @@ def verify_parity(mlmodel, onnx_path: Path, *, min_cosine: float = 0.999) -> flo
     coreml_out = np.array(prediction["embedding"]).flatten()
 
     if onnx_out.shape != (512,) or coreml_out.shape != (512,):
-        fail(f"Unexpected output shape: onnx={onnx_out.shape}, coreml={coreml_out.shape} (expected (512,))")
+        raise ConversionError(
+            f"Unexpected output shape: onnx={onnx_out.shape}, coreml={coreml_out.shape} (expected (512,))"
+        )
 
-    cosine = float(np.dot(onnx_out, coreml_out) / (np.linalg.norm(onnx_out) * np.linalg.norm(coreml_out)))
+    norm_product = float(np.linalg.norm(onnx_out) * np.linalg.norm(coreml_out))
+    if norm_product == 0.0:
+        raise ConversionError("Parity check failed — model produced a zero-norm embedding.")
+
+    cosine = float(np.dot(onnx_out, coreml_out) / norm_product)
     print(f"ONNX vs Core ML cosine similarity: {cosine:.6f}  (expect >= {min_cosine:.3f})")
     if not (cosine >= min_cosine):
-        fail(
+        raise ConversionError(
             "Parity check failed — the converted model disagrees with the original. "
             "Most likely cause: preprocessing mismatch (channel order RGB vs BGR, or "
             "scale/bias). Do not use this model until this passes."
         )
     print("Parity check passed. The conversion is numerically correct.")
     return cosine
+
+
+def promote_package(
+    candidate_path: Path,
+    destination_path: Path,
+    *,
+    rename_fn: Callable[[Path, Path], object] = os.rename,
+) -> None:
+    """Atomically promote a verified staging package to destination_path with rollback."""
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path: Path | None = None
+    if os.path.lexists(destination_path):
+        backup_path = destination_path.parent / f".{destination_path.name}.backup-{uuid4().hex}"
+        rename_fn(destination_path, backup_path)
+
+    try:
+        rename_fn(candidate_path, destination_path)
+    except Exception:
+        if (
+            backup_path is not None
+            and os.path.lexists(backup_path)
+            and not os.path.lexists(destination_path)
+        ):
+            rename_fn(backup_path, destination_path)
+        raise
+
+    if backup_path is not None:
+        _remove_path(backup_path)
+
+
+def build_and_publish(
+    onnx_path: Path,
+    output_path: Path,
+    *,
+    variant: str,
+    quantize: str,
+    skip_verify: bool,
+    converter: Callable[..., object] = convert_to_coreml,
+    verifier: Callable[..., float] = verify_parity,
+    promoter: Callable[[Path, Path], None] = promote_package,
+) -> Path:
+    """Convert into a sibling staging path, verify on disk, and atomically publish."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = output_path.parent / f".{output_path.name}.staging-{uuid4().hex}.mlpackage"
+    try:
+        converter(onnx_path, staging_path, variant=variant, quantize=quantize)
+        if not skip_verify:
+            min_cosine = 0.995 if quantize == "int8" else 0.999
+            verifier(staging_path, onnx_path, min_cosine=min_cosine)
+        promoter(staging_path, output_path)
+    finally:
+        _remove_path(staging_path)
+    return output_path
 
 
 def main() -> None:
@@ -207,18 +290,19 @@ def main() -> None:
     args = parser.parse_args()
 
     onnx_path = locate_or_download_onnx(args.variant, args.onnx_path)
-    mlmodel, onnx_path = convert_to_coreml(
-        onnx_path,
-        Path(args.output),
-        variant=args.variant,
-        quantize=args.quantize,
-    )
+    output_path = Path(args.output)
+    try:
+        build_and_publish(
+            onnx_path,
+            output_path,
+            variant=args.variant,
+            quantize=args.quantize,
+            skip_verify=args.skip_verify,
+        )
+    except ConversionError as exc:
+        fail(str(exc))
 
-    if not args.skip_verify:
-        min_cosine = 0.995 if args.quantize == "int8" else 0.999
-        verify_parity(mlmodel, onnx_path, min_cosine=min_cosine)
-
-    print(f"\nDone. Model ready at: {args.output}")
+    print(f"\nDone. Model ready at: {output_path}")
     print("Next: add this file to the Xcode project (glance/Models/ArcFace.mlpackage) if not auto-picked-up,")
     print("then build — ArcFaceEmbedder.swift will load it from the app bundle at runtime.")
 
