@@ -9,6 +9,12 @@ import Foundation
 import LocalAuthentication
 import Security
 
+nonisolated enum KeychainExistence: Equatable, Sendable {
+    case present
+    case absent
+    case indeterminate(OSStatus)
+}
+
 enum KeychainError: LocalizedError {
     case itemNotFound
     case unexpectedData
@@ -60,9 +66,44 @@ enum KeychainManager {
         return SecItemCopyMatching(query as CFDictionary, nil)
     }
 
+    nonisolated static func classifyExistence(status: OSStatus) -> KeychainExistence {
+        switch status {
+        case errSecSuccess, errSecInteractionNotAllowed:
+            return .present
+        case errSecItemNotFound:
+            return .absent
+        default:
+            return .indeterminate(status)
+        }
+    }
+
+    nonisolated static func combineExistence(dataProtection: OSStatus, legacy: OSStatus) -> KeychainExistence {
+        if classifyExistence(status: dataProtection) == .present
+            || classifyExistence(status: legacy) == .present
+        {
+            return .present
+        }
+        if (dataProtection == errSecItemNotFound || dataProtection == errSecMissingEntitlement)
+            && legacy == errSecItemNotFound
+        {
+            return .absent
+        }
+        if dataProtection != errSecItemNotFound && dataProtection != errSecMissingEntitlement {
+            return .indeterminate(dataProtection)
+        }
+        return .indeterminate(legacy)
+    }
+
+    /// Attributes-only existence classification across Data Protection and legacy Keychains — never prompts.
+    nonisolated static func existence(account: String) -> KeychainExistence {
+        combineExistence(
+            dataProtection: existenceStatus(account: account, dataProtection: true),
+            legacy: existenceStatus(account: account, dataProtection: false)
+        )
+    }
+
     nonisolated private static func exists(account: String, dataProtection: Bool) -> Bool {
-        let status = existenceStatus(account: account, dataProtection: dataProtection)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        classifyExistence(status: existenceStatus(account: account, dataProtection: dataProtection)) == .present
     }
 
     nonisolated static func existsInDataProtection(account: String) -> Bool {
@@ -75,7 +116,7 @@ enum KeychainManager {
 
     /// Attributes-only existence check — never prompts, even for access-controlled items.
     nonisolated static func exists(account: String) -> Bool {
-        existsInDataProtection(account: account) || existsInLegacy(account: account)
+        existence(account: account) == .present
     }
 
     /// Prompts Touch ID, Apple Watch, or Mac login password via LocalAuthentication.

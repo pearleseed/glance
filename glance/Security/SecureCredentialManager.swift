@@ -53,6 +53,13 @@ enum LoginKeyUnlockResult: Equatable, Sendable {
     case invalidated
 }
 
+nonisolated enum OrphanedDataClassification: Equatable, Sendable {
+    case noEncryptedData
+    case keyPresent
+    case confirmedOrphaned
+    case indeterminate(OSStatus)
+}
+
 enum SecureCredentialManager {
     nonisolated private static let sessionKeyAccount = "sessionKey"
     nonisolated private static let loginKeyAccount = "sessionKeyAtLogin"
@@ -308,10 +315,33 @@ enum SecureCredentialManager {
         return KeychainManager.exists(account: passwordBlobAccount) || SecureFaceStore.exists
     }
 
-    /// True when encrypted password/face data exists on disk or in Keychain, but no session key exists to unlock it.
-    nonisolated static var isSessionKeyMissingWithOrphanedData: Bool {
+    nonisolated static func classifyOrphanedData(
+        sessionKeyExistence: KeychainExistence,
+        hasEncryptedData: Bool
+    ) -> OrphanedDataClassification {
+        guard hasEncryptedData else { return .noEncryptedData }
+        switch sessionKeyExistence {
+        case .present:
+            return .keyPresent
+        case .absent:
+            return .confirmedOrphaned
+        case .indeterminate(let status):
+            return .indeterminate(status)
+        }
+    }
+
+    nonisolated static func orphanedDataClassification() -> OrphanedDataClassification {
         _ = legacyMigration
-        return !KeychainManager.exists(account: sessionKeyAccount) && hasSessionEncryptedData
+        guard hasSessionEncryptedData else { return .noEncryptedData }
+        return classifyOrphanedData(
+            sessionKeyExistence: KeychainManager.existence(account: sessionKeyAccount),
+            hasEncryptedData: true
+        )
+    }
+
+    /// True when encrypted password/face data exists on disk or in Keychain, and the session key is confirmed absent.
+    nonisolated static var isSessionKeyMissingWithOrphanedData: Bool {
+        orphanedDataClassification() == .confirmedOrphaned
     }
 
     // MARK: - Opt-in unlock at login
