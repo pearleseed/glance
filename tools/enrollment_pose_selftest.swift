@@ -1,3 +1,12 @@
+//
+//  enrollment_pose_selftest.swift
+//  glance (tools)
+//
+//  Offline self-test harness for `EnrollmentPoseEvaluator` neutral pitch
+//  calibration and omni-directional circular matching.
+//  Run via `./tools/check.sh --suite enrollment_pose`.
+//
+
 import Foundation
 
 @main

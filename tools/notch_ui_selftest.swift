@@ -1,3 +1,12 @@
+//
+//  notch_ui_selftest.swift
+//  glance (tools)
+//
+//  Offline self-test harness for `UnlockAnimationColor`, `NotchGeometry`,
+//  and `AnimationTint` rendering contracts.
+//  Run via `./tools/check.sh --suite notch_ui`.
+//
+
 import AVFoundation
 import AppKit
 import CoreImage
