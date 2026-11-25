@@ -188,14 +188,14 @@ Face Lab is a hidden debug console for testing recognition scores and live liven
 
 | Layer | Implementation |
 |---|---|
-| **Language & UI** | Swift 5 (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, strict concurrency), SwiftUI + AppKit (`NSPanel`, `NSWindow`, `AVPlayerLayer`, `Canvas`) |
+| **Language & UI** | Swift 6 (`SWIFT_VERSION = 6.0`, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, strict concurrency), SwiftUI + AppKit (`NSPanel`, `NSWindow`, `AVPlayerLayer`, `Canvas`) |
 | **Target Platforms** | macOS 14.0+ Sonoma, Universal (`arm64` Apple Silicon & `x86_64` Intel) |
 | **Vision & ML** | Apple Vision (2-phase face detection, landmarks, rectangles), Core ML (`MLProgram`), Core Image (`SharedCoreImageContext`), Accelerate (`vImage`) |
 | **Recognition Model** | InsightFace **ArcFace `w600k_r50`** (ResNet50 backbone, **W8A16** per-channel symmetric int8 weight quantization, 512-d embedding) |
 | **Security & OS APIs** | CryptoKit (AES-GCM), Security (Data Protection Keychain + Login Keychain fallback), LocalAuthentication (`LAContext`), CoreGraphics (`CGSession`, `CGEvent`), IOKit HID, Carbon (`RegisterEventHotKey`), SkyLight (lock-screen overlay space) |
 | **`sudo` PAM Module** | Native C (`sudo-support/pam_glance.c`), compiled to universal `arm64` + `x86_64` OpenPAM bundle (`Contents/Helpers/pam_glance.so`) |
 | **Third-Party Packages** | **1 SwiftPM dependency:** [Sparkle](https://github.com/sparkle-project/Sparkle) `2.10.1` (auto-updates) |
-| **Code Quality** | `swift-format` ([`.swift-format`](.swift-format)) + `SwiftLint` ([`.swiftlint.yml`](.swiftlint.yml), 0 strict violations across 121 Swift files) |
+| **Code Quality** | `swift-format` ([`.swift-format`](.swift-format)) + `SwiftLint` ([`.swiftlint.yml`](.swiftlint.yml), 0 strict violations across 124 Swift files) |
 
 ### System Architecture & Recognition Pipeline
 
@@ -239,7 +239,7 @@ glance/
 └── Updater/        # Sparkle SPUStandardUpdaterController wrapper
 GlanceTests/        # Hostless Swift Testing unit tests (EnrollmentPoseEvaluatorTests, RelockPolicyTests)
 sudo-support/       # pam_glance.c (OpenPAM C module), glance-sudo-setup.sh (bundled 1-click helper), manual CLI scripts
-tools/              # check.sh unified runner, convert_arcface.py, release scripts, and 13 Swift self-test suites
+tools/              # check.sh unified runner, convert_arcface.py, pipeline_benchmark.swift, release scripts, and 14 Swift self-test suites
 ```
 
 ### Core ML Model & Benchmarks
@@ -261,7 +261,7 @@ Glance bundles InsightFace's **`w600k_r50`** ResNet50 backbone converted to a Co
 | **`w600k_r50` W8A16 (shipped)** | **42 MB** (`42,804 KiB`) | **0.999129** *(min 0.998774 across 4 seeds)* | **2.07 ms** *(1.68 / 2.64 ms)* | **9.40 ms** *(9.10 / 9.83 ms)* | `948.6 ms` / `111.9 ms` |
 | `w600k_r50` FP16 (reference) | 83 MB (`85,292 KiB`) | 0.997707 | 2.51 ms | 8.73 ms | `975.8 ms` / `85.8 ms` |
 
-> W8A16 cuts the bundled model footprint in half (~42 MB vs. 83 MB) while running ~18% faster on the Apple Silicon Neural Engine with higher ONNX numerical parity. See [tools/README.md](tools/README.md) to regenerate or swap variants via `tools/convert_arcface.py`.
+> W8A16 cuts the bundled model footprint in half (~42 MB vs. 83 MB) while running ~18% faster on the Apple Silicon Neural Engine with higher ONNX numerical parity. See [tools/README.md](tools/README.md) to regenerate or swap variants via `tools/convert_arcface.py`, or run `tools/pipeline_benchmark.swift` (`--synthetic` / `--live-camera`) to benchmark end-to-end camera, recognition, and liveness latency across cycles.
 
 #### Key v2.1 Performance & Efficiency Architecture
 - **Startup & Memory:** ArcFace loads asynchronously off `@MainActor` into one shared pipeline; closed Settings SwiftUI views unmount cleanly; hidden Night Boost panels are released; locked-state Keychain IPC is avoided.
@@ -272,7 +272,7 @@ Glance bundles InsightFace's **`w600k_r50`** ResNet50 backbone converted to a Co
 
 #### Prerequisites
 - macOS 14 Sonoma or later (runtime)
-- Xcode 16+ / 27+ with Swift 6+ toolchain (verified on Xcode 27.2 / Apple Swift 6.4.2 in Swift 5 language mode with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`; `xcrun clang` is invoked automatically by the **Bundle Sudo PAM Support** Xcode Run Script phase to compile universal `pam_glance.so` and copy `glance-sudo-setup.sh` into `Glance.app`)
+- Xcode 16+ / 27+ with Swift 6+ toolchain (verified on Xcode 27.2 / Apple Swift 6.4.2 in Swift 6 language mode with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`; `xcrun clang` is invoked automatically by the **Bundle Sudo PAM Support** Xcode Run Script phase to compile universal `pam_glance.so` and copy `glance-sudo-setup.sh` into `Glance.app`)
 
 #### Build & Run
 1. Clone the repository:
@@ -319,8 +319,9 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
 
 Run the unified verification runner before opening a PR:
 ```bash
-# Full check: Xcode Debug build, GlanceTests (xcodebuild test), all 13 Swift self-test suites,
-# Python appcast tests, SwiftLint, strict swift-format, PAM C syntax, and bash syntax
+# Full check: Xcode Debug build, GlanceTests (xcodebuild test), all 14 Swift self-test suites,
+# 10 Python unit tests (appcast + ArcFace converter), SwiftLint, strict swift-format,
+# PAM C syntax, and bash syntax (pass --with-website to also run website checks)
 ./tools/check.sh
 
 # List all registered standalone suites (offline vs integration)
@@ -344,7 +345,7 @@ swiftlint lint --strict
 > - `sudo_installer` runs `/bin/bash` against `sudo-support/glance-sudo-setup.sh` in temporary directories and invokes `/usr/bin/osacompile` to validate AppleScript syntax.
 > - In restricted sandboxes that disallow local socket creation or `osacompile`, pass `./tools/check.sh --skip-integration` to compile-check those two suites without executing them.
 
-Glance includes the hostless **`GlanceTests`** Swift Testing target plus **13 standalone, camera-free Swift self-test suites** (11 `offline` + 2 `integration`) and Python appcast tests under `tools/`:
+Glance includes the hostless **`GlanceTests`** Swift Testing target plus **14 standalone, camera-free Swift self-test suites** (12 `offline` + 2 `integration`), **10 Python unit tests** (`unittest`), and the standalone **`tools/pipeline_benchmark.swift`** harness under `tools/`:
 
 | Target / Test Suite | Kind | Coverage |
 |---|---|---|
@@ -360,9 +361,12 @@ Glance includes the hostless **`GlanceTests`** Swift Testing target plus **13 st
 | `tools/security_selftest.swift` | Offline (`--suite security`) | ArcFace fallback refusal, multi-identity matching, UTF-16 `memset_s` keystroke hygiene, multi-candidate bezels |
 | `tools/settings_window_selftest.swift` | Offline (`--suite settings_window`) | Settings window close/reopen/minimize lifecycle, stable `WindowConfiguringView` identity, and one-shot chrome configuration |
 | `tools/unlock_reliability_selftest.swift` | Offline (`--suite unlock_reliability`) | Per-grapheme UTF-16 password injection, Keychain login-key invalidation guard, multi-display notch geometry, and wake/lock debounce |
+| `tools/lifecycle_concurrency_selftest.swift` | Offline (`--suite lifecycle_concurrency`) | Generation-aware lifecycle & concurrency guards (`FaceAuthEvaluator`/`FrameBackpressureTarget`, `FaceLabController`, `OnboardingController`) |
 | `tools/sudo_protocol_selftest.swift` | Integration (`--suite sudo_protocol`) | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
 | `tools/sudo_installer_selftest.swift` | Integration (`--suite sudo_installer`) | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
 | `tools/test_generate_appcast.py` | Python (`unittest`) | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
+| `tools/test_convert_arcface.py` | Python (`unittest`) | Staged Core ML conversion (`convert_arcface.py`), parity verification failure rollback, and atomic `.mlpackage` promotion |
+| `tools/pipeline_benchmark.swift` | Benchmark harness (standalone CLI) | Reproducible `--synthetic` 1080p and `--live-camera` Run 1 vs. Run 2 camera, recognition, and liveness latency benchmarks |
 
 ---
 
