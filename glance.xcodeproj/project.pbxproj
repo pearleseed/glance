@@ -8,10 +8,19 @@
 
 /* Begin PBXBuildFile section */
 		17280C29A9398CBFDE0080BF /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 020486DA199A87C9F636359E /* Sparkle */; };
+		71000007300FFC8500D3DE9D /* EnrollmentPoseEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71000002300FFC8500D3DE9D /* EnrollmentPoseEvaluator.swift */; };
+		71000008300FFC8500D3DE9D /* RelockPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71000003300FFC8500D3DE9D /* RelockPolicy.swift */; };
+		71000009300FFC8500D3DE9D /* AppLockBlacklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71000004300FFC8500D3DE9D /* AppLockBlacklist.swift */; };
+		7100000A300FFC8500D3DE9D /* AppLockEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71000005300FFC8500D3DE9D /* AppLockEngine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		601C493C300FFC8400D3DE9D /* glance.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glance.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		71000001300FFC8500D3DE9D /* GlanceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GlanceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		71000002300FFC8500D3DE9D /* EnrollmentPoseEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EnrollmentPoseEvaluator.swift; path = glance/Onboarding/EnrollmentPoseEvaluator.swift; sourceTree = SOURCE_ROOT; };
+		71000003300FFC8500D3DE9D /* RelockPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RelockPolicy.swift; path = glance/AppLock/RelockPolicy.swift; sourceTree = SOURCE_ROOT; };
+		71000004300FFC8500D3DE9D /* AppLockBlacklist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppLockBlacklist.swift; path = glance/AppLock/AppLockBlacklist.swift; sourceTree = SOURCE_ROOT; };
+		71000005300FFC8500D3DE9D /* AppLockEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppLockEngine.swift; path = glance/AppLock/AppLockEngine.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -33,6 +42,11 @@
 			path = glance;
 			sourceTree = "<group>";
 		};
+		71000006300FFC8500D3DE9D /* GlanceTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GlanceTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -44,6 +58,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7100000D300FFC8500D3DE9D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,6 +72,8 @@
 			isa = PBXGroup;
 			children = (
 				601C493E300FFC8400D3DE9D /* glance */,
+				71000006300FFC8500D3DE9D /* GlanceTests */,
+				71000012300FFC8500D3DE9D /* TestedSources */,
 				601C493D300FFC8400D3DE9D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -59,8 +82,20 @@
 			isa = PBXGroup;
 			children = (
 				601C493C300FFC8400D3DE9D /* glance.app */,
+				71000001300FFC8500D3DE9D /* GlanceTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		71000012300FFC8500D3DE9D /* TestedSources */ = {
+			isa = PBXGroup;
+			children = (
+				71000002300FFC8500D3DE9D /* EnrollmentPoseEvaluator.swift */,
+				71000003300FFC8500D3DE9D /* RelockPolicy.swift */,
+				71000004300FFC8500D3DE9D /* AppLockBlacklist.swift */,
+				71000005300FFC8500D3DE9D /* AppLockEngine.swift */,
+			);
+			name = TestedSources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -90,6 +125,26 @@
 			productReference = 601C493C300FFC8400D3DE9D /* glance.app */;
 			productType = "com.apple.product-type.application";
 		};
+		7100000B300FFC8500D3DE9D /* GlanceTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7100000F300FFC8500D3DE9D /* Build configuration list for PBXNativeTarget "GlanceTests" */;
+			buildPhases = (
+				7100000C300FFC8500D3DE9D /* Sources */,
+				7100000D300FFC8500D3DE9D /* Frameworks */,
+				7100000E300FFC8500D3DE9D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				71000006300FFC8500D3DE9D /* GlanceTests */,
+			);
+			name = GlanceTests;
+			productName = GlanceTests;
+			productReference = 71000001300FFC8500D3DE9D /* GlanceTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -102,6 +157,9 @@
 				TargetAttributes = {
 					601C493B300FFC8400D3DE9D = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					7100000B300FFC8500D3DE9D = {
+						CreatedOnToolsVersion = 27.2;
 					};
 				};
 			};
@@ -123,12 +181,20 @@
 			projectRoot = "";
 			targets = (
 				601C493B300FFC8400D3DE9D /* glance */,
+				7100000B300FFC8500D3DE9D /* GlanceTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		601C493A300FFC8400D3DE9D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7100000E300FFC8500D3DE9D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -167,6 +233,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7100000C300FFC8500D3DE9D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				71000007300FFC8500D3DE9D /* EnrollmentPoseEvaluator.swift in Sources */,
+				71000008300FFC8500D3DE9D /* RelockPolicy.swift in Sources */,
+				71000009300FFC8500D3DE9D /* AppLockBlacklist.swift in Sources */,
+				7100000A300FFC8500D3DE9D /* AppLockEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -371,6 +448,54 @@
 			};
 			name = Release;
 		};
+		71000010300FFC8500D3DE9D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pearleseed.glanceTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		71000011300FFC8500D3DE9D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 9;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pearleseed.glanceTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -388,6 +513,15 @@
 			buildConfigurations = (
 				601C4948300FFC8500D3DE9D /* Debug */,
 				601C4949300FFC8500D3DE9D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7100000F300FFC8500D3DE9D /* Build configuration list for PBXNativeTarget "GlanceTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				71000010300FFC8500D3DE9D /* Debug */,
+				71000011300FFC8500D3DE9D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

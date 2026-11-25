@@ -237,8 +237,9 @@ glance/
 ├── SudoAuth/       # SudoAuthServer (Unix socket), SudoAuthProtocol (256-bit nonce), SudoPAMStatus (SHA-256), SudoPAMInstaller
 ├── Unlock/         # LockMonitor (authoritative CGSession), SpaceKeyMonitor (IOKit HID), KeystrokeInjector, FaceUnlockCoordinator
 └── Updater/        # Sparkle SPUStandardUpdaterController wrapper
+GlanceTests/        # Hostless Swift Testing unit tests (EnrollmentPoseEvaluatorTests, RelockPolicyTests)
 sudo-support/       # pam_glance.c (OpenPAM C module), glance-sudo-setup.sh (bundled 1-click helper), manual CLI scripts
-tools/              # convert_arcface.py (ONNX -> Core ML W8A16/FP16 + parity check), 10 offline Swift self-test suites
+tools/              # check.sh unified runner, convert_arcface.py, release scripts, and 13 Swift self-test suites
 ```
 
 ### Core ML Model & Benchmarks
@@ -271,7 +272,7 @@ Glance bundles InsightFace's **`w600k_r50`** ResNet50 backbone converted to a Co
 
 #### Prerequisites
 - macOS 14 Sonoma or later (runtime)
-- Xcode 16+ / 26+ (`xcrun clang` is invoked automatically by the **Bundle Sudo PAM Support** Xcode Run Script phase to compile universal `pam_glance.so` and copy `glance-sudo-setup.sh` into `Glance.app`)
+- Xcode 16+ / 27+ with Swift 6+ toolchain (verified on Xcode 27.2 / Apple Swift 6.4.2 in Swift 5 language mode with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`; `xcrun clang` is invoked automatically by the **Bundle Sudo PAM Support** Xcode Run Script phase to compile universal `pam_glance.so` and copy `glance-sudo-setup.sh` into `Glance.app`)
 
 #### Build & Run
 1. Clone the repository:
@@ -283,12 +284,15 @@ Glance bundles InsightFace's **`w600k_r50`** ResNet50 backbone converted to a Co
    ```bash
    open glance.xcodeproj
    ```
-3. Select your Development Team under **Signing & Capabilities** (required for Data Protection Keychain entitlements; ad-hoc / unsigned local builds fall back seamlessly to `LAContext` + Login Keychain) and press `Cmd + R`.
+3. Select your Development Team under **Signing & Capabilities** (required for Data Protection Keychain entitlements; ad-hoc / unsigned local builds fall back seamlessly to `LAContext` + Login Keychain) and press `Cmd + R` (or `Cmd + U` to run `GlanceTests`).
 
-Or build from the command line:
+Or build and test from the command line:
 ```bash
 # Debug build (unsigned/local)
 xcodebuild -project glance.xcodeproj -scheme glance -configuration Debug CODE_SIGNING_ALLOWED=NO build
+
+# Hostless Swift Testing unit tests (does not launch Glance.app or camera)
+xcodebuild -project glance.xcodeproj -scheme glance -configuration Debug CODE_SIGNING_ALLOWED=NO test
 
 # Release builds by architecture (arm64 or x86_64)
 xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
@@ -313,29 +317,52 @@ xcodebuild -project glance.xcodeproj -scheme glance -configuration Release \
 
 ### Code Style, Linting & Offline Self-Tests
 
-Format and lint before opening a PR:
+Run the unified verification runner before opening a PR:
 ```bash
-xcrun swift-format format -i --recursive glance tools
+# Full check: Xcode Debug build, GlanceTests (xcodebuild test), all 13 Swift self-test suites,
+# Python appcast tests, SwiftLint, strict swift-format, PAM C syntax, and bash syntax
+./tools/check.sh
+
+# List all registered standalone suites (offline vs integration)
+./tools/check.sh --list
+
+# Run specific standalone suite(s) without rebuilding the Xcode app/test bundle
+./tools/check.sh --no-build --suite applock,liveness
+
+# Run GlanceTests directly via Xcode
+xcodebuild -project glance.xcodeproj -scheme glance -configuration Debug CODE_SIGNING_ALLOWED=NO test
+
+# Format and lint manually
+xcrun swift-format format -i --recursive glance tools GlanceTests
+xcrun swift-format lint --strict -r glance tools GlanceTests
 swiftlint lint --strict
 ```
 
-Glance includes **12 standalone, camera-free Swift self-test suites** (plus Python appcast tests) under `tools/` (each Swift file documents its exact `swiftc` compile-and-run command in its header comment):
+> [!NOTE]
+> **Integration suite requirements (`sudo_protocol`, `sudo_installer`):**
+> - `sudo_protocol` binds temporary local `AF_UNIX` sockets (`SudoAuthServer`) under `TMPDIR` and exchanges nonce requests via `socketpair`.
+> - `sudo_installer` runs `/bin/bash` against `sudo-support/glance-sudo-setup.sh` in temporary directories and invokes `/usr/bin/osacompile` to validate AppleScript syntax.
+> - In restricted sandboxes that disallow local socket creation or `osacompile`, pass `./tools/check.sh --skip-integration` to compile-check those two suites without executing them.
 
-| Test Suite | Coverage |
-|---|---|
-| `tools/liveness_selftest.swift` | 5-cue liveness scoring, 2D roll invariance, flat-vs-3D geometry, identity-bound resets |
-| `tools/security_selftest.swift` | ArcFace fallback refusal, multi-identity matching, UTF-16 `memset_s` keystroke hygiene, multi-candidate bezels |
-| `tools/performance_selftest.swift` | `ArcFaceEmbedder` compute units & Float16 fast-path, shared pipeline/context, frame backpressure, `InstalledApps`, `NotchShape`, `AnimationTint` |
-| `tools/glare_mask_selftest.swift` | Face-contour polygon masking excluding background glare while preserving forehead speculars |
-| `tools/notch_ui_selftest.swift` | Linear-light `UnlockAnimationColor` tinting and physical notch size bounds |
-| `tools/enrollment_pose_selftest.swift` | Neutral-pitch camera calibration and omnidirectional 9-pose circular matching |
-| `tools/night_boost_selftest.swift` | Rec. 709 luminance thresholds, bounded low-light gain, brightness restore & termination cleanup |
-| `tools/applock_selftest.swift` | `AppLockEngine` v2 state machine, monotonic `RelockPolicy`, deadline timers, system blacklist & Touch ID fallback |
-| `tools/sudo_installer_selftest.swift` | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
-| `tools/sudo_protocol_selftest.swift` | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
-| `tools/settings_window_selftest.swift` | Settings window close/reopen/minimize lifecycle, stable `WindowConfiguringView` identity, and one-shot chrome configuration |
-| `tools/unlock_reliability_selftest.swift` | Per-grapheme UTF-16 password injection, Keychain login-key invalidation guard, multi-display notch geometry, and wake/lock debounce |
-| `tools/test_generate_appcast.py` | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
+Glance includes the hostless **`GlanceTests`** Swift Testing target plus **13 standalone, camera-free Swift self-test suites** (11 `offline` + 2 `integration`) and Python appcast tests under `tools/`:
+
+| Target / Test Suite | Kind | Coverage |
+|---|---|---|
+| `GlanceTests` (`EnrollmentPoseEvaluatorTests`, `RelockPolicyTests`) | Swift Testing (`xcodebuild test`) | Neutral-pitch calibration & 8-sector circular matching, monotonic `RelockPolicy` & `AppLockEngine` timing, hostless `xctest` isolation |
+| `tools/enrollment_storage_selftest.swift` | Offline (`--suite enrollment_storage`) | Transactional `FaceEnrollmentStore` persistence, Keychain/JSON storage round-trips, embedding cleanup |
+| `tools/onboarding_flow_selftest.swift` | Offline (`--suite onboarding_flow`) | Guided onboarding step transitions, idempotent enrollment commit, password retry state |
+| `tools/applock_selftest.swift` | Offline (`--suite applock`) | `AppLockEngine` v2 state machine, monotonic `RelockPolicy`, deadline timers, system blacklist & Touch ID fallback |
+| `tools/glare_mask_selftest.swift` | Offline (`--suite glare_mask`) | Face-contour polygon masking excluding background glare while preserving forehead speculars |
+| `tools/liveness_selftest.swift` | Offline (`--suite liveness`) | 5-cue liveness scoring, 2D roll invariance, flat-vs-3D geometry, identity-bound resets |
+| `tools/night_boost_selftest.swift` | Offline (`--suite night_boost`) | Rec. 709 luminance thresholds, bounded low-light gain, brightness restore & termination cleanup |
+| `tools/notch_ui_selftest.swift` | Offline (`--suite notch_ui`) | Linear-light `UnlockAnimationColor` tinting and physical notch size bounds |
+| `tools/performance_selftest.swift` | Offline (`--suite performance`) | `ArcFaceEmbedder` compute units & Float16 fast-path, shared pipeline/context, frame backpressure, `InstalledApps`, `NotchShape`, `AnimationTint` |
+| `tools/security_selftest.swift` | Offline (`--suite security`) | ArcFace fallback refusal, multi-identity matching, UTF-16 `memset_s` keystroke hygiene, multi-candidate bezels |
+| `tools/settings_window_selftest.swift` | Offline (`--suite settings_window`) | Settings window close/reopen/minimize lifecycle, stable `WindowConfiguringView` identity, and one-shot chrome configuration |
+| `tools/unlock_reliability_selftest.swift` | Offline (`--suite unlock_reliability`) | Per-grapheme UTF-16 password injection, Keychain login-key invalidation guard, multi-display notch geometry, and wake/lock debounce |
+| `tools/sudo_protocol_selftest.swift` | Integration (`--suite sudo_protocol`) | Strict 256-bit nonce validation, `0700` socket permissions, root peer UID checks, and server lifecycle cleanup |
+| `tools/sudo_installer_selftest.swift` | Integration (`--suite sudo_installer`) | `glance-sudo-setup.sh` atomic install/rollback/uninstall, `SudoPAMCommandBuilder`, error classification, SHA-256 outdated probe |
+| `tools/test_generate_appcast.py` | Python (`unittest`) | Sparkle `appcast.xml` ordering (`arm64` before `x86_64`), `SUPublicEDKey` migration check, EdDSA signing & tamper detection |
 
 ---
 

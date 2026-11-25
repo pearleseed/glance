@@ -4,8 +4,8 @@ set -euo pipefail
 # Unified verification runner for Glance.
 # Compiles and runs standalone Swift self-test suites using the same isolation
 # and visibility flags as the Xcode app target, plus Xcode Debug build,
-# SwiftLint, swift-format, Python tests, PAM C syntax, shell syntax, and
-# optional website checks.
+# GlanceTests (xcodebuild test), SwiftLint, swift-format, Python tests,
+# PAM C syntax, shell syntax, and optional website checks.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -19,7 +19,7 @@ WITH_WEBSITE=0
 LIST_ONLY=0
 SELECTED_SUITES=()
 
-# Single centralized registry of all 14 Swift self-test suites.
+# Single centralized registry of all 13 Swift self-test suites.
 # Format: "name|kind|entry_mode|source1 source2 ..."
 #   kind:       "offline" | "integration"
 #   entry_mode: "library" (-parse-as-library for @main) | "script"
@@ -103,10 +103,6 @@ glance/AppLock/RelockPolicy.swift \
 glance/AppLock/AppLockBlacklist.swift \
 glance/AppLock/AppLockEngine.swift \
 tools/applock_selftest.swift"
-
-    "enrollment_pose|offline|library|\
-glance/Onboarding/EnrollmentPoseEvaluator.swift \
-tools/enrollment_pose_selftest.swift"
 
     "glare_mask|offline|library|\
 glance/Camera/SharedCoreImageContext.swift \
@@ -224,7 +220,7 @@ Usage: tools/check.sh [options]
 Options:
   --list                        List all registered suites and their kind (offline/integration)
   --suite <name>[,<name>...]    Run only the specified Swift suite(s)
-  --no-build                    Skip the Xcode Debug build
+  --no-build                    Skip the Xcode Debug build and GlanceTests (xcodebuild test)
   --no-lint                     Skip SwiftLint, swift-format, PAM C syntax, and bash syntax checks
   --skip-integration            Compile-check integration suites (sudo_protocol, sudo_installer) without executing
   --swift-version <5|6>         Swift language version for swiftc and xcodebuild (default: 5)
@@ -416,7 +412,7 @@ run_in_website() {
     (cd "${REPO_ROOT}/website" && "$@")
 }
 
-# 1. Xcode Debug build
+# 1. Xcode Debug build & GlanceTests (xcodebuild test)
 if [[ "${RUN_BUILD}" -eq 1 ]]; then
     echo "==> [build] Building Glance Debug (Swift ${SWIFT_VERSION}, ${HOST_ARCH})..."
     XCODE_LOG="${TMP_DIR}/xcodebuild.log"
@@ -439,8 +435,35 @@ if [[ "${RUN_BUILD}" -eq 1 ]]; then
         cat "${XCODE_LOG}" >&2
         record_result "xcode_debug_build" "FAIL" "-"
     fi
+
+    echo "==> [test] Running GlanceTests (Swift ${SWIFT_VERSION}, ${HOST_ARCH})..."
+    XCODE_TEST_LOG="${TMP_DIR}/xcodebuild-test.log"
+    if xcodebuild \
+        -project "${REPO_ROOT}/glance.xcodeproj" \
+        -scheme glance \
+        -configuration Debug \
+        -derivedDataPath "${TMP_DIR}/DerivedData" \
+        -destination "platform=macOS,arch=${HOST_ARCH}" \
+        ARCHS="${HOST_ARCH}" \
+        ONLY_ACTIVE_ARCH=YES \
+        SWIFT_VERSION="${SWIFT_VERSION}.0" \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO \
+        test >"${XCODE_TEST_LOG}" 2>&1; then
+        echo "    PASS: GlanceTests succeeded."
+        record_result "xcode_test" "PASS" "PASS"
+    else
+        echo "    FAIL: GlanceTests failed. Test log:" >&2
+        cat "${XCODE_TEST_LOG}" >&2
+        if grep -q "Testing started" "${XCODE_TEST_LOG}" 2>/dev/null; then
+            record_result "xcode_test" "PASS" "FAIL"
+        else
+            record_result "xcode_test" "FAIL" "-"
+        fi
+    fi
 else
     record_result "xcode_debug_build" "SKIP" "-"
+    record_result "xcode_test" "SKIP" "SKIP"
 fi
 
 # 2. Swift self-test suites
@@ -498,7 +521,7 @@ if [[ "${RUN_LINT}" -eq 1 ]]; then
     run_check_step "swiftlint" swiftlint lint --strict --quiet
 
     echo "==> [lint] Running swift-format..."
-    run_check_step "swift_format" xcrun swift-format lint --strict -r glance tools
+    run_check_step "swift_format" xcrun swift-format lint --strict -r glance tools GlanceTests
 
     echo "==> [lint] Checking PAM C syntax..."
     run_check_step "pam_c_syntax" \
