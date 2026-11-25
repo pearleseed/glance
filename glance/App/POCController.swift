@@ -46,9 +46,6 @@ final class POCController {
     var unlocksAtLogin: Bool = SecureCredentialManager.unlocksAtLogin
     var sessionError: String?
 
-    /// Bound to the setup SecureField. Cleared immediately after a successful save.
-    var passwordInput: String = ""
-
     var statusMessage: String = "Idle"
     var lastInjectionError: UnlockInjectionFailure?
 
@@ -94,7 +91,7 @@ final class POCController {
 
     // MARK: - Session (Touch ID gate)
 
-    /// Must succeed before `savePassword()` or `injectStoredPassword()` will do anything.
+    /// Must succeed before `injectStoredPassword()` will do anything.
     func unlockSession() async {
         sessionError = nil
         do {
@@ -157,33 +154,6 @@ final class POCController {
         launchUnlockRetryTask = nil
         SecureCredentialManager.lockSession()
         isSessionUnlocked = false
-    }
-
-    // MARK: - Setup flow
-
-    /// Encrypts and stores `passwordInput`. Requires the session to already
-    /// be unlocked (Touch ID happens in `unlockSession()`, not here).
-    func savePassword() async {
-        guard !passwordInput.isEmpty else {
-            statusMessage = "Enter a password first."
-            return
-        }
-        let plaintext = passwordInput
-        passwordInput = ""
-
-        do {
-            try await Task.detached(priority: .userInitiated) {
-                guard var bytes = plaintext.data(using: .utf8) else {
-                    throw SecureCredentialError.emptyPassword
-                }
-                defer { bytes.resetBytes(in: 0..<bytes.count) }
-                try SecureCredentialManager.savePassword(bytes)
-            }.value
-            statusMessage = "Password saved and encrypted."
-            hasStoredPassword = true
-        } catch {
-            statusMessage = "Save failed: \(error.localizedDescription)"
-        }
     }
 
     // MARK: - Injection

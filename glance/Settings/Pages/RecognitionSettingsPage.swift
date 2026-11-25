@@ -10,46 +10,10 @@ struct RecognitionSettingsPage: View {
     @Bindable var pocController: POCController
     @Bindable private var settings = GlanceSettings.shared
 
-    @State private var isUnlocking = false
-    @State private var sessionError: String?
-
-    /// Read from `POCController`, not a local copy — same reasoning as
-    /// `PasswordSettingsPage`.
-    private var isSessionUnlocked: Bool { pocController.isSessionUnlocked }
-
     var body: some View {
-        ZStack(alignment: .top) {
-            lockedState
-                .opacity(isSessionUnlocked ? 0 : 1)
-                .allowsHitTesting(!isSessionUnlocked)
-                .accessibilityHidden(isSessionUnlocked)
-
+        SessionGatedSettingsView(pocController: pocController) {
             unlockedState
-                .opacity(isSessionUnlocked ? 1 : 0)
-                .allowsHitTesting(isSessionUnlocked)
-                .accessibilityHidden(!isSessionUnlocked)
         }
-        .animation(SettingsMetrics.stateTransitionAnimation, value: isSessionUnlocked)
-        .onAppear { pocController.refreshCredentialStatus() }
-        // Password/name/enrollment flows run in the notch, outside this
-        // window, so nothing else prompts a re-check once one closes.
-        .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
-            guard newPhase == .closed else { return }
-            pocController.refreshCredentialStatus()
-        }
-    }
-
-    // MARK: - Locked
-
-    private var lockedState: some View {
-        SettingsEmptyStateView(
-            icon: "lock.fill",
-            message: "Session locked",
-            buttonTitle: isUnlocking ? "Authenticating…" : "Unlock session",
-            isButtonEnabled: !isUnlocking,
-            caption: sessionError,
-            action: unlock
-        )
     }
 
     // MARK: - Unlocked
@@ -108,18 +72,6 @@ struct RecognitionSettingsPage: View {
             get: { matchConfidenceLevel.sliderIndex },
             set: { coordinator.matchThreshold = MatchConfidenceLevel.from(sliderIndex: $0).threshold }
         )
-    }
-
-    // MARK: - Actions
-
-    private func unlock() {
-        isUnlocking = true
-        sessionError = nil
-        Task {
-            await pocController.unlockSession()
-            sessionError = pocController.sessionError
-            isUnlocking = false
-        }
     }
 }
 

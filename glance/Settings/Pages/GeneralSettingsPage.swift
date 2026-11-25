@@ -19,12 +19,6 @@ struct GeneralSettingsPage: View {
     /// Refreshed when the app regains focus, so granting the permission in
     /// System Settings clears the prompt below without a relaunch.
     @State private var inputMonitoring = SpaceKeyMonitor.inputMonitoringAccess
-    @State private var isUnlocking = false
-    @State private var sessionError: String?
-
-    /// Read from `POCController`, not a local copy — the session can be
-    /// auto-locked while this page is visible.
-    private var isSessionUnlocked: Bool { pocController.isSessionUnlocked }
 
     private var needsAccessibility: Bool {
         coordinator.isEnabled && !pocController.accessibilityGranted
@@ -41,43 +35,11 @@ struct GeneralSettingsPage: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            lockedState
-                .opacity(isSessionUnlocked ? 0 : 1)
-                .allowsHitTesting(!isSessionUnlocked)
-                .accessibilityHidden(isSessionUnlocked)
-
-            unlockedState
-                .opacity(isSessionUnlocked ? 1 : 0)
-                .allowsHitTesting(isSessionUnlocked)
-                .accessibilityHidden(!isSessionUnlocked)
-        }
-        .animation(SettingsMetrics.stateTransitionAnimation, value: isSessionUnlocked)
-        .onAppear {
-            pocController.refreshCredentialStatus()
-            pocController.refreshAccessibilityStatus()
-        }
-        .onChange(of: isSessionUnlocked) { _, unlocked in
-            if !unlocked { coordinator.isRecordingToggleShortcut = false }
-        }
-        // The password prompt runs in the notch, outside this view's hierarchy,
-        // so refresh the session state when that flow finishes.
-        .onChange(of: NotchOverlayController.shared.phase) { _, newPhase in
-            guard newPhase == .closed else { return }
-            pocController.refreshCredentialStatus()
-        }
-    }
-
-    // MARK: - Locked
-
-    private var lockedState: some View {
-        SettingsEmptyStateView(
-            icon: "lock.fill",
-            message: "Session locked",
-            buttonTitle: isUnlocking ? "Authenticating…" : "Unlock session",
-            isButtonEnabled: !isUnlocking,
-            caption: sessionError,
-            action: unlock
+        SessionGatedSettingsView(
+            pocController: pocController,
+            onAppear: { pocController.refreshAccessibilityStatus() },
+            onSessionLock: { coordinator.isRecordingToggleShortcut = false },
+            content: { unlockedState }
         )
     }
 
@@ -291,16 +253,6 @@ struct GeneralSettingsPage: View {
     private static func notchAdjustmentLabel(_ adjustment: Int) -> String {
         if adjustment == 0 { return "Default" }
         return adjustment > 0 ? "+\(adjustment)pt" : "\(adjustment)pt"
-    }
-
-    private func unlock() {
-        isUnlocking = true
-        sessionError = nil
-        Task {
-            await pocController.unlockSession()
-            sessionError = pocController.sessionError
-            isUnlocking = false
-        }
     }
 
     /// Shown whenever Face Unlock is enabled without an active Accessibility grant (including stale ad-hoc TCC entries).
