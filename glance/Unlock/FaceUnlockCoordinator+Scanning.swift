@@ -303,10 +303,12 @@ extension FaceUnlockCoordinator {
                 camera.setConsumerBusy(false)
             }
         }
+        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
         return await FaceAuthEvaluator.extractFrame(
             from: frame,
             pipeline: pipeline,
             previousBoundingBox: evaluator.lastFaceBoundingBox,
+            strictCloseRangeOnly: strictCloseRangeOnly,
             livenessEnabled: livenessEnabled,
             nightBoostEnabled: nightBoostEnabled,
             geometryContext: evaluator.geometryContextIfNeeded()

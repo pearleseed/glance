@@ -109,13 +109,11 @@ final class GlanceSettings {
     var livenessMode: LivenessMode {
         didSet { defaults.set(livenessMode.rawValue, forKey: Key.livenessMode) }
     }
-    /// Mirrored into `FaceRecognitionPipeline.strictCloseRangeOnly` on
-    /// every change, since that's read from a background `nonisolated` context.
+    /// When `true`, face recognition rejects faces narrower than
+    /// `FaceRecognitionPipeline.strictCloseRangeMinimumWidth` (busy/open-plan spaces).
+    /// Read on `@MainActor` before each frame extraction.
     var strictCloseRangeOnly: Bool {
-        didSet {
-            defaults.set(strictCloseRangeOnly, forKey: Key.strictCloseRangeOnly)
-            FaceRecognitionPipeline.strictCloseRangeOnly = strictCloseRangeOnly
-        }
+        didSet { defaults.set(strictCloseRangeOnly, forKey: Key.strictCloseRangeOnly) }
     }
     /// The remembered choice (`.minimal`/`.original` only); `showUnlockAnimation`
     /// tracks on/off separately so toggling back on restores the prior pick.
@@ -360,10 +358,6 @@ final class GlanceSettings {
         lockedApps = Self.decodeLockedApps(from: defaults)
         defaultAppRelockPolicy = Self.decodeRelockPolicy(from: defaults)
         sudoFaceAuthEnabled = defaults.bool(forKey: Key.sudoFaceAuthEnabled, default: false)
-
-        // Push into the nonisolated mirror immediately, or FaceRecognitionPipeline
-        // would keep its own default until the toggle is first switched.
-        FaceRecognitionPipeline.strictCloseRangeOnly = strictCloseRangeOnly
     }
 }
 

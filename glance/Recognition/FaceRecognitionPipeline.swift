@@ -218,16 +218,25 @@ final class FaceRecognitionPipeline {
             self?.withMutation(keyPath: \.loadState) {}
         }
     }
+}
 
+extension FaceRecognitionPipeline {
     /// `nonisolated` so callers can run detect/align/embed from a background task instead of blocking the main actor.
     /// - Parameter previousBoundingBox: previous frame's selected box, if any — lets a continuous scanner keep selection "stuck" to the same person instead of re-picking every frame.
     nonisolated func recognize(
         in frame: CGImage,
         preferNear previousBoundingBox: CGRect? = nil,
-        includeQuality: Bool = true
+        includeQuality: Bool = true,
+        strictCloseRangeOnly: Bool = false
     ) throws -> FaceRecognitionResult {
         let faces = try FaceDetector.detectFaces(in: frame, includeQuality: includeQuality)
-        guard let face = Self.selectDominantFace(in: faces, preferNear: previousBoundingBox) else {
+        guard
+            let face = Self.selectDominantFace(
+                in: faces,
+                preferNear: previousBoundingBox,
+                strictCloseRangeOnly: strictCloseRangeOnly
+            )
+        else {
             throw FaceRecognitionPipelineError.noFaceDetected
         }
         return try recognize(face, in: frame)
@@ -240,7 +249,8 @@ final class FaceRecognitionPipeline {
     nonisolated func recognize(
         in frame: CameraFrame,
         preferNear previousBoundingBox: CGRect? = nil,
-        includeQuality: Bool = true
+        includeQuality: Bool = true,
+        strictCloseRangeOnly: Bool = false
     ) throws -> FaceRecognitionResult {
         let willAttemptNativeCrop = Self.willUseNativeCrop(for: frame)
         // Skip quality and landmarks on the 640px pass when Phase 2 will run both on the 512px native crop.
@@ -249,7 +259,13 @@ final class FaceRecognitionPipeline {
             includeQuality: willAttemptNativeCrop ? false : includeQuality,
             includeLandmarks: !willAttemptNativeCrop
         )
-        guard let face = Self.selectDominantFace(in: faces, preferNear: previousBoundingBox) else {
+        guard
+            let face = Self.selectDominantFace(
+                in: faces,
+                preferNear: previousBoundingBox,
+                strictCloseRangeOnly: strictCloseRangeOnly
+            )
+        else {
             throw FaceRecognitionPipelineError.noFaceDetected
         }
         return try recognize(face, in: frame, includeQuality: includeQuality)
@@ -351,8 +367,6 @@ final class FaceRecognitionPipeline {
     nonisolated static let bystanderRelativeWidth: CGFloat = 0.6
     /// Minimum normalized width enforced when `strictCloseRangeOnly` is enabled (busy/open-plan spaces).
     nonisolated static let strictCloseRangeMinimumWidth: CGFloat = 0.18
-    /// Mirrored from `GlanceSettings.strictCloseRangeOnly` so background scans can read it without hopping to `@MainActor`.
-    nonisolated(unsafe) static var strictCloseRangeOnly: Bool = false
 
     /// Max normalized-coordinate drift between frames still counted as "the same person".
     nonisolated private static let continuityDistanceTolerance: CGFloat = 0.3
@@ -361,9 +375,11 @@ final class FaceRecognitionPipeline {
     /// wide and at least `bystanderRelativeWidth` of the widest face (plus `strictCloseRangeMinimumWidth` when
     /// `strictCloseRangeOnly` is active), then prefers continuity with `previousBoundingBox` over raw largest-by-area
     /// so two similarly-sized faces can't flip-flop frame to frame.
-    nonisolated static func selectDominantFace(in faces: [DetectedFace], preferNear previousBoundingBox: CGRect? = nil)
-        -> DetectedFace?
-    {
+    nonisolated static func selectDominantFace(
+        in faces: [DetectedFace],
+        preferNear previousBoundingBox: CGRect? = nil,
+        strictCloseRangeOnly: Bool = false
+    ) -> DetectedFace? {
         guard let widest = faces.map(\.boundingBox.width).max() else { return nil }
         let relativeFloor = widest * bystanderRelativeWidth
         let candidates = faces.filter { face in

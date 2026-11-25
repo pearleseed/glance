@@ -404,10 +404,12 @@ extension SudoFaceAuthenticator {
                 camera.setConsumerBusy(false)
             }
         }
+        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
         return await FaceAuthEvaluator.extractFrame(
             from: frame,
             pipeline: pipeline,
             previousBoundingBox: evaluator.lastFaceBoundingBox,
+            strictCloseRangeOnly: strictCloseRangeOnly,
             livenessEnabled: true,
             geometryContext: evaluator.geometryContextIfNeeded()
         )

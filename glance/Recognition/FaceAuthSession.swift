@@ -96,6 +96,7 @@ final class FaceAuthEvaluator {
         from frame: CameraFrame,
         pipeline: FaceRecognitionPipeline,
         previousBoundingBox: CGRect?,
+        strictCloseRangeOnly: Bool,
         livenessEnabled: Bool = true,
         nightBoostEnabled: Bool = false,
         geometryContext: LivenessAnalyzer.GeometryEvaluationContext? = nil
@@ -110,13 +111,15 @@ final class FaceAuthEvaluator {
                 recognitionResult = try? pipeline.recognize(
                     in: enhancedImage,
                     preferNear: previousBoundingBox,
-                    includeQuality: false
+                    includeQuality: false,
+                    strictCloseRangeOnly: strictCloseRangeOnly
                 )
             } else {
                 recognitionResult = try? pipeline.recognize(
                     in: frame,
                     preferNear: previousBoundingBox,
-                    includeQuality: false
+                    includeQuality: false,
+                    strictCloseRangeOnly: strictCloseRangeOnly
                 )
             }
             guard let result = recognitionResult else {

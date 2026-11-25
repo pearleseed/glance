@@ -173,9 +173,10 @@ final class FaceLabController {
             guard camera.isRunning else { return }
         }
         let geometryContext = livenessAnalyzer.heavyGeometryContextIfNeeded()
+        let strictCloseRangeOnly = GlanceSettings.shared.strictCloseRangeOnly
         do {
             let (result, livenessFrame, precomputedGeometry) = try await Task.detached(priority: .userInitiated) {
-                let result = try pipeline.recognize(in: cameraFrame)
+                let result = try pipeline.recognize(in: cameraFrame, strictCloseRangeOnly: strictCloseRangeOnly)
                 let faceCrop = FaceAuthEvaluator.glareCrop(from: cameraFrame, recognition: result)
                 let livenessFrame = LivenessFeatureExtractor.extract(
                     from: result, frame: cameraFrame.image, faceCrop: faceCrop

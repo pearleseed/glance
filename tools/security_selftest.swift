@@ -339,11 +339,15 @@ struct SecuritySelfTest {
             pickedMain?.boundingBox == mainUser.boundingBox, "FAIL: bystander below 60% relative cutoff selected")
 
         // 3. strictCloseRangeOnly rejects < 18% (90px/640px = 0.14) while accepting >= 18% (120px/640px = 0.1875).
-        FaceRecognitionPipeline.strictCloseRangeOnly = true
-        defer { FaceRecognitionPipeline.strictCloseRangeOnly = false }
         precondition(
-            FaceRecognitionPipeline.selectDominantFace(in: [seated]) == nil,
-            "FAIL: strictCloseRangeOnly accepted 14% face"
+            FaceRecognitionPipeline.selectDominantFace(in: [seated], strictCloseRangeOnly: true) == nil,
+            "FAIL: strictCloseRangeOnly=true accepted 14% face"
+        )
+        precondition(
+            FaceRecognitionPipeline.selectDominantFace(
+                in: [seated], strictCloseRangeOnly: false
+            )?.boundingBox == seated.boundingBox,
+            "FAIL: strictCloseRangeOnly=false rejected 14% face"
         )
         let closeUser = DetectedFace(
             boundingBox: CGRect(x: 260, y: 100, width: 120, height: 120),
@@ -352,10 +356,11 @@ struct SecuritySelfTest {
             quality: nil, yaw: 0, roll: 0, pitch: 0, landmarks: nil, imageSize: imageSize
         )
         precondition(
-            FaceRecognitionPipeline.selectDominantFace(in: [closeUser])?.boundingBox == closeUser.boundingBox,
-            "FAIL: strictCloseRangeOnly rejected 18.75% face"
+            FaceRecognitionPipeline.selectDominantFace(
+                in: [closeUser], strictCloseRangeOnly: true
+            )?.boundingBox == closeUser.boundingBox,
+            "FAIL: strictCloseRangeOnly=true rejected 18.75% face"
         )
-        FaceRecognitionPipeline.strictCloseRangeOnly = false
 
         // 4. Pose-aware quality grading: frontal median 0.50 -> turned 0.36 (72%) .good, 0.30 (60%) .fair, 0.20 (40%) .poor
         let frontalA = FaceSample(embedding: [1, 0], pose: "center", capturedAt: Date(), quality: 0.40)
